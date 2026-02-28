@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import re
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -32,25 +34,127 @@ else:
     app.logger.warning("SIGNING_SECRET is not set; Slack event subscriptions are disabled")
 executor = JSONExecutor()
 WORKFLOW_REF_PATTERN = re.compile(r"^\$\{steps\.([^\.]+)\.result(?:\.(.+))?\}$")
+SLACK_EVENT_TTL_SECONDS = 300
+_processed_slack_events: dict[str, float] = {}
+_processed_slack_events_lock = threading.Lock()
+
+
+def _is_duplicate_slack_event(event_data: dict[str, Any], event: dict[str, Any]) -> bool:
+    """Return True when a Slack event appears to be a duplicate delivery."""
+    event_id = event_data.get("event_id")
+    if not isinstance(event_id, str) or not event_id.strip():
+        event_id = "|".join(
+            [
+                str(event.get("channel", "")),
+                str(event.get("user", "")),
+                str(event.get("ts", "")),
+                str(event.get("text", "")),
+            ]
+        )
+
+    now = time.time()
+    with _processed_slack_events_lock:
+        expired = [
+            key for key, seen_at in _processed_slack_events.items()
+            if (now - seen_at) > SLACK_EVENT_TTL_SECONDS
+        ]
+        for key in expired:
+            del _processed_slack_events[key]
+
+        if event_id in _processed_slack_events:
+            return True
+
+        _processed_slack_events[event_id] = now
+        return False
 
 
 if slack_event_adapter is not None:
     @slack_event_adapter.on("message")
     def handle_slack_message(event_data: dict[str, Any]) -> None:
-        """Handle Slack message events with minimal logging."""
+        """Handle Slack messages by generating and posting an AI reply."""
         event = event_data.get("event", {}) if isinstance(event_data, dict) else {}
         if not isinstance(event, dict):
             return
 
-        if event.get("subtype") == "bot_message":
+        subtype = event.get("subtype")
+        if subtype is not None:
+            return
+
+        if event.get("bot_id"):
+            return
+
+        channel = event.get("channel")
+        text = event.get("text", "")
+        if not isinstance(channel, str) or not channel:
+            return
+        if not isinstance(text, str) or not text.strip():
+            return
+
+        if _is_duplicate_slack_event(event_data, event):
+            app.logger.info("Ignoring duplicate Slack event delivery")
             return
 
         app.logger.info(
             "Slack message received: channel=%s user=%s text=%s",
-            event.get("channel"),
+            channel,
             event.get("user"),
-            event.get("text", ""),
+            text,
         )
+
+        conversation_key = event.get("thread_ts") or channel
+        conversation_id = f"slack:{conversation_key}"
+        model_name = os.getenv("SLACK_OPENAI_MODEL", "gpt-4.1-mini")
+
+        try:
+            validate_request(
+                "plugins.integrations.openai_sdk_plugin",
+                "OpenAISDKPlugin",
+                "generate_text_with_history",
+            )
+            executor.instantiate(
+                "plugins.integrations.openai_sdk_plugin",
+                "OpenAISDKPlugin",
+                {},
+            )
+            ai_result = executor.call_method(
+                "plugins.integrations.openai_sdk_plugin",
+                "generate_text_with_history",
+                [conversation_id, text.strip(), model_name],
+            )
+            if isinstance(ai_result, dict):
+                reply_text = str(ai_result.get("text", "")).strip()
+            else:
+                reply_text = str(ai_result).strip()
+        except Exception:
+            app.logger.exception("Failed to generate Slack AI reply")
+            reply_text = "Sorry, I couldn't generate a reply right now."
+
+        if not reply_text:
+            return
+
+        slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
+        if not isinstance(slack_bot_token, str) or not slack_bot_token.strip():
+            app.logger.warning("SLACK_BOT_TOKEN is not set; cannot post Slack reply")
+            return
+
+        try:
+            validate_request(
+                "plugins.integrations.slack_plugin",
+                "SlackPlugin",
+                "post_message",
+            )
+            executor.instantiate(
+                "plugins.integrations.slack_plugin",
+                "SlackPlugin",
+                {"bot_token": slack_bot_token.strip(), "default_channel": "#general"},
+            )
+            executor.call_method(
+                "plugins.integrations.slack_plugin",
+                "post_message",
+                [channel, reply_text],
+            )
+        except Exception:
+            app.logger.exception("Failed to post Slack AI reply")
 
 
 def _error_response(message: str, status_code: int = 400):
