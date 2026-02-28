@@ -61,6 +61,8 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "excel_to_json",
             "list_columns_in_sheet",
             "list_sheet_names",
+            "append_mapped_output_change",
+            "update_sheet_row_values",
         ],
     },
     "plugins.system_tools.markdown_pdf_plugin": {
