@@ -17,6 +17,7 @@ class OpenAIFunctionCallingPlugin:
     """Use OpenAI function calling with allowlisted plugin methods as tools."""
 
     _conversation_store: dict[str, list[dict[str, Any]]] = {}
+    _slack_images_root = "generated_data/slack_downloads/images"
 
     def __init__(self, api_key: str | None = None) -> None:
         resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
@@ -165,6 +166,16 @@ class OpenAIFunctionCallingPlugin:
 
         raise ValueError("Exceeded max tool-calling rounds without a final response")
 
+    def _build_system_prompt(self) -> str:
+        """Build system guidance with plugin-tool and Slack image directory context."""
+        return (
+            "You can call available plugin tools when needed. "
+            "Use tool calls for concrete actions and then provide a concise final answer. "
+            "Slack image attachments are saved locally under "
+            f"'{self._slack_images_root}/<channel_segment>/<YYYY>/<MM>/<DD>/' by the app. "
+            "If the user asks to reference or locate Slack images, use this directory convention."
+        )
+
     def _build_user_message(
         self,
         prompt: str,
@@ -211,10 +222,7 @@ class OpenAIFunctionCallingPlugin:
         messages: list[dict[str, Any]] = [
             {
                 "role": "system",
-                "content": (
-                    "You can call available plugin tools when needed. "
-                    "Use tool calls for concrete actions and then provide a concise final answer."
-                ),
+                "content": self._build_system_prompt(),
             },
             self._build_user_message(prompt, image_data_urls),
         ]
@@ -257,7 +265,16 @@ class OpenAIFunctionCallingPlugin:
 
         key = conversation_id.strip()
         history = self._conversation_store.setdefault(key, [])
-        messages = [*history, self._build_user_message(prompt, image_data_urls)]
+        messages = [*history]
+        if not any(
+            isinstance(message, dict)
+            and message.get("role") == "system"
+            and isinstance(message.get("content"), str)
+            and "Slack image attachments are saved locally" in message.get("content", "")
+            for message in messages
+        ):
+            messages.insert(0, {"role": "system", "content": self._build_system_prompt()})
+        messages.append(self._build_user_message(prompt, image_data_urls))
 
         final_text, executed_tool_calls = self._execute_chat_turn(
             messages,

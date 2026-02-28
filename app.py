@@ -40,6 +40,7 @@ WORKFLOW_REF_PATTERN = re.compile(r"^\$\{steps\.([^\.]+)\.result(?:\.(.+))?\}$")
 SLACK_EVENT_TTL_SECONDS = 300
 SLACK_MAX_IMAGE_BYTES = 5 * 1024 * 1024
 SLACK_MAX_IMAGE_COUNT = 3
+SLACK_IMAGE_SAVE_BASE_DIR = os.getenv("SLACK_IMAGE_SAVE_BASE_DIR", "generated_data")
 _processed_slack_events: dict[str, float] = {}
 _processed_slack_events_lock = threading.Lock()
 
@@ -181,6 +182,64 @@ def _download_slack_binary_file(url: str, bot_token: str, max_bytes: int = SLACK
     return None, ""
 
 
+def _sanitize_slack_filename(name: str) -> str:
+    """Return a filesystem-safe filename while preserving extension when possible."""
+    candidate = Path(name).name.strip() if isinstance(name, str) else ""
+    if not candidate:
+        candidate = "image"
+
+    sanitized = re.sub(r"[^A-Za-z0-9._-]", "_", candidate)
+    sanitized = sanitized.strip("._")
+    if not sanitized:
+        sanitized = "image"
+    return sanitized
+
+
+def _guess_image_extension(content_type: str, fallback_name: str) -> str:
+    """Choose a file extension based on content type or existing filename."""
+    suffix = Path(fallback_name).suffix.lower()
+    if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}:
+        return suffix
+
+    mapping = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+        "image/bmp": ".bmp",
+    }
+    return mapping.get(content_type.lower().strip(), ".png")
+
+
+def _save_slack_image_copy(
+    binary_data: bytes,
+    original_name: str,
+    content_type: str,
+    channel: str | None,
+) -> str | None:
+    """Save downloaded Slack image bytes under generated_data with nested folders."""
+    if not isinstance(binary_data, bytes) or not binary_data:
+        return None
+
+    channel_segment = str(channel).strip() if isinstance(channel, str) and channel.strip() else "unknown_channel"
+    channel_segment = re.sub(r"[^A-Za-z0-9_-]", "_", channel_segment)
+    timestamp = time.strftime("%Y/%m/%d")
+
+    base_dir = Path(SLACK_IMAGE_SAVE_BASE_DIR).resolve()
+    target_dir = (base_dir / "slack_downloads" / "images" / channel_segment / timestamp).resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = _sanitize_slack_filename(original_name)
+    stem = Path(safe_name).stem or "image"
+    extension = _guess_image_extension(content_type, safe_name)
+
+    unique_suffix = str(int(time.time() * 1000))
+    target_path = target_dir / f"{stem}_{unique_suffix}{extension}"
+    target_path.write_bytes(binary_data)
+    return str(target_path)
+
+
 def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | None) -> tuple[str, str, list[str]]:
     """Build prompt/reply snippets and image data URLs from Slack files when available."""
     files = event.get("files")
@@ -193,7 +252,9 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
     file_lines: list[str] = []
     file_content_lines: list[str] = []
     image_data_urls: list[str] = []
+    saved_image_paths: list[str] = []
     reply_items: list[str] = []
+    channel = event.get("channel")
     for file_item in files:
         if not isinstance(file_item, dict):
             app.logger.info("Skipping non-dict file item in Slack event")
@@ -250,6 +311,16 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
                 mime = detected_content_type if detected_content_type.startswith("image/") else mimetype.lower()
                 if not mime.startswith("image/"):
                     mime = "image/png"
+
+                try:
+                    saved_path = _save_slack_image_copy(binary_data, name, mime, channel if isinstance(channel, str) else None)
+                except Exception as exc:
+                    app.logger.warning("Failed to save Slack image locally (%s): %s", name, exc)
+                    saved_path = None
+                if isinstance(saved_path, str) and saved_path:
+                    saved_image_paths.append(saved_path)
+                    file_lines[-1] = f"{file_lines[-1]}; saved_as={saved_path}"
+
                 encoded = base64.b64encode(binary_data).decode("ascii")
                 image_data_urls.append(f"data:{mime};base64,{encoded}")
                 app.logger.info("Attached image captured for OpenAI vision input: %s", name)
@@ -271,6 +342,9 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
             f"\n\nSlack attached image count for analysis: {len(image_data_urls)}"
         )
         app.logger.info("Slack file context includes %s image(s) for OpenAI vision", len(image_data_urls))
+    if saved_image_paths:
+        prompt_suffix += "\n\nSaved local image copies:\n" + "\n".join(f"- {path}" for path in saved_image_paths)
+        app.logger.info("Saved %s Slack image(s) under local generated_data path", len(saved_image_paths))
     reply_suffix = "\n\nAttachments in your message: " + ", ".join(reply_items)
     return prompt_suffix, reply_suffix, image_data_urls
 

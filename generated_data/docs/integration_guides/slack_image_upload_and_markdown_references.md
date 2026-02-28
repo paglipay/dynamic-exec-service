@@ -1,0 +1,48 @@
+# Slack Image Upload and Markdown Reference Guide
+
+This guide explains how Slack image attachments are saved locally and how Markdown files should reference them.
+
+## Local save location (current behavior)
+
+Slack image files are persisted under `generated_data` using this directory pattern:
+
+`target_dir = (base_dir / "slack_downloads" / "images" / channel_segment / timestamp).resolve()`
+
+Where:
+- `base_dir` defaults to `generated_data`
+- `channel_segment` is a sanitized Slack channel identifier (for example `C01FMQVG5RU`)
+- `timestamp` is date-based nested folders: `YYYY/MM/DD`
+
+Example output path:
+
+`generated_data/slack_downloads/images/C01FMQVG5RU/2026/02/28/sample_1740780000000.png`
+
+## Important reference rule
+
+Any file that needs to reference these saved images should reference that location.
+
+When creating Markdown (`.md`) in your workflows or tools, image links should point to paths under:
+
+`generated_data/slack_downloads/images/...`
+
+or
+
+`slack_downloads/images/...`
+
+The OpenAI integration prompt now includes this directory convention so agent responses can reference the right location.
+
+## Markdown authoring examples
+
+### 1) Direct path under generated_data
+
+`![Switch Photo](generated_data/slack_downloads/images/C01FMQVG5RU/2026/02/28/sample.png)`
+
+### 2) Relative root under base_dir
+
+`![Switch Photo](slack_downloads/images/C01FMQVG5RU/2026/02/28/sample.png)`
+
+## Notes
+
+- Nested directories are created automatically when Slack images are saved.
+- Any markdown/image-link normalization should be handled by the caller workflow or prompt logic.
+- Remote URLs (`http://`, `https://`, `data:`) are left unchanged.
