@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 class TextFileCRUDPlugin:
-    """CRUD operations for .txt files within a base directory."""
+    """CRUD operations for .txt/.md files within a base directory."""
 
     def __init__(self, base_dir: str = "generated_data") -> None:
         if not isinstance(base_dir, str) or not base_dir:
@@ -17,8 +17,8 @@ class TextFileCRUDPlugin:
     def _resolve_filename(self, filename: str) -> Path:
         if not isinstance(filename, str) or not filename:
             raise ValueError("filename must be a non-empty string")
-        if not filename.endswith(".txt"):
-            raise ValueError("Only .txt files are allowed")
+        if not filename.endswith((".txt", ".md")):
+            raise ValueError("Only .txt and .md files are allowed")
         if "/" in filename or "\\" in filename:
             raise ValueError("filename must not contain path separators")
 
@@ -59,5 +59,9 @@ class TextFileCRUDPlugin:
         return {"status": "success", "action": "delete", "filename": filename}
 
     def list_text_files(self):
-        files = sorted(path.name for path in self.base_dir.glob("*.txt") if path.is_file())
+        files = sorted(
+            path.name
+            for path in self.base_dir.iterdir()
+            if path.is_file() and path.suffix in {".txt", ".md"}
+        )
         return {"status": "success", "action": "list", "files": files}
