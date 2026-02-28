@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 from typing import Any
 
 from openai import OpenAI
@@ -18,6 +19,8 @@ class OpenAISDKPlugin:
     _conversation_store: dict[str, list[dict[str, str]]] = {}
     _filename_pattern = re.compile(r"([\"'`]*[A-Za-z0-9][A-Za-z0-9 _\-.]*\.(?:txt|md)[\"'`]*)", re.IGNORECASE)
     _default_joke_text = "Why don't scientists trust atoms? Because they make up everything!"
+    _default_markdown_base_dir = Path("generated_data").resolve()
+    _default_system_prompt_markdown = "README.md"
 
     def __init__(self, api_key: str | None = None) -> None:
         resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
@@ -112,11 +115,47 @@ class OpenAISDKPlugin:
         except ValueError as exc:
             return f"I couldn't create '{filename}': {exc}"
 
+    def _load_markdown_system_prompt(self, markdown_file: str | None) -> str | None:
+        """Load markdown text from file for use as a system prompt."""
+        target_markdown = markdown_file
+        if target_markdown is None:
+            target_markdown = self._default_system_prompt_markdown
+        if not isinstance(target_markdown, str) or not target_markdown.strip():
+            raise ValueError("markdown_file must be a non-empty string when provided")
+
+        candidate = Path(target_markdown.strip())
+        if candidate.suffix.lower() != ".md":
+            raise ValueError("markdown_file must point to a .md file")
+
+        if candidate.is_absolute():
+            resolved_path = candidate.resolve()
+        else:
+            parts = candidate.parts
+            if parts and parts[0].lower() == self._default_markdown_base_dir.name.lower():
+                candidate = Path(*parts[1:]) if len(parts) > 1 else Path("")
+            resolved_path = (self._default_markdown_base_dir / candidate).resolve()
+        if not resolved_path.exists() or not resolved_path.is_file():
+            raise ValueError("markdown_file does not exist")
+
+        try:
+            content = resolved_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(f"Failed to read markdown_file: {exc}") from exc
+
+        if not content.strip():
+            raise ValueError("markdown_file is empty")
+
+        return (
+            f"Additional system context from markdown file '{resolved_path.name}':\n\n"
+            f"{content.strip()}"
+        )
+
     def generate_text(
         self,
         prompt: str,
         model: str = "gpt-4.1-mini",
         include_tools_context: bool = True,
+        markdown_file: str | None = None,
     ) -> dict[str, Any]:
         """Generate text from a prompt and return normalized response content."""
         if not isinstance(prompt, str) or not prompt.strip():
@@ -129,6 +168,10 @@ class OpenAISDKPlugin:
         input_messages: list[dict[str, str]] = [{"role": "user", "content": prompt.strip()}]
         if include_tools_context:
             input_messages.insert(0, {"role": "system", "content": self._build_tools_awareness_prompt()})
+        markdown_system_prompt = self._load_markdown_system_prompt(markdown_file)
+        if isinstance(markdown_system_prompt, str):
+            insert_index = 1 if include_tools_context else 0
+            input_messages.insert(insert_index, {"role": "system", "content": markdown_system_prompt})
 
         try:
             response = self.client.responses.create(
@@ -156,6 +199,7 @@ class OpenAISDKPlugin:
         prompt: str,
         model: str = "gpt-4.1-mini",
         include_tools_context: bool = True,
+        markdown_file: str | None = None,
     ) -> dict[str, Any]:
         """Generate text while preserving per-conversation history in memory."""
         if not isinstance(conversation_id, str) or not conversation_id.strip():
@@ -172,6 +216,10 @@ class OpenAISDKPlugin:
         request_messages = [*history, {"role": "user", "content": prompt.strip()}]
         if include_tools_context:
             request_messages.insert(0, {"role": "system", "content": self._build_tools_awareness_prompt()})
+        markdown_system_prompt = self._load_markdown_system_prompt(markdown_file)
+        if isinstance(markdown_system_prompt, str):
+            insert_index = 1 if include_tools_context else 0
+            request_messages.insert(insert_index, {"role": "system", "content": markdown_system_prompt})
 
         try:
             response = self.client.responses.create(
@@ -203,6 +251,7 @@ class OpenAISDKPlugin:
         prompt: str,
         model: str = "gpt-4.1-mini",
         include_tools_context: bool = True,
+        markdown_file: str | None = None,
     ) -> dict[str, Any]:
         """Reply to a prompt, executing allowlisted plugin actions when appropriate."""
         if not isinstance(conversation_id, str) or not conversation_id.strip():
@@ -235,6 +284,7 @@ class OpenAISDKPlugin:
             prompt.strip(),
             model.strip(),
             include_tools_context,
+            markdown_file,
         )
         result["action_executed"] = False
         return result
