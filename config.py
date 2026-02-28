@@ -63,6 +63,12 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "list_sheet_names",
         ],
     },
+    "plugins.system_tools.markdown_pdf_plugin": {
+        "class": "MarkdownPDFPlugin",
+        "methods": [
+            "markdown_to_pdf",
+        ],
+    },
     "plugins.integrations.slack_plugin": {
         "class": "SlackPlugin",
         "methods": [
