@@ -1,0 +1,25 @@
+{
+  "module": "plugins.plugin_generator",
+  "class": "PluginGenerator",
+  "method": "create_plugin",
+  "constructor_args": {},
+  "args": [
+    {
+      "plugin_name": "generated_data_plugin",
+      "class_name": "GeneratedDataPlugin",
+      "overwrite": true,
+      "methods": [
+        {
+          "method_name": "required_packages",
+          "parameters": [],
+          "body": "return ['pandas', 'requests']"
+        },
+        {
+          "method_name": "transform",
+          "parameters": ["x"],
+          "body": "return x"
+        }
+      ]
+    }
+  ]
+}

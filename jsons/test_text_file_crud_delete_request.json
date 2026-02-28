@@ -1,0 +1,9 @@
+{
+  "module": "plugins.text_file_crud_plugin",
+  "class": "TextFileCRUDPlugin",
+  "method": "delete_text",
+  "constructor_args": {
+    "base_dir": "generated_data"
+  },
+  "args": ["notes.txt"]
+}

@@ -1,0 +1,14 @@
+{
+  "module": "plugins.plugin_generator",
+  "class": "PluginGenerator",
+  "method": "create_plugin",
+  "constructor_args": {},
+  "args": [
+    {
+      "plugin_name": "text_file_crud_plugin",
+      "class_name": "TextFileCRUDPlugin",
+      "template": "text_file_crud",
+      "overwrite": true
+    }
+  ]
+}

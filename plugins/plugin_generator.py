@@ -30,14 +30,37 @@ class PluginGenerator:
         class_name = plugin_definition.get("class_name")
         methods = plugin_definition.get("methods")
         overwrite = plugin_definition.get("overwrite", False)
+        template = plugin_definition.get("template")
 
         self._validate_identifier(plugin_name, "plugin_name")
         self._validate_identifier(class_name, "class_name")
 
-        if not isinstance(methods, list) or not methods:
-            raise ValueError("methods must be a non-empty list")
         if not isinstance(overwrite, bool):
             raise ValueError("overwrite must be a boolean")
+        if template is not None and not isinstance(template, str):
+            raise ValueError("template must be a string")
+
+        class_source: str
+        if template:
+            if template != "text_file_crud":
+                raise ValueError("Unsupported template")
+            class_source = self._build_text_file_crud_template(class_name)
+        else:
+            if not isinstance(methods, list) or not methods:
+                raise ValueError("methods must be a non-empty list")
+
+            method_sources: list[str] = []
+            for method in methods:
+                method_sources.append(self._build_method_source(method))
+
+            class_source = (
+                '"""Generated plugin module."""\n\n\n'
+                f"class {class_name}:\n"
+                "    \"\"\"Auto-generated plugin class.\"\"\"\n\n"
+                "    def __init__(self) -> None:\n"
+                "        pass\n\n"
+                f"{'\n\n'.join(method_sources)}\n"
+            )
 
         plugin_filename = f"{plugin_name}.py"
         plugin_path = (self.plugins_dir / plugin_filename).resolve()
@@ -47,19 +70,6 @@ class PluginGenerator:
         if plugin_path.exists() and not overwrite:
             raise ValueError("Plugin file already exists")
 
-        method_sources: list[str] = []
-        for method in methods:
-            method_sources.append(self._build_method_source(method))
-
-        class_source = (
-            '"""Generated plugin module."""\n\n\n'
-            f"class {class_name}:\n"
-            "    \"\"\"Auto-generated plugin class.\"\"\"\n\n"
-            "    def __init__(self) -> None:\n"
-            "        pass\n\n"
-            f"{'\n\n'.join(method_sources)}\n"
-        )
-
         plugin_path.write_text(class_source, encoding="utf-8")
 
         return {
@@ -68,6 +78,63 @@ class PluginGenerator:
             "plugin_file": plugin_filename,
             "class_name": class_name,
         }
+
+    def _build_text_file_crud_template(self, class_name: str) -> str:
+        """Build source for a safe text-file CRUD plugin template."""
+        return (
+            '"""Generated text file CRUD plugin module."""\n\n'
+            "from __future__ import annotations\n\n"
+            "from pathlib import Path\n\n\n"
+            f"class {class_name}:\n"
+            "    \"\"\"CRUD operations for .txt files within a base directory.\"\"\"\n\n"
+            "    def __init__(self, base_dir: str = \"generated_data\") -> None:\n"
+            "        if not isinstance(base_dir, str) or not base_dir:\n"
+            "            raise ValueError(\"base_dir must be a non-empty string\")\n"
+            "        self.base_dir = Path(base_dir).resolve()\n"
+            "        self.base_dir.mkdir(parents=True, exist_ok=True)\n\n"
+            "    def _resolve_filename(self, filename: str) -> Path:\n"
+            "        if not isinstance(filename, str) or not filename:\n"
+            "            raise ValueError(\"filename must be a non-empty string\")\n"
+            "        if not filename.endswith(\".txt\"):\n"
+            "            raise ValueError(\"Only .txt files are allowed\")\n"
+            "        if \"/\" in filename or \"\\\\\" in filename:\n"
+            "            raise ValueError(\"filename must not contain path separators\")\n"
+            "\n"
+            "        file_path = (self.base_dir / filename).resolve()\n"
+            "        if file_path.parent != self.base_dir:\n"
+            "            raise ValueError(\"Invalid file path\")\n"
+            "        return file_path\n\n"
+            "    def create_text(self, filename: str, content: str):\n"
+            "        if not isinstance(content, str):\n"
+            "            raise ValueError(\"content must be a string\")\n"
+            "        file_path = self._resolve_filename(filename)\n"
+            "        if file_path.exists():\n"
+            "            raise ValueError(\"File already exists\")\n"
+            "        file_path.write_text(content, encoding=\"utf-8\")\n"
+            "        return {\"status\": \"success\", \"action\": \"create\", \"filename\": filename}\n\n"
+            "    def read_text(self, filename: str):\n"
+            "        file_path = self._resolve_filename(filename)\n"
+            "        if not file_path.exists():\n"
+            "            raise ValueError(\"File does not exist\")\n"
+            "        return {\"status\": \"success\", \"action\": \"read\", \"filename\": filename, \"content\": file_path.read_text(encoding=\"utf-8\")}\n\n"
+            "    def update_text(self, filename: str, content: str):\n"
+            "        if not isinstance(content, str):\n"
+            "            raise ValueError(\"content must be a string\")\n"
+            "        file_path = self._resolve_filename(filename)\n"
+            "        if not file_path.exists():\n"
+            "            raise ValueError(\"File does not exist\")\n"
+            "        file_path.write_text(content, encoding=\"utf-8\")\n"
+            "        return {\"status\": \"success\", \"action\": \"update\", \"filename\": filename}\n\n"
+            "    def delete_text(self, filename: str):\n"
+            "        file_path = self._resolve_filename(filename)\n"
+            "        if not file_path.exists():\n"
+            "            raise ValueError(\"File does not exist\")\n"
+            "        file_path.unlink()\n"
+            "        return {\"status\": \"success\", \"action\": \"delete\", \"filename\": filename}\n\n"
+            "    def list_text_files(self):\n"
+            "        files = sorted(path.name for path in self.base_dir.glob(\"*.txt\") if path.is_file())\n"
+            "        return {\"status\": \"success\", \"action\": \"list\", \"files\": files}\n"
+        )
 
     def _validate_identifier(self, value: Any, field_name: str) -> None:
         """Validate Python identifier values and reject keywords."""

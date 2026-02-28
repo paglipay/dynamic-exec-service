@@ -14,9 +14,23 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
         "class": "SampleModule",
         "methods": ["add", "process"],
     },
+    "plugins.local_http_module": {
+        "class": "LocalHTTPModule",
+        "methods": ["post_execute"],
+    },
     "plugins.generated_math_plugin": {
         "class": "GeneratedMathPlugin",
         "methods": ["multiply", "greet"],
+    },
+    "plugins.text_file_crud_plugin": {
+        "class": "TextFileCRUDPlugin",
+        "methods": [
+            "create_text",
+            "read_text",
+            "update_text",
+            "delete_text",
+            "list_text_files",
+        ],
     },
     "plugins.ssh_module": {
         "class": "SSHModule",

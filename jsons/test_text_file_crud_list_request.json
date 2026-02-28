@@ -1,0 +1,9 @@
+{
+  "module": "plugins.text_file_crud_plugin",
+  "class": "TextFileCRUDPlugin",
+  "method": "list_text_files",
+  "constructor_args": {
+    "base_dir": "generated_data"
+  },
+  "args": []
+}
