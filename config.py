@@ -40,4 +40,13 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
         "class": "PluginGenerator",
         "methods": ["create_plugin"],
     },
+    "plugins.system_tools.terminal_introspection_plugin": {
+        "class": "TerminalIntrospectionPlugin",
+        "methods": [
+            "get_environment_summary",
+            "list_directory",
+            "discover_folder_structure",
+            "pip_freeze",
+        ],
+    },
 }

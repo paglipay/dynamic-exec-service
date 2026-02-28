@@ -1,0 +1,9 @@
+{
+  "module": "plugins.system_tools.terminal_introspection_plugin",
+  "class": "TerminalIntrospectionPlugin",
+  "method": "discover_folder_structure",
+  "constructor_args": {
+    "base_dir": "."
+  },
+  "args": [null, 3, 500]
+}

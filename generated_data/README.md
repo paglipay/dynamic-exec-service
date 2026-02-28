@@ -80,6 +80,17 @@ Note: only plugins listed in `config.ALLOWED_MODULES` are invokable through the 
   - methods: `create_plugin(plugin_definition)`
   - purpose: generate safe plugin source files from validated definitions/templates.
 
+- `plugins.system_tools.terminal_introspection_plugin` → class `TerminalIntrospectionPlugin`
+  - methods: `get_environment_summary`, `list_directory`, `discover_folder_structure`, `pip_freeze`
+  - purpose: cross-platform, read-only local environment introspection (Windows/Linux compatible).
+
+## Terminal introspection request examples
+- `jsons/terminal_list_directory_request.json`
+- `jsons/terminal_discover_structure_request.json`
+- `jsons/terminal_pip_freeze_request.json`
+
+These examples can be posted to `/execute` to inspect the running environment without enabling unrestricted shell execution.
+
 ### Present but currently not allowlisted
 - `plugins.generated_data_plugin` (not listed in `config.ALLOWED_MODULES`, so not executable via API).
 

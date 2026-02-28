@@ -1,0 +1,9 @@
+{
+  "module": "plugins.system_tools.terminal_introspection_plugin",
+  "class": "TerminalIntrospectionPlugin",
+  "method": "pip_freeze",
+  "constructor_args": {
+    "base_dir": "."
+  },
+  "args": []
+}
