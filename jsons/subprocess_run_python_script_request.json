@@ -1,0 +1,15 @@
+{
+  "module": "plugins.system_tools.subprocess_plugin",
+  "class": "SubprocessPlugin",
+  "method": "run_python_script",
+  "constructor_args": {
+    "base_dir": ".",
+    "allow_outside_base_dir": true
+  },
+  "args": [
+    "C:/Users/Paul/Documents/Projects/paramiko/excel_to_netmiko_r1.py",
+    [],
+    null,
+    60
+  ]
+}

@@ -49,6 +49,12 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "pip_freeze",
         ],
     },
+    "plugins.system_tools.subprocess_plugin": {
+        "class": "SubprocessPlugin",
+        "methods": [
+            "run_python_script",
+        ],
+    },
     "plugins.integrations.slack_plugin": {
         "class": "SlackPlugin",
         "methods": [

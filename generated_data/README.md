@@ -53,7 +53,8 @@ Typical success response:
 Handled by `SlackEventAdapter` when `SIGNING_SECRET` is set.
 
 - If `SIGNING_SECRET` is missing, Slack event subscriptions are disabled and the app logs a warning.
-- Current handler listens for `message` events, ignores duplicate deliveries, and replies via function-calling using `plugins.integrations.openai_plugin`.
+- Current handler listens for `message` events, accepts normal messages plus `file_share`, ignores duplicate deliveries, and replies via function-calling using `plugins.integrations.openai_plugin`.
+- For file attachments, it extracts metadata from `event["files"]` and attempts to download text-like files (`.txt`, `.md`, `text/*`) using `SLACK_BOT_TOKEN` so content can be included in the AI prompt.
 
 ## Allowlisted plugins (current)
 Only these module/class/method combinations are executable via API:
@@ -80,6 +81,10 @@ Only these module/class/method combinations are executable via API:
 - `plugins.system_tools.terminal_introspection_plugin` → `TerminalIntrospectionPlugin`
   - methods: `get_environment_summary`, `list_directory`, `discover_folder_structure`, `pip_freeze`
   - purpose: cross-platform read-only environment introspection
+
+- `plugins.system_tools.subprocess_plugin` → `SubprocessPlugin`
+  - methods: `run_python_script`
+  - purpose: run Python scripts via subprocess (can allow script paths outside base directory)
 
 - `plugins.integrations.slack_plugin` → `SlackPlugin`
   - methods: `post_message`
@@ -108,6 +113,7 @@ Only these module/class/method combinations are executable via API:
 - `terminal_list_directory_request.json`
 - `terminal_discover_structure_request.json`
 - `terminal_pip_freeze_request.json`
+- `subprocess_run_python_script_request.json`
 
 ### Slack example
 - `slack_send_joke_of_day_general_request.json`
@@ -143,6 +149,12 @@ Slack replies will continue the same conversation memory while the app process r
 - `SLACK_OPENAI_MODEL` (default `gpt-4.1-mini`)
 - `SLACK_OPENAI_MAX_TOOL_ROUNDS` (default `5`)
 - `SLACK_CONVERSATION_ID` (optional fixed thread id)
+- `SLACK_BOT_TOKEN` (required for posting replies and downloading private file attachments)
+
+### Slack attachment behavior
+- If an attached file is downloadable text, file content is included in prompt context.
+- If download fails or content is non-text/HTML fallback, only metadata is included.
+- Debug logs in `app.py` show file detection, download attempts, content-type checks, and duplicate-event suppression.
 
 ## Present but not allowlisted
 - `plugins.generated_data_plugin` is present but not listed in `config.ALLOWED_MODULES`.
