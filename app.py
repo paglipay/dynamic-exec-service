@@ -8,6 +8,8 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from urllib import error as urlerror, request as urlrequest
+from urllib.parse import urljoin
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
@@ -68,6 +70,130 @@ def _is_duplicate_slack_event(event_data: dict[str, Any], event: dict[str, Any])
         return False
 
 
+def _download_slack_text_file(url: str, bot_token: str, max_chars: int = 12000) -> str | None:
+    """Download a Slack private text file and return a bounded UTF-8 string."""
+    if not isinstance(url, str) or not url.strip():
+        return None
+    if not isinstance(bot_token, str) or not bot_token.strip():
+        return None
+
+    current_url = url.strip()
+    auth_header = f"Bearer {bot_token.strip()}"
+    for redirect_count in range(6):
+        req = urlrequest.Request(
+            current_url,
+            headers={"Authorization": auth_header},
+            method="GET",
+        )
+        try:
+            app.logger.info("Attempting Slack file download from private URL")
+            with urlrequest.urlopen(req, timeout=20) as response:
+                status = getattr(response, "status", 200)
+                content_type = str(response.headers.get("Content-Type", "")).lower()
+
+                if status in {301, 302, 303, 307, 308}:
+                    location = response.headers.get("Location")
+                    if not location:
+                        app.logger.warning("Slack file redirect missing Location header")
+                        return None
+                    current_url = urljoin(current_url, location)
+                    app.logger.info("Following Slack file redirect to %s", current_url)
+                    continue
+
+                content = response.read().decode("utf-8", errors="replace")
+                app.logger.info("Slack file download succeeded; bytes=%s content_type=%s", len(content), content_type)
+
+                if "text/html" in content_type or "<!doctype html" in content.lower()[:500]:
+                    app.logger.warning("Slack file download returned HTML instead of raw text file")
+                    return None
+
+                return content[:max_chars]
+        except urlerror.HTTPError as exc:
+            if exc.code in {301, 302, 303, 307, 308}:
+                location = exc.headers.get("Location") if exc.headers else None
+                if location:
+                    current_url = urljoin(current_url, location)
+                    app.logger.info("Following Slack file redirect via HTTPError to %s", current_url)
+                    continue
+            app.logger.warning("Slack file download failed with HTTP %s: %s", exc.code, exc)
+            return None
+        except urlerror.URLError as exc:
+            app.logger.warning("Slack file download failed: %s", exc)
+            return None
+
+        if redirect_count >= 5:
+            break
+
+    app.logger.warning("Slack file download exceeded redirect limit")
+    return None
+
+
+def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | None) -> tuple[str, str]:
+    """Build prompt and reply snippets from Slack file metadata and text content when available."""
+    files = event.get("files")
+    if not isinstance(files, list) or not files:
+        app.logger.info("No Slack files attached on this event")
+        return "", ""
+
+    app.logger.info("Slack files detected: count=%s", len(files))
+
+    file_lines: list[str] = []
+    file_content_lines: list[str] = []
+    reply_items: list[str] = []
+    for file_item in files:
+        if not isinstance(file_item, dict):
+            app.logger.info("Skipping non-dict file item in Slack event")
+            continue
+
+        name = str(file_item.get("name") or "(unnamed)")
+        filetype = str(file_item.get("filetype") or file_item.get("mimetype") or "unknown")
+        mimetype = str(file_item.get("mimetype") or "")
+        title = str(file_item.get("title") or "")
+        url_private = str(file_item.get("url_private_download") or file_item.get("url_private") or "")
+
+        details = f"name={name}; type={filetype}"
+        if title:
+            details += f"; title={title}"
+        if url_private:
+            details += f"; url_private={url_private}"
+        file_lines.append(details)
+        reply_items.append(name)
+
+        is_text_candidate = (
+            name.lower().endswith((".txt", ".md"))
+            or filetype.lower() in {"text", "txt", "markdown", "md"}
+            or mimetype.startswith("text/")
+        )
+        if is_text_candidate and url_private and isinstance(slack_bot_token, str) and slack_bot_token.strip():
+            file_text = _download_slack_text_file(url_private, slack_bot_token)
+            if isinstance(file_text, str) and file_text.strip():
+                app.logger.info("Attached text file content captured: %s", name)
+                file_content_lines.append(f"File '{name}' content:\n{file_text.strip()}")
+            else:
+                app.logger.info("Attached text file could not be read: %s", name)
+        else:
+            app.logger.info(
+                "Skipping file content fetch for %s (text_candidate=%s, has_url=%s, has_token=%s)",
+                name,
+                is_text_candidate,
+                bool(url_private),
+                bool(isinstance(slack_bot_token, str) and slack_bot_token.strip()),
+            )
+
+    if not file_lines:
+        app.logger.info("No usable Slack file metadata extracted")
+        return "", ""
+
+    prompt_suffix = "\n\nSlack attached files metadata:\n" + "\n".join(f"- {line}" for line in file_lines)
+    if file_content_lines:
+        prompt_suffix += "\n\nSlack attached text file contents:\n" + "\n\n".join(file_content_lines)
+        app.logger.info("Slack file context includes %s file content block(s)", len(file_content_lines))
+    else:
+        app.logger.info("Slack file context includes metadata only (no downloadable text content)")
+    reply_suffix = "\n\nAttachments in your message: " + ", ".join(reply_items)
+    return prompt_suffix, reply_suffix
+
+
 if slack_event_adapter is not None:
     @slack_event_adapter.on("message")
     def handle_slack_message(event_data: dict[str, Any]) -> None:
@@ -77,7 +203,9 @@ if slack_event_adapter is not None:
             return
 
         subtype = event.get("subtype")
-        if subtype is not None:
+        app.logger.info("Slack message event received: subtype=%s", subtype)
+        if subtype not in {None, "file_share"}:
+            app.logger.info("Skipping Slack event due to unsupported subtype=%s", subtype)
             return
 
         if event.get("bot_id"):
@@ -85,9 +213,13 @@ if slack_event_adapter is not None:
 
         channel = event.get("channel")
         text = event.get("text", "")
+        slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
+        file_prompt_suffix, file_reply_suffix = _extract_slack_file_context(event, slack_bot_token)
         if not isinstance(channel, str) or not channel:
             return
-        if not isinstance(text, str) or not text.strip():
+        if not isinstance(text, str):
+            return
+        if not text.strip() and not file_prompt_suffix:
             return
 
         if _is_duplicate_slack_event(event_data, event):
@@ -130,7 +262,7 @@ if slack_event_adapter is not None:
             ai_result = executor.call_method(
                 "plugins.integrations.openai_plugin",
                 "generate_with_function_calls_and_history",
-                [conversation_id, text.strip(), model_name, max_tool_rounds],
+                [conversation_id, (text.strip() or "Please analyze attached files.") + file_prompt_suffix, model_name, max_tool_rounds],
             )
             if isinstance(ai_result, dict):
                 reply_text = str(ai_result.get("text", "")).strip()
@@ -140,10 +272,12 @@ if slack_event_adapter is not None:
             app.logger.exception("Failed to generate Slack AI reply")
             reply_text = "Sorry, I couldn't generate a reply right now."
 
+        if reply_text and file_reply_suffix:
+            reply_text = f"{reply_text}{file_reply_suffix}"
+
         if not reply_text:
             return
 
-        slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
         if not isinstance(slack_bot_token, str) or not slack_bot_token.strip():
             app.logger.warning("SLACK_BOT_TOKEN is not set; cannot post Slack reply")
             return
