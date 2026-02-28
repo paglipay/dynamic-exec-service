@@ -1,0 +1,13 @@
+{
+  "module": "plugins.integrations.slack_plugin",
+  "class": "SlackPlugin",
+  "method": "post_message",
+  "constructor_args": {
+    "bot_token": "xoxb-your-slack-bot-token",
+    "default_channel": "#general"
+  },
+  "args": [
+    "#general",
+    "Joke of the day: Why do programmers prefer dark mode? Because light attracts bugs."
+  ]
+}

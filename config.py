@@ -49,4 +49,10 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "pip_freeze",
         ],
     },
+    "plugins.integrations.slack_plugin": {
+        "class": "SlackPlugin",
+        "methods": [
+            "post_message",
+        ],
+    },
 }
