@@ -1,0 +1,12 @@
+{
+  "module": "plugins.system_tools.excel_plugin",
+  "class": "ExcelPlugin",
+  "method": "list_sheet_names",
+  "constructor_args": {
+    "base_dir": "generated_data",
+    "allow_outside_base_dir": true
+  },
+  "args": [
+    "C:/Users/Paul/Documents/Projects/paramiko/temp.xlsx"
+  ]
+}

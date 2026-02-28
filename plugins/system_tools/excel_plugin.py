@@ -207,3 +207,25 @@ class ExcelPlugin:
             "first_row_column_names": column_names,
             "first_data_row": first_data_row,
         })
+
+    def list_sheet_names(self, file_path: str) -> dict[str, Any]:
+        """Return all sheet names for a workbook."""
+        excel_path = self._resolve_path(file_path)
+        if not excel_path.exists() or not excel_path.is_file():
+            raise ValueError("file_path does not exist")
+        if excel_path.suffix.lower() not in {".xlsx", ".xlsm", ".xls"}:
+            raise ValueError("file_path must be an Excel file (.xlsx/.xlsm/.xls)")
+
+        try:
+            workbook = pd.ExcelFile(excel_path)
+        except Exception as exc:
+            raise ValueError(f"Failed to open Excel file: {exc}") from exc
+
+        sheet_names = [str(name) for name in workbook.sheet_names]
+        return {
+            "status": "success",
+            "action": "list_sheet_names",
+            "file_path": str(excel_path),
+            "sheet_count": int(len(sheet_names)),
+            "sheet_names": sheet_names,
+        }

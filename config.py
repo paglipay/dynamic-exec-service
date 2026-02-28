@@ -60,6 +60,7 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
         "methods": [
             "excel_to_json",
             "list_columns_in_sheet",
+            "list_sheet_names",
         ],
     },
     "plugins.integrations.slack_plugin": {
