@@ -1,0 +1,7 @@
+{
+  "module": "plugins.generated_math_plugin",
+  "class": "GeneratedMathPlugin",
+  "method": "multiply",
+  "constructor_args": {},
+  "args": [6, 7]
+}

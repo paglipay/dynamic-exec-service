@@ -1,0 +1,24 @@
+{
+  "stop_on_error": true,
+  "steps": [
+    {
+      "id": "sum",
+      "module": "plugins.sample_module",
+      "class": "SampleModule",
+      "method": "add",
+      "constructor_args": {
+        "name": "demo",
+        "data": "seed"
+      },
+      "args": [5, 7]
+    },
+    {
+      "id": "multiply",
+      "module": "plugins.generated_math_plugin",
+      "class": "GeneratedMathPlugin",
+      "method": "multiply",
+      "constructor_args": {},
+      "args": ["${steps.sum.result}", 3]
+    }
+  ]
+}

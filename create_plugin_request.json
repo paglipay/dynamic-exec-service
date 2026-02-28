@@ -1,0 +1,40 @@
+{
+  "module": "plugins.plugin_generator",
+  "class": "PluginGenerator",
+  "method": "create_plugin",
+  "constructor_args": {},
+  "args": [
+    {
+      "plugin_name": "generated_math_plugin",
+      "class_name": "GeneratedMathPlugin",
+      "overwrite": true,
+      "methods": [
+        {
+          "method_name": "multiply",
+          "parameters": ["x", "y"],
+          "body": "return x * y"
+        },
+        {
+          "method_name": "add",
+          "parameters": ["x", "y"],
+          "body": "return x + y"
+        },
+        {
+          "method_name": "subtract",
+          "parameters": ["x", "y"],
+          "body": "return x - y"
+        },
+        {
+          "method_name": "divide",
+          "parameters": ["x", "y"],
+          "body": "return x / y if y != 0 else 'Cannot divide by zero'"
+        },
+        {
+          "method_name": "greet",
+          "parameters": ["name"],
+          "body": "return f'Hello, {name}'"
+        }
+      ]
+    }
+  ]
+}
