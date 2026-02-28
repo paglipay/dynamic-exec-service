@@ -2,3 +2,4 @@ flask
 paramiko
 slackeventsapi
 python-dotenv
+openai

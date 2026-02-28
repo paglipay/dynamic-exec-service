@@ -55,4 +55,17 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "post_message",
         ],
     },
+    "plugins.integrations.openai_http_plugin": {
+        "class": "OpenAIHTTPPlugin",
+        "methods": [
+            "generate_text",
+        ],
+    },
+    "plugins.integrations.openai_sdk_plugin": {
+        "class": "OpenAISDKPlugin",
+        "methods": [
+            "generate_text",
+            "generate_text_with_history",
+        ],
+    },
 }

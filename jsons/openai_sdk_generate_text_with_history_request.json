@@ -1,0 +1,13 @@
+{
+  "module": "plugins.integrations.openai_sdk_plugin",
+  "class": "OpenAISDKPlugin",
+  "method": "generate_text_with_history",
+  "constructor_args": {
+    "api_key": "sk-your-openai-api-key"
+  },
+  "args": [
+    "demo-chat-1",
+    "Remember this: my favorite language is Python.",
+    "gpt-4.1-mini"
+  ]
+}

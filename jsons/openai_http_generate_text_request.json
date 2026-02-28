@@ -1,0 +1,12 @@
+{
+  "module": "plugins.integrations.openai_http_plugin",
+  "class": "OpenAIHTTPPlugin",
+  "method": "generate_text",
+  "constructor_args": {
+    "api_key": "sk-your-openai-api-key"
+  },
+  "args": [
+    "Tell me a short joke about Python programming.",
+    "gpt-4.1-mini"
+  ]
+}
