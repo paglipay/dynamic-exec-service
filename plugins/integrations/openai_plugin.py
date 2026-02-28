@@ -171,6 +171,8 @@ class OpenAIFunctionCallingPlugin:
         return (
             "You can call available plugin tools when needed. "
             "Use tool calls for concrete actions and then provide a concise final answer. "
+            "You are running inside a tool-enabled environment with access to local files through allowlisted plugins. "
+            "If a user provides a local file path, do not claim you cannot access local files; call the appropriate tool instead. "
             "Slack image attachments are saved locally under "
             f"'{self._slack_images_root}/<channel_segment>/<YYYY>/<MM>/<DD>/' by the app. "
             "If the user asks to reference or locate Slack images, use this directory convention."
