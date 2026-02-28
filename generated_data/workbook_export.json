@@ -1,6 +1,6 @@
 [
   {
-    "mac": "b8a4.4fb7.d076",
-    "sh_lldp_entry_out": "--- sh cdp entry axis-b8a44fb7d076 ---\n-------------------------\nDevice ID: axis-b8a44fb7d076\nEntry address(es): \n  IP address: 172.25.241.88\nPlatform: Linux,  Capabilities: Host \nInterface: GigabitEthernet1/0/7,  Port ID (outgoing port): eth0\nHoldtime : 98 sec\n\nVersion :\nAXIS P3738-PLE Panoramic Camera 12.6.104\n\nadvertisement version: 2\nPeer Source MAC: b8a4.4fb7.d076\n\n"
+    "mac": "b8a4.4fb5.810e",
+    "sh_lldp_entry_out": "--- sh cdp entry axis-b8a44fb5810e ---\n-------------------------\nDevice ID: axis-b8a44fb5810e\nEntry address(es): \n  IP address: 10.230.57.230\nPlatform: Linux,  Capabilities: Host \nInterface: GigabitEthernet1/0/30,  Port ID (outgoing port): eth0\nHoldtime : 117 sec\n\nVersion :\nAXIS P3738-PLE Panoramic Camera 11.7.61\n\nadvertisement version: 2\nPeer Source MAC: b8a4.4fb5.810e\nPower drawn: 30.000 Watts\nPower request id: 1, Power management id: 1\nPower request levels are:30000 0 0 0 0 \n\n"
   }
 ]

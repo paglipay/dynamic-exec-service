@@ -95,8 +95,8 @@ Only these module/class/method combinations are executable via API:
   - purpose: run Python scripts via subprocess (can allow script paths outside base directory)
 
 - `plugins.system_tools.excel_plugin` → `ExcelPlugin`
-  - methods: `excel_to_json`
-  - purpose: read an Excel sheet, optionally select columns/filter rows, and save output to a `.json` file
+  - methods: `excel_to_json`, `list_sheets_metadata`
+  - purpose: read workbook/sheet data, export filtered rows to `.json`, and inspect workbook sheet metadata
 
 - `plugins.integrations.slack_plugin` → `SlackPlugin`
   - methods: `post_message`
@@ -120,7 +120,19 @@ Only these module/class/method combinations are executable via API:
 - `create_text_file_crud_plugin_request.json`
 - `md_file_crud_create_request.json`
 - `excel_to_json_request.json`
+- `excel_list_sheets_metadata_request.json`
 - `test_generated_math_plugin_request.json`
+
+### Excel metadata response notes
+- `excel_to_json` now includes `column_names` in its success payload.
+- `list_sheets_metadata` returns workbook-level metadata:
+  - `sheet_count`
+  - `sheets[]` entries with:
+    - `sheet_index`, `sheet_name`
+    - `row_count`, `column_count`
+    - `column_names`
+    - `first_row_column_names` (mirrors parsed header names)
+    - `first_data_row` (first row of data values, if present)
 
 ### SSH examples
 - `ssh_list_directory_request.json`

@@ -385,8 +385,9 @@ def execute() -> Any:
         return jsonify({"status": "success", "result": result})
     except ValueError as exc:
         return _error_response(str(exc), status_code=400)
-    except (ImportError, AttributeError, TypeError):
-        return _error_response("Invalid execution request", status_code=400)
+    except (ImportError, AttributeError, TypeError) as exc:
+        message = str(exc) if str(exc) else "Invalid execution request"
+        return _error_response(message, status_code=400)
     except Exception:
         app.logger.exception("Unhandled execution error")
         return _error_response("Internal server error", status_code=500)

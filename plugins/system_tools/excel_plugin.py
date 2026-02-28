@@ -70,6 +70,34 @@ class ExcelPlugin:
 
         return filtered
 
+    def _to_json_safe(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: self._to_json_safe(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [self._to_json_safe(item) for item in value]
+        if value is None:
+            return None
+
+        try:
+            if pd.isna(value):
+                return None
+        except Exception:
+            pass
+
+        if hasattr(value, "isoformat") and callable(getattr(value, "isoformat")):
+            try:
+                return value.isoformat()
+            except Exception:
+                pass
+
+        if hasattr(value, "item") and callable(getattr(value, "item")):
+            try:
+                return value.item()
+            except Exception:
+                pass
+
+        return value
+
     def excel_to_json(
         self,
         file_path: str,
@@ -113,7 +141,7 @@ class ExcelPlugin:
         if filter_by:
             frame = self._apply_filters(frame, filter_by)
 
-        records = frame.where(pd.notna(frame), None).to_dict(orient="records")
+        records = self._to_json_safe(frame.where(pd.notna(frame), None).to_dict(orient="records"))
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -126,8 +154,56 @@ class ExcelPlugin:
             "action": "excel_to_json",
             "file_path": str(excel_path),
             "sheet": sheet,
+            "column_names": [str(column) for column in frame.columns.tolist()],
             "selected_columns": columns if columns is not None else "all",
             "filters_applied": len(filter_by) if isinstance(filter_by, list) else 0,
             "row_count": len(records),
             "save_as": str(output_path),
         }
+
+    def list_columns_in_sheet(self, file_path: str, sheet: str | int = 0) -> dict[str, Any]:
+        """Return column metadata for a single sheet in a workbook."""
+        excel_path = self._resolve_path(file_path)
+        if not excel_path.exists() or not excel_path.is_file():
+            raise ValueError("file_path does not exist")
+        if excel_path.suffix.lower() not in {".xlsx", ".xlsm", ".xls"}:
+            raise ValueError("file_path must be an Excel file (.xlsx/.xlsm/.xls)")
+        if not isinstance(sheet, (str, int)):
+            raise ValueError("sheet must be a string or integer")
+
+        try:
+            workbook = pd.ExcelFile(excel_path)
+        except Exception as exc:
+            raise ValueError(f"Failed to open Excel file: {exc}") from exc
+
+        if isinstance(sheet, int):
+            if sheet < 0 or sheet >= len(workbook.sheet_names):
+                raise ValueError(f"sheet index out of range: {sheet}")
+            sheet_index = sheet
+            sheet_name = workbook.sheet_names[sheet]
+        else:
+            if sheet not in workbook.sheet_names:
+                raise ValueError(f"sheet not found: {sheet}")
+            sheet_name = sheet
+            sheet_index = workbook.sheet_names.index(sheet)
+
+        try:
+            frame = pd.read_excel(excel_path, sheet_name=sheet_name)
+        except Exception as exc:
+            raise ValueError(f"Failed to read sheet '{sheet_name}': {exc}") from exc
+
+        column_names = [str(column) for column in frame.columns.tolist()]
+        first_data_row = self._to_json_safe(frame.iloc[0].tolist()) if not frame.empty else []
+
+        return self._to_json_safe({
+            "status": "success",
+            "action": "list_columns_in_sheet",
+            "file_path": str(excel_path),
+            "sheet_index": sheet_index,
+            "sheet_name": sheet_name,
+            "row_count": int(len(frame)),
+            "column_count": int(len(column_names)),
+            "column_names": column_names,
+            "first_row_column_names": column_names,
+            "first_data_row": first_data_row,
+        })
