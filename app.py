@@ -2,18 +2,55 @@
 
 from __future__ import annotations
 
+import os
 import re
+from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
 from flask import Flask, jsonify, request
+from slackeventsapi import SlackEventAdapter
 
 from executor.engine import JSONExecutor
 from executor.permissions import validate_request
 
 
 app = Flask(__name__)
+try:
+    signing_secret = os.environ["SIGNING_SECRET"]
+except KeyError:
+    env_path = Path(".") / ".env"
+    load_dotenv(dotenv_path=env_path)
+    signing_secret = os.getenv("SIGNING_SECRET")
+
+slack_event_adapter: SlackEventAdapter | None = None
+if signing_secret:
+    slack_event_adapter = SlackEventAdapter(
+        signing_secret, "/slack/events", app
+    )
+else:
+    app.logger.warning("SIGNING_SECRET is not set; Slack event subscriptions are disabled")
 executor = JSONExecutor()
 WORKFLOW_REF_PATTERN = re.compile(r"^\$\{steps\.([^\.]+)\.result(?:\.(.+))?\}$")
+
+
+if slack_event_adapter is not None:
+    @slack_event_adapter.on("message")
+    def handle_slack_message(event_data: dict[str, Any]) -> None:
+        """Handle Slack message events with minimal logging."""
+        event = event_data.get("event", {}) if isinstance(event_data, dict) else {}
+        if not isinstance(event, dict):
+            return
+
+        if event.get("subtype") == "bot_message":
+            return
+
+        app.logger.info(
+            "Slack message received: channel=%s user=%s text=%s",
+            event.get("channel"),
+            event.get("user"),
+            event.get("text", ""),
+        )
 
 
 def _error_response(message: str, status_code: int = 400):
