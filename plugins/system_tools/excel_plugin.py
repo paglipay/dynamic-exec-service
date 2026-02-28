@@ -12,7 +12,7 @@ import pandas as pd
 class ExcelPlugin:
     """Read Excel sheets and save selected data as JSON."""
 
-    def __init__(self, base_dir: str = ".", allow_outside_base_dir: bool = True) -> None:
+    def __init__(self, base_dir: str = "generated_data", allow_outside_base_dir: bool = True) -> None:
         if not isinstance(base_dir, str) or not base_dir.strip():
             raise ValueError("base_dir must be a non-empty string")
         if not isinstance(allow_outside_base_dir, bool):

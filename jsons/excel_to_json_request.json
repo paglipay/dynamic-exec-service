@@ -3,7 +3,7 @@
   "class": "ExcelPlugin",
   "method": "excel_to_json",
   "constructor_args": {
-    "base_dir": ".",
+    "base_dir": "generated_data",
     "allow_outside_base_dir": true
   },
   "args": [
@@ -17,6 +17,6 @@
         "value": "b8a4.4fb1.e3cf"
       }
     ],
-    "generated_data/workbook_export.json"
+    "workbook_export.json"
   ]
 }

@@ -15,15 +15,21 @@ class TextFileCRUDPlugin:
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def _resolve_filename(self, filename: str) -> Path:
-        if not isinstance(filename, str) or not filename:
+        if not isinstance(filename, str) or not filename.strip():
             raise ValueError("filename must be a non-empty string")
-        if not filename.endswith((".txt", ".md", ".json")):
+        normalized_filename = filename.strip()
+        if not normalized_filename.endswith((".txt", ".md", ".json")):
             raise ValueError("Only .txt, .md, and .json files are allowed")
-        candidate = Path(filename)
-        if candidate.is_absolute():
-            raise ValueError("filename must be a relative path")
+        candidate = Path(normalized_filename)
 
-        file_path = (self.base_dir / candidate).resolve()
+        if candidate.is_absolute():
+            file_path = candidate.resolve()
+        else:
+            candidate_parts = candidate.parts
+            if candidate_parts and candidate_parts[0] == self.base_dir.name:
+                candidate = Path(*candidate_parts[1:]) if len(candidate_parts) > 1 else Path("")
+            file_path = (self.base_dir / candidate).resolve()
+
         try:
             file_path.relative_to(self.base_dir)
         except ValueError as exc:
