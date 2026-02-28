@@ -53,7 +53,7 @@ Typical success response:
 Handled by `SlackEventAdapter` when `SIGNING_SECRET` is set.
 
 - If `SIGNING_SECRET` is missing, Slack event subscriptions are disabled and the app logs a warning.
-- Current handler listens for `message` events and logs channel/user/text for non-bot messages.
+- Current handler listens for `message` events, ignores duplicate deliveries, and replies via function-calling using `plugins.integrations.openai_plugin`.
 
 ## Allowlisted plugins (current)
 Only these module/class/method combinations are executable via API:
@@ -89,9 +89,13 @@ Only these module/class/method combinations are executable via API:
   - style: raw HTTP request to OpenAI Responses API
 
 - `plugins.integrations.openai_sdk_plugin` → `OpenAISDKPlugin`
-  - methods: `generate_text`, `generate_text_with_history`
+  - methods: `generate_text`, `generate_text_with_history`, `reply_with_plugins`
   - style: official OpenAI SDK
   - memory: `generate_text_with_history` keeps conversation history in process memory by `conversation_id`
+
+- `plugins.integrations.openai_plugin` → `OpenAIFunctionCallingPlugin`
+  - methods: `generate_with_function_calls`, `generate_with_function_calls_and_history`
+  - style: OpenAI function-calling (`tool_choice=auto`) that maps allowlisted plugin methods into callable tools
 
 ## Useful request JSON files in jsons/
 
@@ -112,6 +116,33 @@ Only these module/class/method combinations are executable via API:
 - `openai_http_generate_text_request.json`
 - `openai_sdk_generate_text_request.json`
 - `openai_sdk_generate_text_with_history_request.json`
+- `openai_function_calling_generate_request.json`
+
+### Workflow examples
+- `workflows/workflow_read_readme_openai_sdk_reply.json`
+- `workflows/workflow_read_notes_openai_sdk_reply.json`
+
+## Reading files like notes.txt with OpenAI SDK
+`OpenAISDKPlugin` does not directly read files from disk. Use workflow chaining:
+
+1. Read file content with `TextFileCRUDPlugin.read_text`.
+2. Pass `${steps.<step_id>.result.content}` into `OpenAISDKPlugin.generate_text` or `generate_text_with_history`.
+
+Example: `workflows/workflow_read_notes_openai_sdk_reply.json` reads `generated_data/notes.txt` and sends content to `OpenAISDKPlugin`.
+
+## Priming memory for Slack with README context
+To make Slack continue a seeded memory thread:
+
+1. POST `jsons/workflows/workflow_read_readme_openai_sdk_reply.json` to `/workflow`.
+2. Set `SLACK_CONVERSATION_ID=readme-reply-thread` in environment/.env.
+3. Start/restart app and send Slack messages.
+
+Slack replies will continue the same conversation memory while the app process remains running.
+
+### Slack AI environment variables
+- `SLACK_OPENAI_MODEL` (default `gpt-4.1-mini`)
+- `SLACK_OPENAI_MAX_TOOL_ROUNDS` (default `5`)
+- `SLACK_CONVERSATION_ID` (optional fixed thread id)
 
 ## Present but not allowlisted
 - `plugins.generated_data_plugin` is present but not listed in `config.ALLOWED_MODULES`.

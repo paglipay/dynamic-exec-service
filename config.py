@@ -66,6 +66,14 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
         "methods": [
             "generate_text",
             "generate_text_with_history",
+            "reply_with_plugins",
+        ],
+    },
+    "plugins.integrations.openai_plugin": {
+        "class": "OpenAIFunctionCallingPlugin",
+        "methods": [
+            "generate_with_function_calls",
+            "generate_with_function_calls_and_history",
         ],
     },
 }

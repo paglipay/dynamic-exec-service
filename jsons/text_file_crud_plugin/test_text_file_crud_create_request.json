@@ -5,5 +5,5 @@
   "constructor_args": {
     "base_dir": "generated_data"
   },
-  "args": ["notes.txt", "Hello from CRUD plugin"]
+  "args": ["test.txt", "Hello from CRUD plugin"]
 }

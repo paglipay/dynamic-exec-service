@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from openai import OpenAI
 
 from config import ALLOWED_MODULES
+from plugins.text_file_crud_plugin import TextFileCRUDPlugin
 
 
 class OpenAISDKPlugin:
     """Generate text using the official OpenAI Python SDK."""
 
     _conversation_store: dict[str, list[dict[str, str]]] = {}
+    _filename_pattern = re.compile(r"([\"'`]*[A-Za-z0-9][A-Za-z0-9 _\-.]*\.(?:txt|md)[\"'`]*)", re.IGNORECASE)
+    _default_joke_text = "Why don't scientists trust atoms? Because they make up everything!"
 
     def __init__(self, api_key: str | None = None) -> None:
         resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
@@ -54,8 +58,59 @@ class OpenAISDKPlugin:
         return (
             "You are operating inside the Dynamic Exec Service. "
             "Only reference and suggest tools from this allowlist:\n"
-            f"{tools_text}"
+            f"{tools_text}\n\n"
+            "Important: to analyze local files (for example generated_data/notes.txt), "
+            "the caller must first fetch file content using "
+            "plugins.text_file_crud_plugin::TextFileCRUDPlugin.read_text and then pass "
+            "that text into this plugin as prompt/context."
         )
+
+    def _is_allowlisted(self, module_name: str, class_name: str, method_name: str) -> bool:
+        """Check if a module/class/method combination is allowlisted."""
+        module_config = ALLOWED_MODULES.get(module_name)
+        if module_config is None:
+            return False
+        if module_config["class"] != class_name:
+            return False
+        return method_name in module_config["methods"]
+
+    def _extract_filename_from_message(self, message: str) -> str | None:
+        """Extract and sanitize a candidate txt/md filename from free-form text."""
+        match = self._filename_pattern.search(message)
+        if match is None:
+            return None
+
+        candidate = match.group(1).strip()
+        candidate = re.sub(r"[\"'`]", "", candidate).strip()
+        if not candidate.lower().endswith((".txt", ".md")):
+            return None
+        if "/" in candidate or "\\" in candidate:
+            return None
+        return candidate
+
+    def _try_execute_plugin_action(self, message: str) -> str | None:
+        """Execute safe plugin actions inferred from user text when confidence is high."""
+        normalized = message.lower()
+        if "create" not in normalized or "file" not in normalized:
+            return None
+
+        filename = self._extract_filename_from_message(message)
+        if filename is None:
+            return None
+
+        module_name = "plugins.text_file_crud_plugin"
+        class_name = "TextFileCRUDPlugin"
+        method_name = "create_text"
+        if not self._is_allowlisted(module_name, class_name, method_name):
+            return "I couldn't create the file because that action is not allowlisted."
+
+        content = self._default_joke_text if "joke" in normalized else "Created by paulbot."
+        plugin = TextFileCRUDPlugin(base_dir="generated_data")
+        try:
+            plugin.create_text(filename, content)
+            return f"Created '{filename}' in generated_data. Added: {content}"
+        except ValueError as exc:
+            return f"I couldn't create '{filename}': {exc}"
 
     def generate_text(
         self,
@@ -141,3 +196,45 @@ class OpenAISDKPlugin:
             "text": output_text,
             "history_messages": len(history),
         }
+
+    def reply_with_plugins(
+        self,
+        conversation_id: str,
+        prompt: str,
+        model: str = "gpt-4.1-mini",
+        include_tools_context: bool = True,
+    ) -> dict[str, Any]:
+        """Reply to a prompt, executing allowlisted plugin actions when appropriate."""
+        if not isinstance(conversation_id, str) or not conversation_id.strip():
+            raise ValueError("conversation_id must be a non-empty string")
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("prompt must be a non-empty string")
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError("model must be a non-empty string")
+        if not isinstance(include_tools_context, bool):
+            raise ValueError("include_tools_context must be a boolean")
+
+        key = conversation_id.strip()
+        action_reply = self._try_execute_plugin_action(prompt.strip())
+        if action_reply is not None:
+            history = self._conversation_store.setdefault(key, [])
+            history.append({"role": "user", "content": prompt.strip()})
+            history.append({"role": "assistant", "content": action_reply})
+            return {
+                "status": "success",
+                "conversation_id": key,
+                "model": "plugin-action",
+                "response_id": None,
+                "text": action_reply,
+                "history_messages": len(history),
+                "action_executed": True,
+            }
+
+        result = self.generate_text_with_history(
+            key,
+            prompt.strip(),
+            model.strip(),
+            include_tools_context,
+        )
+        result["action_executed"] = False
+        return result

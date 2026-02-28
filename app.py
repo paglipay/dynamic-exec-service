@@ -108,28 +108,29 @@ if slack_event_adapter is not None:
             conversation_key = event.get("thread_ts") or channel
             conversation_id = f"slack:{conversation_key}"
         model_name = os.getenv("SLACK_OPENAI_MODEL", "gpt-4.1-mini")
-        include_tools_context = os.getenv("SLACK_INCLUDE_TOOLS_CONTEXT", "true").strip().lower() not in {
-            "0",
-            "false",
-            "no",
-            "off",
-        }
+        max_tool_rounds_raw = os.getenv("SLACK_OPENAI_MAX_TOOL_ROUNDS", "5").strip()
+        try:
+            max_tool_rounds = int(max_tool_rounds_raw)
+        except ValueError:
+            max_tool_rounds = 5
+        if max_tool_rounds <= 0:
+            max_tool_rounds = 5
 
         try:
             validate_request(
-                "plugins.integrations.openai_sdk_plugin",
-                "OpenAISDKPlugin",
-                "generate_text_with_history",
+                "plugins.integrations.openai_plugin",
+                "OpenAIFunctionCallingPlugin",
+                "generate_with_function_calls_and_history",
             )
             executor.instantiate(
-                "plugins.integrations.openai_sdk_plugin",
-                "OpenAISDKPlugin",
+                "plugins.integrations.openai_plugin",
+                "OpenAIFunctionCallingPlugin",
                 {},
             )
             ai_result = executor.call_method(
-                "plugins.integrations.openai_sdk_plugin",
-                "generate_text_with_history",
-                [conversation_id, text.strip(), model_name, include_tools_context],
+                "plugins.integrations.openai_plugin",
+                "generate_with_function_calls_and_history",
+                [conversation_id, text.strip(), model_name, max_tool_rounds],
             )
             if isinstance(ai_result, dict):
                 reply_text = str(ai_result.get("text", "")).strip()
