@@ -13,13 +13,65 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
 from reportlab.platypus import Image as RLImage
-from reportlab.platypus import ListFlowable, ListItem, Paragraph, Preformatted, SimpleDocTemplate, Spacer
+from reportlab.platypus import ListFlowable, ListItem, Paragraph, Preformatted, SimpleDocTemplate, Spacer, Table, TableStyle
 
 
 class MarkdownPDFPlugin:
     """Convert markdown files to simple PDF output."""
 
     _image_line_pattern = re.compile(r"^\s*!\[[^\]]*\]\(([^\)]+)\)\s*$")
+
+    def _is_markdown_table_separator(self, line: str) -> bool:
+        stripped = line.strip()
+        if "|" not in stripped:
+            return False
+
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if not cells:
+            return False
+
+        for cell in cells:
+            if not cell or not re.fullmatch(r":?-{3,}:?", cell):
+                return False
+        return True
+
+    def _parse_table_row(self, line: str) -> list[str]:
+        stripped = line.strip()
+        if not stripped:
+            return []
+
+        parts = [part.strip() for part in stripped.strip("|").split("|")]
+        return parts
+
+    def _build_table_flowable(self, rows: list[list[str]], content_width: float, body_style: ParagraphStyle) -> Table:
+        col_count = max((len(row) for row in rows), default=0)
+        if col_count <= 0:
+            raise ValueError("table has no columns")
+
+        normalized_rows: list[list[Any]] = []
+        for row in rows:
+            padded = [*row, *([""] * (col_count - len(row)))]
+            normalized_rows.append([Paragraph(self._inline_markdown_to_rml(cell), body_style) for cell in padded])
+
+        col_width = content_width / col_count
+        table = Table(normalized_rows, colWidths=[col_width] * col_count, repeatRows=1)
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F3F4F6")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 10),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D1D5DB")),
+                ]
+            )
+        )
+        return table
 
     def __init__(self, base_dir: str = "generated_data", allow_outside_base_dir: bool = True) -> None:
         if not isinstance(base_dir, str) or not base_dir.strip():
@@ -219,6 +271,33 @@ class MarkdownPDFPlugin:
                 index += 1
                 continue
 
+            if "|" in line and (index + 1) < line_count and self._is_markdown_table_separator(lines[index + 1]):
+                header_row = self._parse_table_row(line)
+                index += 2
+                table_rows: list[list[str]] = [header_row]
+
+                while index < line_count:
+                    row_line = lines[index]
+                    if not row_line.strip() or "|" not in row_line:
+                        break
+                    if self._is_markdown_table_separator(row_line):
+                        index += 1
+                        continue
+                    row = self._parse_table_row(row_line)
+                    if not row:
+                        break
+                    table_rows.append(row)
+                    index += 1
+
+                if len(table_rows) >= 1:
+                    try:
+                        flowables.append(self._build_table_flowable(table_rows, content_width, styles["body"]))
+                        flowables.append(Spacer(1, 0.1 * inch))
+                    except Exception:
+                        fallback_text = "\n".join(" | ".join(row) for row in table_rows)
+                        flowables.append(Paragraph(self._inline_markdown_to_rml(fallback_text), styles["body"]))
+                continue
+
             unordered_match = re.match(r"^\s*[-*+]\s+(.+)$", line)
             if unordered_match:
                 items: list[ListItem] = []
@@ -256,6 +335,8 @@ class MarkdownPDFPlugin:
                 if not next_line.strip():
                     break
                 if re.match(r"^\s{0,3}(#{1,6})\s+", next_line):
+                    break
+                if "|" in next_line and (index + 1) < line_count and self._is_markdown_table_separator(lines[index + 1]):
                     break
                 if re.match(r"^\s*[-*+]\s+", next_line):
                     break

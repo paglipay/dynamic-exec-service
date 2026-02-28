@@ -21,28 +21,37 @@ Example output path:
 
 Any file that needs to reference these saved images should reference that location.
 
-When creating Markdown (`.md`) in your workflows or tools, image links should point to paths under:
-
-`generated_data/slack_downloads/images/...`
-
-or
+When creating Markdown (`.md`) in your workflows or tools, **prefer base_dir-relative paths**:
 
 `slack_downloads/images/...`
+
+This is the preferred option because files you create are typically also under `generated_data` (`base_dir`), so the reference stays consistent.
+
+Alternative (also supported):
+
+`generated_data/slack_downloads/images/...`
 
 The OpenAI integration prompt now includes this directory convention so agent responses can reference the right location.
 
 ## Markdown authoring examples
 
-### 1) Direct path under generated_data
+### 1) Preferred: relative root under base_dir
+
+`![Switch Photo](slack_downloads/images/C01FMQVG5RU/2026/02/28/sample.png)`
+
+### 2) Direct path under generated_data
 
 `![Switch Photo](generated_data/slack_downloads/images/C01FMQVG5RU/2026/02/28/sample.png)`
 
-### 2) Relative root under base_dir
+### 3) Example for files created in generated_data
+
+If your markdown file is created in `generated_data` (for example `generated_data/notes.md`), reference images like:
 
 `![Switch Photo](slack_downloads/images/C01FMQVG5RU/2026/02/28/sample.png)`
 
 ## Notes
 
 - Nested directories are created automatically when Slack images are saved.
+- Prefer `slack_downloads/images/...` for portability across files created under `generated_data`.
 - Any markdown/image-link normalization should be handled by the caller workflow or prompt logic.
 - Remote URLs (`http://`, `https://`, `data:`) are left unchanged.
