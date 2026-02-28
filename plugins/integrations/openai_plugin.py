@@ -165,11 +165,35 @@ class OpenAIFunctionCallingPlugin:
 
         raise ValueError("Exceeded max tool-calling rounds without a final response")
 
+    def _build_user_message(
+        self,
+        prompt: str,
+        image_data_urls: list[str] | None,
+    ) -> dict[str, Any]:
+        """Build a user message with optional multimodal image content."""
+        if not image_data_urls:
+            return {"role": "user", "content": prompt.strip()}
+
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt.strip()}]
+        for image_url in image_data_urls:
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": image_url.strip()},
+                }
+            )
+
+        return {
+            "role": "user",
+            "content": content,
+        }
+
     def generate_with_function_calls(
         self,
         prompt: str,
         model: str = "gpt-4.1-mini",
         max_tool_rounds: int = 5,
+        image_data_urls: list[str] | None = None,
     ) -> dict[str, Any]:
         """Generate a response with plugin function-calling enabled."""
         if not isinstance(prompt, str) or not prompt.strip():
@@ -178,6 +202,11 @@ class OpenAIFunctionCallingPlugin:
             raise ValueError("model must be a non-empty string")
         if not isinstance(max_tool_rounds, int) or max_tool_rounds <= 0:
             raise ValueError("max_tool_rounds must be an integer > 0")
+        if image_data_urls is not None:
+            if not isinstance(image_data_urls, list):
+                raise ValueError("image_data_urls must be an array when provided")
+            if any(not isinstance(url, str) or not url.strip() for url in image_data_urls):
+                raise ValueError("image_data_urls must contain non-empty strings")
 
         messages: list[dict[str, Any]] = [
             {
@@ -187,7 +216,7 @@ class OpenAIFunctionCallingPlugin:
                     "Use tool calls for concrete actions and then provide a concise final answer."
                 ),
             },
-            {"role": "user", "content": prompt.strip()},
+            self._build_user_message(prompt, image_data_urls),
         ]
 
         final_text, executed_tool_calls = self._execute_chat_turn(
@@ -209,6 +238,7 @@ class OpenAIFunctionCallingPlugin:
         prompt: str,
         model: str = "gpt-4.1-mini",
         max_tool_rounds: int = 5,
+        image_data_urls: list[str] | None = None,
     ) -> dict[str, Any]:
         """Generate a response with tool calls and preserve conversation history."""
         if not isinstance(conversation_id, str) or not conversation_id.strip():
@@ -219,10 +249,15 @@ class OpenAIFunctionCallingPlugin:
             raise ValueError("model must be a non-empty string")
         if not isinstance(max_tool_rounds, int) or max_tool_rounds <= 0:
             raise ValueError("max_tool_rounds must be an integer > 0")
+        if image_data_urls is not None:
+            if not isinstance(image_data_urls, list):
+                raise ValueError("image_data_urls must be an array when provided")
+            if any(not isinstance(url, str) or not url.strip() for url in image_data_urls):
+                raise ValueError("image_data_urls must contain non-empty strings")
 
         key = conversation_id.strip()
         history = self._conversation_store.setdefault(key, [])
-        messages = [*history, {"role": "user", "content": prompt.strip()}]
+        messages = [*history, self._build_user_message(prompt, image_data_urls)]
 
         final_text, executed_tool_calls = self._execute_chat_turn(
             messages,

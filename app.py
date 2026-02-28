@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import os
 import re
 import threading
@@ -37,6 +38,8 @@ else:
 executor = JSONExecutor()
 WORKFLOW_REF_PATTERN = re.compile(r"^\$\{steps\.([^\.]+)\.result(?:\.(.+))?\}$")
 SLACK_EVENT_TTL_SECONDS = 300
+SLACK_MAX_IMAGE_BYTES = 5 * 1024 * 1024
+SLACK_MAX_IMAGE_COUNT = 3
 _processed_slack_events: dict[str, float] = {}
 _processed_slack_events_lock = threading.Lock()
 
@@ -128,17 +131,68 @@ def _download_slack_text_file(url: str, bot_token: str, max_chars: int = 12000) 
     return None
 
 
-def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | None) -> tuple[str, str]:
-    """Build prompt and reply snippets from Slack file metadata and text content when available."""
+def _download_slack_binary_file(url: str, bot_token: str, max_bytes: int = SLACK_MAX_IMAGE_BYTES) -> tuple[bytes | None, str]:
+    """Download a Slack private file as bytes with content type."""
+    if not isinstance(url, str) or not url.strip():
+        return None, ""
+    if not isinstance(bot_token, str) or not bot_token.strip():
+        return None, ""
+    if not isinstance(max_bytes, int) or max_bytes <= 0:
+        return None, ""
+
+    current_url = url.strip()
+    auth_header = f"Bearer {bot_token.strip()}"
+    for _ in range(6):
+        req = urlrequest.Request(
+            current_url,
+            headers={"Authorization": auth_header},
+            method="GET",
+        )
+        try:
+            with urlrequest.urlopen(req, timeout=25) as response:
+                status = getattr(response, "status", 200)
+                content_type = str(response.headers.get("Content-Type", "")).lower().split(";")[0].strip()
+
+                if status in {301, 302, 303, 307, 308}:
+                    location = response.headers.get("Location")
+                    if not location:
+                        return None, ""
+                    current_url = urljoin(current_url, location)
+                    continue
+
+                data = response.read(max_bytes + 1)
+                if len(data) > max_bytes:
+                    app.logger.warning("Slack binary file exceeded max allowed size")
+                    return None, ""
+
+                return data, content_type
+        except urlerror.HTTPError as exc:
+            if exc.code in {301, 302, 303, 307, 308}:
+                location = exc.headers.get("Location") if exc.headers else None
+                if location:
+                    current_url = urljoin(current_url, location)
+                    continue
+            app.logger.warning("Slack binary file download failed with HTTP %s: %s", exc.code, exc)
+            return None, ""
+        except urlerror.URLError as exc:
+            app.logger.warning("Slack binary file download failed: %s", exc)
+            return None, ""
+
+    return None, ""
+
+
+def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | None) -> tuple[str, str, list[str]]:
+    """Build prompt/reply snippets and image data URLs from Slack files when available."""
     files = event.get("files")
     if not isinstance(files, list) or not files:
         app.logger.info("No Slack files attached on this event")
-        return "", ""
+        return "", "", []
 
     app.logger.info("Slack files detected: count=%s", len(files))
 
     file_lines: list[str] = []
     file_content_lines: list[str] = []
+    image_data_urls: list[str] = []
     reply_items: list[str] = []
     for file_item in files:
         if not isinstance(file_item, dict):
@@ -180,9 +234,31 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
                 bool(isinstance(slack_bot_token, str) and slack_bot_token.strip()),
             )
 
+        is_image_candidate = (
+            mimetype.lower().startswith("image/")
+            or name.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"))
+        )
+        if (
+            is_image_candidate
+            and len(image_data_urls) < SLACK_MAX_IMAGE_COUNT
+            and url_private
+            and isinstance(slack_bot_token, str)
+            and slack_bot_token.strip()
+        ):
+            binary_data, detected_content_type = _download_slack_binary_file(url_private, slack_bot_token)
+            if isinstance(binary_data, bytes) and binary_data:
+                mime = detected_content_type if detected_content_type.startswith("image/") else mimetype.lower()
+                if not mime.startswith("image/"):
+                    mime = "image/png"
+                encoded = base64.b64encode(binary_data).decode("ascii")
+                image_data_urls.append(f"data:{mime};base64,{encoded}")
+                app.logger.info("Attached image captured for OpenAI vision input: %s", name)
+            else:
+                app.logger.info("Attached image could not be downloaded: %s", name)
+
     if not file_lines:
         app.logger.info("No usable Slack file metadata extracted")
-        return "", ""
+        return "", "", []
 
     prompt_suffix = "\n\nSlack attached files metadata:\n" + "\n".join(f"- {line}" for line in file_lines)
     if file_content_lines:
@@ -190,8 +266,13 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
         app.logger.info("Slack file context includes %s file content block(s)", len(file_content_lines))
     else:
         app.logger.info("Slack file context includes metadata only (no downloadable text content)")
+    if image_data_urls:
+        prompt_suffix += (
+            f"\n\nSlack attached image count for analysis: {len(image_data_urls)}"
+        )
+        app.logger.info("Slack file context includes %s image(s) for OpenAI vision", len(image_data_urls))
     reply_suffix = "\n\nAttachments in your message: " + ", ".join(reply_items)
-    return prompt_suffix, reply_suffix
+    return prompt_suffix, reply_suffix, image_data_urls
 
 
 if slack_event_adapter is not None:
@@ -214,12 +295,12 @@ if slack_event_adapter is not None:
         channel = event.get("channel")
         text = event.get("text", "")
         slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
-        file_prompt_suffix, file_reply_suffix = _extract_slack_file_context(event, slack_bot_token)
+        file_prompt_suffix, file_reply_suffix, image_data_urls = _extract_slack_file_context(event, slack_bot_token)
         if not isinstance(channel, str) or not channel:
             return
         if not isinstance(text, str):
             return
-        if not text.strip() and not file_prompt_suffix:
+        if not text.strip() and not file_prompt_suffix and not image_data_urls:
             return
 
         if _is_duplicate_slack_event(event_data, event):
@@ -262,7 +343,13 @@ if slack_event_adapter is not None:
             ai_result = executor.call_method(
                 "plugins.integrations.openai_plugin",
                 "generate_with_function_calls_and_history",
-                [conversation_id, (text.strip() or "Please analyze attached files.") + file_prompt_suffix, model_name, max_tool_rounds],
+                [
+                    conversation_id,
+                    (text.strip() or "Please analyze attached files.") + file_prompt_suffix,
+                    model_name,
+                    max_tool_rounds,
+                    image_data_urls,
+                ],
             )
             if isinstance(ai_result, dict):
                 reply_text = str(ai_result.get("text", "")).strip()
