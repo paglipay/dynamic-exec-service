@@ -7,25 +7,25 @@ This document describes the intended markdown documentation structure for this p
 Documentation currently lives under:
 
 ```
-generated_data/docs/
+docs/
   api_reference/
   plugin_research/
   usage_tips/
 ```
 
 Current known files include:
-- `generated_data/docs/api_reference/execute_endpoint.md`
-- `generated_data/docs/api_reference/workflow_endpoint.md`
-- `generated_data/docs/api_reference/slack_events_endpoint.md`
-- `generated_data/docs/plugin_research/generated_math_plugin.md`
-- `generated_data/docs/plugin_research/text_file_crud_plugin.md`
-- `generated_data/docs/plugin_research/ssh_module.md`
-- `generated_data/docs/usage_tips/api_usage_tips.md`
+- `docs/api_reference/execute_endpoint.md`
+- `docs/api_reference/workflow_endpoint.md`
+- `docs/api_reference/slack_events_endpoint.md`
+- `docs/plugin_research/generated_math_plugin.md`
+- `docs/plugin_research/text_file_crud_plugin.md`
+- `docs/plugin_research/ssh_module.md`
+- `docs/usage_tips/api_usage_tips.md`
 
 ## Recommended Target Structure
 
 ```
-generated_data/docs/
+docs/
   api_reference/
   plugin_research/
   workflow_examples/
@@ -36,25 +36,25 @@ generated_data/docs/
 
 ## Intent by Folder
 
-### generated_data/docs/api_reference
+### docs/api_reference
 - Endpoint-level behavior and examples for:
   - `/execute`
   - `/workflow`
   - `/slack/events`
 
-### generated_data/docs/plugin_research
+### docs/plugin_research
 - Capability notes per allowlisted plugin module/class/method.
 - Include constraints (path limits, allowed file types, auth requirements).
 
-### generated_data/docs/workflow_examples
+### docs/workflow_examples
 - Markdown explanations of workflow JSON examples from `jsons/workflows/`.
 - Explain step IDs, references like `${steps.<id>.result}`, and error handling choices.
 
-### generated_data/docs/integration_guides
+### docs/integration_guides
 - Integration playbooks for Slack, OpenAI, SSH, Excel, and subprocess usage.
 - Include required environment variables and OAuth/API scopes where relevant.
 
-### generated_data/docs/usage_tips
+### docs/usage_tips
 - Safe-operation guidance for AI agents.
 - Request-shape reminders (`constructor_args` object, `args` array).
 
