@@ -7,16 +7,19 @@
     "allow_outside_base_dir": true
   },
   "args": [
-    "C:/Users/Paul/Documents/Projects/paramiko/temp.xlsx",
-    "ad-venice-s1",
-    null,
-    [
-      {
-        "column": "mac",
-        "operator": "equals",
-        "value": "b8a4.4fb1.e3cf"
-      }
-    ],
-    "workbook_export.json"
+    {
+      "file_path": "C:/Users/Paul/Documents/Projects/paramiko/temp.xlsx",
+      "sheet": "ad-venice-s1",
+      "columns": ["mac"],
+      "filter_by": [
+        {
+          "column": "mac",
+          "operator": "equals",
+          "value": "b8a4.4fb1.e3cf"
+        }
+      ],
+      "save_as": "workbook_export.json"
+    }
   ]
 }
+

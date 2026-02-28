@@ -101,13 +101,36 @@ class ExcelPlugin:
 
     def excel_to_json(
         self,
-        file_path: str,
+        file_path: str | dict[str, Any],
         sheet: str | int = 0,
         columns: list[str] | None = None,
         filter_by: list[dict[str, Any]] | None = None,
         save_as: str = "output.json",
     ) -> dict[str, Any]:
         """Read an Excel sheet, optionally select/filter rows, and save to a JSON file."""
+        if isinstance(file_path, dict):
+            payload = file_path
+            resolved_file_path = payload.get("file_path")
+            resolved_sheet = payload.get("sheet", sheet)
+            resolved_columns = payload.get("columns", columns)
+            resolved_filter_by = payload.get("filter_by", filter_by)
+            resolved_save_as = payload.get("save_as", save_as)
+        else:
+            resolved_file_path = file_path
+            resolved_sheet = sheet
+            resolved_columns = columns
+            resolved_filter_by = filter_by
+            resolved_save_as = save_as
+
+        if not isinstance(resolved_file_path, str) or not resolved_file_path.strip():
+            raise ValueError("file_path must be a non-empty string")
+
+        file_path = resolved_file_path
+        sheet = resolved_sheet
+        columns = resolved_columns
+        filter_by = resolved_filter_by
+        save_as = resolved_save_as
+
         excel_path = self._resolve_path(file_path)
         if not excel_path.exists() or not excel_path.is_file():
             raise ValueError("file_path does not exist")
@@ -160,10 +183,25 @@ class ExcelPlugin:
             "filters_applied": len(filter_by) if isinstance(filter_by, list) else 0,
             "row_count": len(records),
             "save_as": str(output_path),
+            "save_as_content": records,
         }
 
-    def list_columns_in_sheet(self, file_path: str, sheet: str | int = 0) -> dict[str, Any]:
+    def list_columns_in_sheet(self, file_path: str | dict[str, Any], sheet: str | int = 0) -> dict[str, Any]:
         """Return column metadata for a single sheet in a workbook."""
+        if isinstance(file_path, dict):
+            payload = file_path
+            resolved_file_path = payload.get("file_path")
+            resolved_sheet = payload.get("sheet", sheet)
+        else:
+            resolved_file_path = file_path
+            resolved_sheet = sheet
+
+        if not isinstance(resolved_file_path, str) or not resolved_file_path.strip():
+            raise ValueError("file_path must be a non-empty string")
+
+        file_path = resolved_file_path
+        sheet = resolved_sheet
+
         excel_path = self._resolve_path(file_path)
         if not excel_path.exists() or not excel_path.is_file():
             raise ValueError("file_path does not exist")
@@ -209,8 +247,19 @@ class ExcelPlugin:
             "first_data_row": first_data_row,
         })
 
-    def list_sheet_names(self, file_path: str) -> dict[str, Any]:
+    def list_sheet_names(self, file_path: str | dict[str, Any]) -> dict[str, Any]:
         """Return all sheet names for a workbook."""
+        if isinstance(file_path, dict):
+            payload = file_path
+            resolved_file_path = payload.get("file_path")
+        else:
+            resolved_file_path = file_path
+
+        if not isinstance(resolved_file_path, str) or not resolved_file_path.strip():
+            raise ValueError("file_path must be a non-empty string")
+
+        file_path = resolved_file_path
+
         excel_path = self._resolve_path(file_path)
         if not excel_path.exists() or not excel_path.is_file():
             raise ValueError("file_path does not exist")

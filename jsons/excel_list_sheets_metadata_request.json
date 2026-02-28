@@ -7,7 +7,9 @@
     "allow_outside_base_dir": true
   },
   "args": [
-    "C:/Users/Paul/Documents/Projects/paramiko/temp.xlsx",
-    "r1"
+    {
+      "file_path": "C:/Users/Paul/Documents/Projects/paramiko/temp.xlsx",
+      "sheet": "r1"
+    }
   ]
 }
