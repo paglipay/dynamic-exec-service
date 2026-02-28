@@ -1,12 +1,14 @@
 {
   "module": "plugins.integrations.slack_plugin",
   "class": "SlackPlugin",
-  "method": "post_message",
+  "method": "upload_local_file",
   "constructor_args": {
     "default_channel": "#general"
   },
   "args": [
+    "./generated_data/notes.txt",
     "#general",
-    "Joke of the day: Why do programmers prefer dark mode? Because light attracts bugs."
+    "Notes Upload",
+    "Uploading local file from Dynamic Exec Service"
   ]
 }

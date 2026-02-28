@@ -67,6 +67,8 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
         "class": "SlackPlugin",
         "methods": [
             "post_message",
+            "upload_text_file",
+            "upload_local_file",
         ],
     },
     "plugins.integrations.openai_http_plugin": {

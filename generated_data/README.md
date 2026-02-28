@@ -95,11 +95,12 @@ Only these module/class/method combinations are executable via API:
   - purpose: run Python scripts via subprocess (can allow script paths outside base directory)
 
 - `plugins.system_tools.excel_plugin` → `ExcelPlugin`
-  - methods: `excel_to_json`, `list_sheets_metadata`
-  - purpose: read workbook/sheet data, export filtered rows to `.json`, and inspect workbook sheet metadata
+  - methods: `excel_to_json`, `list_columns_in_sheet`, `list_sheet_names`
+  - purpose: export sheet rows to `.json`, inspect columns for a specific sheet, and list workbook sheet names
 
 - `plugins.integrations.slack_plugin` → `SlackPlugin`
-  - methods: `post_message`
+  - methods: `post_message`, `upload_text_file`, `upload_local_file`
+  - purpose: post messages and upload text/local files using Slack's external file upload flow
 
 - `plugins.integrations.openai_http_plugin` → `OpenAIHTTPPlugin`
   - methods: `generate_text`
@@ -121,18 +122,18 @@ Only these module/class/method combinations are executable via API:
 - `md_file_crud_create_request.json`
 - `excel_to_json_request.json`
 - `excel_list_sheets_metadata_request.json`
+- `excel_list_sheet_names_request.json`
 - `test_generated_math_plugin_request.json`
 
-### Excel metadata response notes
+### Excel response notes
 - `excel_to_json` now includes `column_names` in its success payload.
-- `list_sheets_metadata` returns workbook-level metadata:
-  - `sheet_count`
-  - `sheets[]` entries with:
-    - `sheet_index`, `sheet_name`
-    - `row_count`, `column_count`
-    - `column_names`
-    - `first_row_column_names` (mirrors parsed header names)
-    - `first_data_row` (first row of data values, if present)
+- `excel_list_sheets_metadata_request.json` now calls `list_columns_in_sheet` and returns:
+  - `sheet_index`, `sheet_name`
+  - `row_count`, `column_count`
+  - `column_names`
+  - `first_row_column_names` (mirrors parsed header names)
+  - `first_data_row` (first row of data values, if present)
+- `list_sheet_names` returns workbook-level `sheet_count` and `sheet_names`.
 
 ### SSH examples
 - `ssh_list_directory_request.json`
@@ -146,6 +147,8 @@ Only these module/class/method combinations are executable via API:
 
 ### Slack example
 - `slack_send_joke_of_day_general_request.json`
+- `slack_upload_text_file_request.json`
+- `slack_upload_local_file_request.json`
 
 ### OpenAI examples
 - `openai_http_generate_text_request.json`
