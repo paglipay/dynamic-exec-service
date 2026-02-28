@@ -1,0 +1,86 @@
+{
+  "stop_on_error": true,
+  "steps": [
+    {
+      "id": "update_row_2",
+      "module": "plugins.system_tools.excel_plugin",
+      "class": "ExcelPlugin",
+      "method": "update_sheet_row_values",
+      "constructor_args": {
+        "base_dir": "generated_data",
+        "allow_outside_base_dir": true
+      },
+      "args": [
+        {
+          "file_path": "C:/Users/Paul/Documents/Projects/paramiko/temp.xlsx",
+          "sheet": "r1",
+          "row": 2,
+          "columns": [
+            "Contractor",
+            "Warranty"
+          ],
+          "values": [
+            "TEST_ROW_2",
+            "YES"
+          ],
+          "header_row": 1,
+          "save_as": "C:/Users/Paul/Documents/Projects/paramiko/sample_updated.xlsx"
+        }
+      ]
+    },
+    {
+      "id": "update_row_3",
+      "module": "plugins.system_tools.excel_plugin",
+      "class": "ExcelPlugin",
+      "method": "update_sheet_row_values",
+      "constructor_args": {
+        "base_dir": "generated_data",
+        "allow_outside_base_dir": true
+      },
+      "args": [
+        {
+          "file_path": "C:/Users/Paul/Documents/Projects/paramiko/sample_updated.xlsx",
+          "sheet": "r1",
+          "row": 3,
+          "columns": [
+            "Contractor",
+            "Warranty"
+          ],
+          "values": [
+            "TEST_ROW_3",
+            "NO"
+          ],
+          "header_row": 1,
+          "save_as": "C:/Users/Paul/Documents/Projects/paramiko/sample_updated.xlsx"
+        }
+      ]
+    },
+    {
+      "id": "update_row_4",
+      "module": "plugins.system_tools.excel_plugin",
+      "class": "ExcelPlugin",
+      "method": "update_sheet_row_values",
+      "constructor_args": {
+        "base_dir": "generated_data",
+        "allow_outside_base_dir": true
+      },
+      "args": [
+        {
+          "file_path": "C:/Users/Paul/Documents/Projects/paramiko/sample_updated.xlsx",
+          "sheet": "r1",
+          "row": 4,
+          "columns": [
+            "Contractor",
+            "Warranty"
+          ],
+          "values": [
+            "TEST_ROW_4",
+            "YES"
+          ],
+          "header_row": 1,
+          "save_as": "C:/Users/Paul/Documents/Projects/paramiko/sample_updated.xlsx"
+        }
+      ]
+    }
+  ]
+}
