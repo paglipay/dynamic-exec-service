@@ -55,6 +55,12 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "run_python_script",
         ],
     },
+    "plugins.system_tools.excel_plugin": {
+        "class": "ExcelPlugin",
+        "methods": [
+            "excel_to_json",
+        ],
+    },
     "plugins.integrations.slack_plugin": {
         "class": "SlackPlugin",
         "methods": [

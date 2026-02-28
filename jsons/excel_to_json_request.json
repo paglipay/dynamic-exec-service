@@ -1,0 +1,22 @@
+{
+  "module": "plugins.system_tools.excel_plugin",
+  "class": "ExcelPlugin",
+  "method": "excel_to_json",
+  "constructor_args": {
+    "base_dir": ".",
+    "allow_outside_base_dir": true
+  },
+  "args": [
+    "C:/Users/Paul/Documents/Projects/paramiko/temp.xlsx",
+    "ad-venice-s1",
+    null,
+    [
+      {
+        "column": "mac",
+        "operator": "equals",
+        "value": "b8a4.4fb1.e3cf"
+      }
+    ],
+    "generated_data/workbook_export.json"
+  ]
+}
