@@ -101,9 +101,19 @@ if slack_event_adapter is not None:
             text,
         )
 
-        conversation_key = event.get("thread_ts") or channel
-        conversation_id = f"slack:{conversation_key}"
+        forced_conversation_id = os.getenv("SLACK_CONVERSATION_ID", "").strip()
+        if forced_conversation_id:
+            conversation_id = forced_conversation_id
+        else:
+            conversation_key = event.get("thread_ts") or channel
+            conversation_id = f"slack:{conversation_key}"
         model_name = os.getenv("SLACK_OPENAI_MODEL", "gpt-4.1-mini")
+        include_tools_context = os.getenv("SLACK_INCLUDE_TOOLS_CONTEXT", "true").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
 
         try:
             validate_request(
@@ -119,7 +129,7 @@ if slack_event_adapter is not None:
             ai_result = executor.call_method(
                 "plugins.integrations.openai_sdk_plugin",
                 "generate_text_with_history",
-                [conversation_id, text.strip(), model_name],
+                [conversation_id, text.strip(), model_name, include_tools_context],
             )
             if isinstance(ai_result, dict):
                 reply_text = str(ai_result.get("text", "")).strip()

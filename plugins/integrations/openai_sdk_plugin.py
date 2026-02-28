@@ -7,6 +7,8 @@ from typing import Any
 
 from openai import OpenAI
 
+from config import ALLOWED_MODULES
+
 
 class OpenAISDKPlugin:
     """Generate text using the official OpenAI Python SDK."""
@@ -40,17 +42,43 @@ class OpenAISDKPlugin:
 
         return output_text.strip()
 
-    def generate_text(self, prompt: str, model: str = "gpt-4.1-mini") -> dict[str, Any]:
+    def _build_tools_awareness_prompt(self) -> str:
+        """Build a concise system prompt describing allowlisted plugin tools."""
+        tool_lines: list[str] = []
+        for module_name, module_config in sorted(ALLOWED_MODULES.items()):
+            class_name = module_config["class"]
+            methods = ", ".join(module_config["methods"])
+            tool_lines.append(f"- {module_name}::{class_name} -> [{methods}]")
+
+        tools_text = "\n".join(tool_lines)
+        return (
+            "You are operating inside the Dynamic Exec Service. "
+            "Only reference and suggest tools from this allowlist:\n"
+            f"{tools_text}"
+        )
+
+    def generate_text(
+        self,
+        prompt: str,
+        model: str = "gpt-4.1-mini",
+        include_tools_context: bool = True,
+    ) -> dict[str, Any]:
         """Generate text from a prompt and return normalized response content."""
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("prompt must be a non-empty string")
         if not isinstance(model, str) or not model.strip():
             raise ValueError("model must be a non-empty string")
+        if not isinstance(include_tools_context, bool):
+            raise ValueError("include_tools_context must be a boolean")
+
+        input_messages: list[dict[str, str]] = [{"role": "user", "content": prompt.strip()}]
+        if include_tools_context:
+            input_messages.insert(0, {"role": "system", "content": self._build_tools_awareness_prompt()})
 
         try:
             response = self.client.responses.create(
                 model=model.strip(),
-                input=prompt.strip(),
+                input=input_messages,
             )
         except Exception as exc:
             raise ValueError(f"OpenAI SDK request failed: {exc}") from exc
@@ -72,6 +100,7 @@ class OpenAISDKPlugin:
         conversation_id: str,
         prompt: str,
         model: str = "gpt-4.1-mini",
+        include_tools_context: bool = True,
     ) -> dict[str, Any]:
         """Generate text while preserving per-conversation history in memory."""
         if not isinstance(conversation_id, str) or not conversation_id.strip():
@@ -80,13 +109,14 @@ class OpenAISDKPlugin:
             raise ValueError("prompt must be a non-empty string")
         if not isinstance(model, str) or not model.strip():
             raise ValueError("model must be a non-empty string")
+        if not isinstance(include_tools_context, bool):
+            raise ValueError("include_tools_context must be a boolean")
 
         key = conversation_id.strip()
         history = self._conversation_store.setdefault(key, [])
-        request_messages = [
-            *history,
-            {"role": "user", "content": prompt.strip()},
-        ]
+        request_messages = [*history, {"role": "user", "content": prompt.strip()}]
+        if include_tools_context:
+            request_messages.insert(0, {"role": "system", "content": self._build_tools_awareness_prompt()})
 
         try:
             response = self.client.responses.create(
