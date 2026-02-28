@@ -1,0 +1,65 @@
+{
+  "stop_on_error": false,
+  "steps": [
+    {
+      "id": "whoami",
+      "module": "plugins.ssh_module",
+      "class": "SSHModule",
+      "method": "run_command",
+      "constructor_args": {
+        "hostname": "example.com",
+        "username": "your-ssh-username",
+        "password": "your-ssh-password"
+      },
+      "args": ["whoami"]
+    },
+    {
+      "id": "pwd",
+      "module": "plugins.ssh_module",
+      "class": "SSHModule",
+      "method": "run_command",
+      "constructor_args": {
+        "hostname": "example.com",
+        "username": "your-ssh-username",
+        "password": "your-ssh-password"
+      },
+      "args": ["pwd"]
+    },
+    {
+      "id": "list_home",
+      "module": "plugins.ssh_module",
+      "class": "SSHModule",
+      "method": "run_command",
+      "constructor_args": {
+        "hostname": "example.com",
+        "username": "your-ssh-username",
+        "password": "your-ssh-password"
+      },
+      "args": ["ls -la ~"]
+    },
+    {
+      "id": "python_version",
+      "module": "plugins.ssh_module",
+      "class": "SSHModule",
+      "method": "run_command",
+      "constructor_args": {
+        "hostname": "example.com",
+        "username": "your-ssh-username",
+        "password": "your-ssh-password"
+      },
+      "args": ["python --version || python3 --version"]
+    },
+    {
+      "id": "system_info",
+      "module": "plugins.ssh_module",
+      "class": "SSHModule",
+      "method": "run_command",
+      "constructor_args": {
+        "hostname": "example.com",
+        "username": "your-ssh-username",
+        "password": "your-ssh-password"
+      },
+      "args": ["uname -a"]
+    }
+  ]
+}

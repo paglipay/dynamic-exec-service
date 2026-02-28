@@ -1,0 +1,11 @@
+{
+  "module": "plugins.ssh_module",
+  "class": "SSHModule",
+  "method": "list_directory",
+  "constructor_args": {
+    "hostname": "example.com",
+    "username": "your-ssh-username",
+    "password": "your-ssh-password"
+  },
+  "args": ["."]
+}
