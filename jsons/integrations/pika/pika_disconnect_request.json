@@ -1,0 +1,7 @@
+{
+  "module": "plugins.integrations.pika_plugin",
+  "class": "PikaPlugin",
+  "method": "disconnect",
+  "constructor_args": {},
+  "args": [false]
+}

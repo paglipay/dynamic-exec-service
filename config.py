@@ -125,6 +125,9 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
     "plugins.integrations.pika_plugin": {
         "class": "PikaPlugin",
         "methods": [
+            "connect",
+            "connection_status",
+            "disconnect",
             "publish_message",
             "publish_workflow",
             "subscribe",

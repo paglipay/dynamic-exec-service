@@ -1,0 +1,16 @@
+{
+  "module": "plugins.integrations.pika_plugin",
+  "class": "PikaPlugin",
+  "method": "connect",
+  "constructor_args": {},
+  "args": [
+    {
+      "host": "localhost",
+      "port": 5672,
+      "virtual_host": "/",
+      "username": "guest",
+      "password": "guest",
+      "force_reconnect": false
+    }
+  ]
+}
