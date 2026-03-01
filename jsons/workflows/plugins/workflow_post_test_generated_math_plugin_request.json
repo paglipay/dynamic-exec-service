@@ -7,7 +7,7 @@
       "class": "LocalHTTPModule",
       "method": "post_execute",
       "constructor_args": {
-        "execute_url": "http://localhost:5000/execute"
+        "execute_url": "https://ubiquitous-space-journey-vprvj54vgv927gw-5000.app.github.dev/execute"
       },
       "args": [
         {
