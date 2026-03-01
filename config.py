@@ -78,6 +78,21 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "pdf_to_images",
         ],
     },
+    "plugins.system_tools.apscheduler_plugin": {
+        "class": "APSchedulerPlugin",
+        "methods": [
+            "start_scheduler",
+            "stop_scheduler",
+            "health",
+            "list_jobs",
+            "remove_job",
+            "get_last_run",
+            "run_workflow_now",
+            "add_interval_workflow_job",
+            "add_date_workflow_job",
+            "add_cron_workflow_job",
+        ],
+    },
     "plugins.integrations.slack_plugin": {
         "class": "SlackPlugin",
         "methods": [
