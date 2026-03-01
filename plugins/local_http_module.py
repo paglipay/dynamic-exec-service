@@ -24,8 +24,8 @@ class LocalHTTPModule:
             raise ValueError("execute_url must not include params, query, or fragment")
 
         normalized_path = parsed.path.rstrip("/")
-        if normalized_path != "/execute":
-            raise ValueError("execute_url path must be /execute")
+        if normalized_path not in {"/execute", "/workflow"}:
+            raise ValueError("execute_url path must be /execute or /workflow")
 
         self._base_url_parts = ParseResult(
             scheme=parsed.scheme,
