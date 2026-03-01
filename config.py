@@ -107,4 +107,15 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "generate_with_function_calls_and_history",
         ],
     },
+    "plugins.integrations.pika_plugin": {
+        "class": "PikaPlugin",
+        "methods": [
+            "publish_message",
+            "publish_workflow",
+            "subscribe",
+            "consume",
+            "consume_and_execute_workflow",
+            "start_consuming_workflows",
+        ],
+    },
 }

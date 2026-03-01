@@ -1,0 +1,49 @@
+{
+  "module": "plugins.integrations.pika_plugin",
+  "class": "PikaPlugin",
+  "method": "publish_workflow",
+  "constructor_args": {
+    "host": "localhost",
+    "port": 5672,
+    "virtual_host": "/",
+    "username": "guest",
+    "password": "guest"
+  },
+  "args": [
+    {
+      "queue_name": "workflow_queue",
+      "workflow_id": "wf-sample-001",
+      "max_retries": 2,
+      "meta": {
+        "source": "manual-test",
+        "purpose": "pika workflow queue MVP"
+      },
+      "workflow": {
+        "stop_on_error": true,
+        "steps": [
+          {
+            "id": "multiply_step",
+            "module": "plugins.generated_math_plugin",
+            "class": "GeneratedMathPlugin",
+            "method": "multiply",
+            "constructor_args": {},
+            "args": [6, 7]
+          },
+          {
+            "id": "format_step",
+            "module": "plugins.sample_module",
+            "class": "SampleModule",
+            "method": "process",
+            "constructor_args": {
+              "name": "workflow_result",
+              "data": "${steps.multiply_step.result}"
+            },
+            "args": []
+          }
+        ]
+      },
+      "durable": true,
+      "persistent": true
+    }
+  ]
+}

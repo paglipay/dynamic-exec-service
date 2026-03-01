@@ -9,6 +9,7 @@ Documentation currently lives under:
 ```
 generated_data/docs/
   api_reference/
+  integration_guides/
   plugin_research/
   usage_tips/
 ```
@@ -21,7 +22,10 @@ Current known files include:
 - `generated_data/docs/plugin_research/text_file_crud_plugin.md`
 - `generated_data/docs/plugin_research/ssh_module.md`
 - `generated_data/docs/plugin_research/excel_plugin.md`
+- `generated_data/docs/integration_guides/slack_image_detection_and_openai_handoff.md`
+- `generated_data/docs/integration_guides/slack_image_upload_and_markdown_references.md`
 - `generated_data/docs/usage_tips/api_usage_tips.md`
+- `generated_data/docs/usage_tips/capability_gap_process.md`
 
 ## Recommended Target Structure
 
