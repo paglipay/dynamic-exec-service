@@ -1,7 +1,7 @@
 {
   "module": "plugins.system_tools.excel_plugin",
   "class": "ExcelPlugin",
-  "method": "list_columns_in_sheet",
+  "method": "update_sheet_row_values",
   "constructor_args": {
     "base_dir": "generated_data",
     "allow_outside_base_dir": true
@@ -9,7 +9,12 @@
   "args": [
     {
       "file_path": "C:/Users/Paul/Documents/Projects/paramiko/temp.xlsx",
-      "sheet": "r1"
+      "sheet": "r1",
+      "row": 2,
+      "columns": ["Contractor", "Warranty"],
+      "values": ["TEST", "TEST"],
+      "header_row": 1,
+      "save_as": "C:/Users/Paul/Documents/Projects/paramiko/sample_updated.xlsx"
     }
   ]
 }

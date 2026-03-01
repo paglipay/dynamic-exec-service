@@ -1,0 +1,17 @@
+{
+  "module": "plugins.system_tools.pdf_plugin",
+  "class": "PDFPlugin",
+  "method": "pdf_to_text",
+  "constructor_args": {
+    "base_dir": "generated_data",
+    "allow_outside_base_dir": true
+  },
+  "args": [
+    {
+      "file_path": "C:/Users/Paul/Documents/Projects/paramiko/sample.pdf",
+      "pages": [1, 2],
+      "max_chars": 12000,
+      "save_as": "pdf_extracted/sample_text.txt"
+    }
+  ]
+}

@@ -8,6 +8,10 @@ Handles Slack Events via the SlackEventAdapter if `SIGNING_SECRET` is set.
 - Ignores duplicate deliveries
 - Replies via function-calling using `OpenAIFunctionCallingPlugin`
 - Downloads text-like file attachments using `SLACK_BOT_TOKEN` to include content in AI prompts
+- Detects image attachments, saves local copies, and passes image data URLs to OpenAI for analysis
+
+## Related Guides
+- [Slack Image Detection and OpenAI Analysis Handoff](../integration_guides/slack_image_detection_and_openai_handoff.md)
 
 ## Environment Variables
 - `SIGNING_SECRET` (required for Slack event handling)
