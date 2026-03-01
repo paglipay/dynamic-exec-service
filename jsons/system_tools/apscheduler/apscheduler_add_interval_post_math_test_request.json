@@ -1,0 +1,42 @@
+{
+  "module": "plugins.system_tools.apscheduler_plugin",
+  "class": "APSchedulerPlugin",
+  "method": "add_interval_workflow_job",
+  "constructor_args": {
+    "timezone": "UTC",
+    "auto_start": true
+  },
+  "args": [
+    {
+      "job_id": "post_math_test",
+      "seconds": 60,
+      "replace_existing": true,
+      "workflow": {
+        "stop_on_error": true,
+        "steps": [
+          {
+            "id": "post_math",
+            "module": "plugins.local_http_module",
+            "class": "LocalHTTPModule",
+            "method": "post_execute",
+            "constructor_args": {
+              "execute_url": "http://localhost:5000/execute"
+            },
+            "args": [
+              {
+                "module": "plugins.generated_math_plugin",
+                "class": "GeneratedMathPlugin",
+                "method": "multiply",
+                "constructor_args": {},
+                "args": [
+                  6,
+                  7
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

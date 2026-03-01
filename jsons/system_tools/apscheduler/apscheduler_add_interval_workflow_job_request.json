@@ -9,7 +9,7 @@
   "args": [
     {
       "job_id": "interval-math-60s",
-      "seconds": 60,
+      "seconds": 3,
       "replace_existing": true,
       "workflow": {
         "stop_on_error": true,
