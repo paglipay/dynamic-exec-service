@@ -198,7 +198,7 @@ Use `list_text_files` to get recursive relative file paths.
 ## Priming memory for Slack with README context
 To make Slack continue a seeded memory thread:
 
-1. POST `jsons/workflows/workflow_read_readme_openai_sdk_reply.json` to `/workflow`.
+1. POST `jsons/workflows/openai/workflow_read_readme_openai_sdk_reply.json` to `/workflow`.
 2. Set `SLACK_CONVERSATION_ID=readme-reply-thread` in environment/.env.
 3. Start/restart app and send Slack messages.
 
