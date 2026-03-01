@@ -17,7 +17,7 @@ class OpenAIFunctionCallingPlugin:
     """Use OpenAI function calling with allowlisted plugin methods as tools."""
 
     _conversation_store: dict[str, list[dict[str, Any]]] = {}
-    _slack_images_root = "generated_data/slack_downloads/images"
+    _slack_images_root = "generated_data/slack_downloads"
 
     def __init__(self, api_key: str | None = None) -> None:
         resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
@@ -48,6 +48,52 @@ class OpenAIFunctionCallingPlugin:
 
         return mapping
 
+    def _build_tool_description(
+        self,
+        module_name: str,
+        class_name: str,
+        method_name: str,
+    ) -> str:
+        """Build method-specific usage guidance for each tool."""
+        if (
+            module_name == "plugins.integrations.gmail_plugin"
+            and class_name == "GmailPlugin"
+            and method_name == "send_email"
+        ):
+            return (
+                "Send an email through Gmail. "
+                "Use args in this exact order: "
+                "[to, subject, body_text, cc_or_null, bcc_or_null, attachments_or_null]. "
+                "attachments_or_null must be null or a list of file paths, for example "
+                "['generated_data/notes.txt']. "
+                "When the user asks for an attachment, include a non-empty attachments list."
+            )
+
+        if (
+            module_name == "plugins.integrations.gmail_plugin"
+            and class_name == "GmailPlugin"
+            and method_name == "list_messages"
+        ):
+            return (
+                "List Gmail messages. "
+                "Use args in this order: [query, max_results, label_ids_or_null]."
+            )
+
+        if (
+            module_name == "plugins.integrations.gmail_plugin"
+            and class_name == "GmailPlugin"
+            and method_name == "get_message"
+        ):
+            return (
+                "Fetch one Gmail message. "
+                "Use args in this order: [message_id, format, metadata_headers_or_null]."
+            )
+
+        return (
+            f"Call plugin method {module_name}::{class_name}.{method_name}. "
+            "Provide constructor_args and args when needed."
+        )
+
     def _build_tools(self) -> list[dict[str, Any]]:
         """Build OpenAI tool definitions from allowlisted plugin methods."""
         tools: list[dict[str, Any]] = []
@@ -57,9 +103,10 @@ class OpenAIFunctionCallingPlugin:
                     "type": "function",
                     "function": {
                         "name": tool_name,
-                        "description": (
-                            f"Call plugin method {module_name}::{class_name}.{method_name}. "
-                            "Provide constructor_args and args when needed."
+                        "description": self._build_tool_description(
+                            module_name,
+                            class_name,
+                            method_name,
                         ),
                         "parameters": {
                             "type": "object",
@@ -173,8 +220,10 @@ class OpenAIFunctionCallingPlugin:
             "Use tool calls for concrete actions and then provide a concise final answer. "
             "You are running inside a tool-enabled environment with access to local files through allowlisted plugins. "
             "If a user provides a local file path, do not claim you cannot access local files; call the appropriate tool instead. "
+            "If the user asks to send an email attachment, include attachment file paths in Gmail send_email args. "
+            "Do not claim an attachment was sent unless the Gmail tool result shows attachment_count > 0. "
             "Slack image attachments are saved locally under "
-            f"'{self._slack_images_root}/<channel_segment>/<YYYY>/<MM>/<DD>/' by the app. "
+            f"'{self._slack_images_root}/' as a flat directory by the app. "
             "If the user asks to reference or locate Slack images, use this directory convention."
         )
 

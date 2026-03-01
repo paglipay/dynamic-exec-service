@@ -1,0 +1,10 @@
+{
+  "module": "plugins.integrations.gmail_plugin",
+  "class": "GmailPlugin",
+  "method": "get_profile",
+  "constructor_args": {
+    "credentials_path": "credentials.json",
+    "token_path": "gmail_token.json"
+  },
+  "args": []
+}
