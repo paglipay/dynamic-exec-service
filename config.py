@@ -71,6 +71,13 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "markdown_to_pdf",
         ],
     },
+    "plugins.system_tools.pdf_plugin": {
+        "class": "PDFPlugin",
+        "methods": [
+            "pdf_to_text",
+            "pdf_to_images",
+        ],
+    },
     "plugins.integrations.slack_plugin": {
         "class": "SlackPlugin",
         "methods": [

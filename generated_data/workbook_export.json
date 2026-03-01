@@ -1,34 +1,5 @@
 [
   {
-    "switch_ip_address": "10.30.40.13",
-    "mac": "b8a4.4fb1.e3cf",
-    "sh_mac": "sh mac add | i b8a4.4fb1.e3cf",
-    "sh_mac_out": "--- sh mac add | i b8a4.4fb1.e3cf ---\n  50    b8a4.4fb1.e3cf    DYNAMIC     Gi2/0/40\n",
-    "port_channel": "Gi2/0/40",
-    "sh_int_etherchannel": "sh int Gi2/0/40 etherchannel",
-    "sh_int_etherchannel_out": "--- sh int Gi2/0/40 etherchannel ---\nEtherchannel not enabled on this port\n",
-    "interface": "Gi2/0/40",
-    "sh_lldp": "sh cdp neighbor Gi2/0/40 detail",
-    "sh_lldp_out": "--- sh cdp neighbor Gi2/0/40 detail ---\n-------------------------\nDevice ID: axis-b8a44fb1e3cf\nEntry address(es): \n  IP address: 172.25.231.149\nPlatform: Linux,  Capabilities: Host \nInterface: GigabitEthernet2/0/40,  Port ID (outgoing port): eth0\nHoldtime : 108 sec\n\nVersion :\nAXIS P4707-PLVE Panoramic Camera 12.6.104\n\nadvertisement version: 2\nPeer Source MAC: b8a4.4fb1.e3cf\nPower drawn: 22.000 Watts\nPower request id: 1, Power management id: 2\nPower request levels are:22000 0 0 0 0 \n\n\nTotal cdp entries displayed : 1\n",
-    "lldp_entry_device": "axis-b8a44fb1e3cf",
-    "sh_lldp_entry": "sh cdp entry axis-b8a44fb1e3cf",
-    "sh_lldp_entry_out": "--- sh cdp entry axis-b8a44fb1e3cf ---\n-------------------------\nDevice ID: axis-b8a44fb1e3cf\nEntry address(es): \n  IP address: 172.25.231.149\nPlatform: Linux,  Capabilities: Host \nInterface: GigabitEthernet2/0/40,  Port ID (outgoing port): eth0\nHoldtime : 103 sec\n\nVersion :\nAXIS P4707-PLVE Panoramic Camera 12.6.104\n\nadvertisement version: 2\nPeer Source MAC: b8a4.4fb1.e3cf\nPower drawn: 22.000 Watts\nPower request id: 1, Power management id: 2\nPower request levels are:22000 0 0 0 0 \n\n",
-    "cam_ip": null,
-    "proposed_cam_ip": null,
-    "proposed_cam_subnet": null,
-    "proposed_cam_default_gateway": null,
-    "sh_run_int": "sh run int  Gi2/0/40",
-    "sh_run_int_out": "--- sh run int Gi2/0/40 ---\nBuilding configuration...\n\nCurrent configuration : 266 bytes\n!\ninterface GigabitEthernet2/0/40\n description 1686_CAM09\n switchport access vlan 50\n switchport mode access\n switchport voice vlan 6\n storm-control broadcast level 5.00\n storm-control multicast level 5.00\n storm-control action shutdown\n spanning-tree portfast\nend\n\n",
-    "sh_int": "sh int  Gi2/0/40 | i duplex",
-    "sh_int_out": "--- sh int Gi2/0/40 | i duplex ---\n  Full-duplex, 1000Mb/s, media type is 10/100/1000BaseTX\n",
-    "cam": null,
-    "send_config": "config t\n !default interface Gi2/0/40\ninterface Gi2/0/40\n !description \n !switchport access vlan 50\n !switchport mode access\n no switchport voice vlan 6\n spanning-tree portfast\n!shut\n!no shut\nend\nwr\n",
-    "send_config_out": null,
-    "activate": null,
-    "count": null,
-    "notes": null,
-    "test_cable_diag_tdr_int": null,
-    "test_cable_diag_tdr_int_out": null,
-    "show_cable_diag_tdr_intshow_cable_diag_tdr_int_out": null
+    "mac": "b8a4.4fb1.e3cf"
   }
 ]

@@ -6,3 +6,5 @@ openai
 pandas
 openpyxl
 reportlab
+pypdf
+pymupdf
