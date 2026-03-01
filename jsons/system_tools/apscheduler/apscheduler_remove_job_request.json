@@ -1,0 +1,10 @@
+{
+  "module": "plugins.system_tools.apscheduler_plugin",
+  "class": "APSchedulerPlugin",
+  "method": "remove_job",
+  "constructor_args": {
+    "timezone": "UTC",
+    "auto_start": true
+  },
+  "args": ["interval-math-60s"]
+}

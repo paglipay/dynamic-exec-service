@@ -10,3 +10,4 @@ pypdf
 pymupdf
 pika
 apscheduler
+pytest
