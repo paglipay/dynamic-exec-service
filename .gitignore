@@ -33,6 +33,28 @@ htmlcov/
 .env
 .env.*
 
+# OAuth and API credential artifacts
+credentials.json
+gmail_token.json
+token.json
+tokens.json
+oauth_token.json
+client_secret*.json
+service-account*.json
+*service_account*.json
+
+# Private keys and cert bundles
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local secret overrides
+secrets.yml
+secrets.yaml
+secrets.json
+local.settings.json
+
 # OS files
 .DS_Store
 Thumbs.db

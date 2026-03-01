@@ -127,6 +127,30 @@ Only these module/class/method combinations are executable via API:
   - methods: `generate_with_function_calls`, `generate_with_function_calls_and_history`
   - style: OpenAI function-calling (`tool_choice=auto`) that maps allowlisted plugin methods into callable tools
 
+- `plugins.integrations.pika_plugin` → `PikaPlugin`
+  - methods: `connect`, `connection_status`, `disconnect`, `publish_message`, `publish_workflow`, `subscribe`, `consume`, `consume_and_execute_workflow`, `start_consuming_workflows`
+
+- `plugins.integrations.gmail_plugin` → `GmailPlugin`
+  - methods: `get_profile`, `list_messages`, `get_message`, `send_email`
+  - purpose: Gmail API access for profile checks, message reads, and sending email
+  - `send_email` supports optional local file attachments via an `attachments` list argument
+
+## Gmail plugin setup (make Gmail accessible)
+1. Create a Google Cloud project and enable **Gmail API**.
+2. Configure OAuth consent screen and create OAuth client credentials.
+3. Download the OAuth client JSON to a local path, for example `credentials.json`.
+4. Install dependencies from `requirements.txt`.
+5. Run one Gmail request (for example `jsons/integrations/gmail/gmail_get_profile_request.json`) and complete the browser OAuth prompt.
+6. After successful auth, `gmail_token.json` is created and reused for future requests.
+
+Environment variables (optional):
+- `GMAIL_CREDENTIALS_PATH` (defaults to `credentials.json`)
+- `GMAIL_TOKEN_PATH` (defaults to `gmail_token.json`)
+
+Recommended minimum OAuth scopes:
+- Read: `https://www.googleapis.com/auth/gmail.readonly`
+- Send: `https://www.googleapis.com/auth/gmail.send`
+
 ## Useful request JSON files in jsons/
 
 ### File/plugin examples
@@ -167,6 +191,11 @@ Only these module/class/method combinations are executable via API:
 - `openai_sdk_generate_text_request.json`
 - `openai_sdk_generate_text_with_history_request.json`
 - `openai_function_calling_generate_request.json`
+
+### Gmail examples
+- `jsons/integrations/gmail/gmail_get_profile_request.json`
+- `jsons/integrations/gmail/gmail_list_messages_request.json`
+- `jsons/integrations/gmail/gmail_send_email_request.json`
 
 ### Workflow examples
 - `workflows/workflow_read_readme_openai_sdk_reply.json`

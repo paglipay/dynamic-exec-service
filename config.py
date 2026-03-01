@@ -136,4 +136,13 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "start_consuming_workflows",
         ],
     },
+    "plugins.integrations.gmail_plugin": {
+        "class": "GmailPlugin",
+        "methods": [
+            "get_profile",
+            "list_messages",
+            "get_message",
+            "send_email",
+        ],
+    },
 }

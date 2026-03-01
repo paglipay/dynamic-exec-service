@@ -1,0 +1,17 @@
+{
+  "module": "plugins.integrations.gmail_plugin",
+  "class": "GmailPlugin",
+  "method": "send_email",
+  "constructor_args": {
+    "credentials_path": "credentials.json",
+    "token_path": "gmail_token.json"
+  },
+  "args": [
+    "recipient@example.com",
+    "Test email from Dynamic Exec Service",
+    "Hello from GmailPlugin.",
+    ["team@example.com"],
+    null,
+    ["generated_data/notes.txt"]
+  ]
+}
