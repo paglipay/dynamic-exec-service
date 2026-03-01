@@ -1,0 +1,10 @@
+{
+  "module": "plugins.system_tools.apscheduler_plugin",
+  "class": "APSchedulerPlugin",
+  "method": "health",
+  "constructor_args": {
+    "timezone": "UTC",
+    "auto_start": true
+  },
+  "args": []
+}

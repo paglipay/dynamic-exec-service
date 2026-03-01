@@ -8,6 +8,7 @@ This folder is organized by domain so request samples are easier to find and mai
 - `integrations/slack/` — Slack message/upload request samples
 - `integrations/pika/` — RabbitMQ/pika publish/subscribe/consume/workflow samples
 - `system_tools/excel/` — Excel plugin request samples
+- `system_tools/apscheduler/` — APScheduler workflow scheduling request samples
 - `system_tools/terminal/` — terminal introspection request samples
 - `system_tools/pdf/` — PDF + markdown-to-pdf request samples
 - `system_tools/ssh/` — SSH plugin request samples

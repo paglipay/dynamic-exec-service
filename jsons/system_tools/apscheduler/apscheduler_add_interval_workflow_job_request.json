@@ -1,0 +1,29 @@
+{
+  "module": "plugins.system_tools.apscheduler_plugin",
+  "class": "APSchedulerPlugin",
+  "method": "add_interval_workflow_job",
+  "constructor_args": {
+    "timezone": "UTC",
+    "auto_start": true
+  },
+  "args": [
+    {
+      "job_id": "interval-math-60s",
+      "seconds": 60,
+      "replace_existing": true,
+      "workflow": {
+        "stop_on_error": true,
+        "steps": [
+          {
+            "id": "multiply_step",
+            "module": "plugins.generated_math_plugin",
+            "class": "GeneratedMathPlugin",
+            "method": "multiply",
+            "constructor_args": {},
+            "args": [6, 7]
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "module": "plugins.system_tools.apscheduler_plugin",
+  "class": "APSchedulerPlugin",
+  "method": "list_jobs",
+  "constructor_args": {
+    "timezone": "UTC",
+    "auto_start": true
+  },
+  "args": []
+}
