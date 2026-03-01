@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 from urllib import error, request
+from urllib.parse import ParseResult, urlparse, urlunparse
 
 
 class LocalHTTPModule:
@@ -13,18 +14,43 @@ class LocalHTTPModule:
     def __init__(self, execute_url: str = "http://localhost:5000/execute") -> None:
         if not isinstance(execute_url, str) or not execute_url:
             raise ValueError("execute_url must be a non-empty string")
-        if execute_url != "http://localhost:5000/execute":
-            raise ValueError("execute_url must be http://localhost:5000/execute")
-        self.execute_url = execute_url
+
+        parsed = urlparse(execute_url.strip())
+        if parsed.scheme not in {"http", "https"}:
+            raise ValueError("execute_url must use http or https")
+        if not parsed.netloc:
+            raise ValueError("execute_url must include a host")
+        if parsed.params or parsed.query or parsed.fragment:
+            raise ValueError("execute_url must not include params, query, or fragment")
+
+        normalized_path = parsed.path.rstrip("/")
+        if normalized_path != "/execute":
+            raise ValueError("execute_url path must be /execute")
+
+        self._base_url_parts = ParseResult(
+            scheme=parsed.scheme,
+            netloc=parsed.netloc,
+            path="",
+            params="",
+            query="",
+            fragment="",
+        )
+        self.execute_url = urlunparse(self._base_url_parts._replace(path="/execute"))
+
+    def _target_url_for_payload(self, payload: dict[str, Any]) -> str:
+        is_workflow_payload = isinstance(payload.get("steps"), list)
+        target_path = "/workflow" if is_workflow_payload else "/execute"
+        return urlunparse(self._base_url_parts._replace(path=target_path))
 
     def post_execute(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """POST a JSON payload to the local /execute endpoint and return its JSON response."""
+        """POST JSON payload to /execute or /workflow and return JSON response."""
         if not isinstance(payload, dict):
             raise ValueError("payload must be an object")
 
+        target_url = self._target_url_for_payload(payload)
         data = json.dumps(payload).encode("utf-8")
         req = request.Request(
-            self.execute_url,
+            target_url,
             data=data,
             headers={"Content-Type": "application/json"},
             method="POST",
