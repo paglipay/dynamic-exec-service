@@ -232,16 +232,12 @@ def _save_slack_image_copy(
     content_type: str,
     channel: str | None,
 ) -> str | None:
-    """Save downloaded Slack image bytes under generated_data with nested folders."""
+    """Save downloaded Slack image bytes under a flat slack_downloads directory."""
     if not isinstance(binary_data, bytes) or not binary_data:
         return None
 
-    channel_segment = str(channel).strip() if isinstance(channel, str) and channel.strip() else "unknown_channel"
-    channel_segment = re.sub(r"[^A-Za-z0-9_-]", "_", channel_segment)
-    timestamp = time.strftime("%Y/%m/%d")
-
     base_dir = Path(SLACK_IMAGE_SAVE_BASE_DIR).resolve()
-    target_dir = (base_dir / "slack_downloads" / "images" / channel_segment / timestamp).resolve()
+    target_dir = (base_dir / "slack_downloads").resolve()
     target_dir.mkdir(parents=True, exist_ok=True)
 
     safe_name = _sanitize_slack_filename(original_name)
@@ -259,16 +255,12 @@ def _save_slack_pdf_copy(
     original_name: str,
     channel: str | None,
 ) -> str | None:
-    """Save downloaded Slack PDF bytes under generated_data with nested folders."""
+    """Save downloaded Slack PDF bytes under a flat slack_downloads directory."""
     if not isinstance(binary_data, bytes) or not binary_data:
         return None
 
-    channel_segment = str(channel).strip() if isinstance(channel, str) and channel.strip() else "unknown_channel"
-    channel_segment = re.sub(r"[^A-Za-z0-9_-]", "_", channel_segment)
-    timestamp = time.strftime("%Y/%m/%d")
-
     base_dir = Path(SLACK_IMAGE_SAVE_BASE_DIR).resolve()
-    target_dir = (base_dir / "slack_downloads" / "pdfs" / channel_segment / timestamp).resolve()
+    target_dir = (base_dir / "slack_downloads").resolve()
     target_dir.mkdir(parents=True, exist_ok=True)
 
     safe_name = _sanitize_slack_filename(original_name)

@@ -16,13 +16,13 @@ This README is intended to help an AI agent use the current service safely and c
 
 ## Priority: Slack image reference convention
 - Slack image attachments are saved under:
-  - `target_dir = (base_dir / "slack_downloads" / "images" / channel_segment / timestamp).resolve()`
+  - `target_dir = (base_dir / "slack_downloads").resolve()`
 - With default `base_dir=generated_data`, images land in paths like:
-  - `generated_data/slack_downloads/images/C01FMQVG5RU/2026/02/28/...`
+  - `generated_data/slack_downloads/<filename>_<timestamp>.<ext>`
 - For markdown/image links in files created under `generated_data`, prioritize **base_dir-relative** references:
-  - `slack_downloads/images/...`
+  - `slack_downloads/...`
 - Alternative supported form:
-  - `generated_data/slack_downloads/images/...`
+  - `generated_data/slack_downloads/...`
 - This convention is documented in:
   - `generated_data/docs/integration_guides/slack_image_upload_and_markdown_references.md`
 

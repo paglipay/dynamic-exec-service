@@ -17,7 +17,7 @@ class OpenAIFunctionCallingPlugin:
     """Use OpenAI function calling with allowlisted plugin methods as tools."""
 
     _conversation_store: dict[str, list[dict[str, Any]]] = {}
-    _slack_images_root = "generated_data/slack_downloads/images"
+    _slack_images_root = "generated_data/slack_downloads"
 
     def __init__(self, api_key: str | None = None) -> None:
         resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
@@ -223,7 +223,7 @@ class OpenAIFunctionCallingPlugin:
             "If the user asks to send an email attachment, include attachment file paths in Gmail send_email args. "
             "Do not claim an attachment was sent unless the Gmail tool result shows attachment_count > 0. "
             "Slack image attachments are saved locally under "
-            f"'{self._slack_images_root}/<channel_segment>/<YYYY>/<MM>/<DD>/' by the app. "
+            f"'{self._slack_images_root}/' as a flat directory by the app. "
             "If the user asks to reference or locate Slack images, use this directory convention."
         )
 
