@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import os
 import re
 import threading
@@ -15,6 +16,16 @@ from urllib.parse import urljoin
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 from slackeventsapi import SlackEventAdapter
+
+try:
+    from pypdf import PdfReader  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover - optional dependency
+    PdfReader = None  # type: ignore[assignment]
+
+try:
+    import fitz  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover - optional dependency
+    fitz = None  # type: ignore[assignment]
 
 from executor.engine import JSONExecutor
 from executor.permissions import validate_request
@@ -40,6 +51,9 @@ WORKFLOW_REF_PATTERN = re.compile(r"^\$\{steps\.([^\.]+)\.result(?:\.(.+))?\}$")
 SLACK_EVENT_TTL_SECONDS = 300
 SLACK_MAX_IMAGE_BYTES = 5 * 1024 * 1024
 SLACK_MAX_IMAGE_COUNT = 3
+SLACK_MAX_PDF_BYTES = 15 * 1024 * 1024
+SLACK_MAX_PDF_TEXT_CHARS = 20000
+SLACK_MAX_PDF_IMAGE_PAGES = 3
 SLACK_IMAGE_SAVE_BASE_DIR = os.getenv("SLACK_IMAGE_SAVE_BASE_DIR", "generated_data")
 _processed_slack_events: dict[str, float] = {}
 _processed_slack_events_lock = threading.Lock()
@@ -240,6 +254,134 @@ def _save_slack_image_copy(
     return str(target_path)
 
 
+def _save_slack_pdf_copy(
+    binary_data: bytes,
+    original_name: str,
+    channel: str | None,
+) -> str | None:
+    """Save downloaded Slack PDF bytes under generated_data with nested folders."""
+    if not isinstance(binary_data, bytes) or not binary_data:
+        return None
+
+    channel_segment = str(channel).strip() if isinstance(channel, str) and channel.strip() else "unknown_channel"
+    channel_segment = re.sub(r"[^A-Za-z0-9_-]", "_", channel_segment)
+    timestamp = time.strftime("%Y/%m/%d")
+
+    base_dir = Path(SLACK_IMAGE_SAVE_BASE_DIR).resolve()
+    target_dir = (base_dir / "slack_downloads" / "pdfs" / channel_segment / timestamp).resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = _sanitize_slack_filename(original_name)
+    stem = Path(safe_name).stem or "document"
+    unique_suffix = str(int(time.time() * 1000))
+    target_path = target_dir / f"{stem}_{unique_suffix}.pdf"
+    target_path.write_bytes(binary_data)
+    return str(target_path)
+
+
+def _extract_pdf_text(pdf_bytes: bytes, max_chars: int = SLACK_MAX_PDF_TEXT_CHARS) -> str:
+    """Extract bounded text from a PDF payload."""
+    if PdfReader is None:
+        return ""
+    if not isinstance(pdf_bytes, bytes) or not pdf_bytes:
+        return ""
+
+    try:
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+    except Exception as exc:
+        app.logger.warning("Failed to parse PDF for text extraction: %s", exc)
+        return ""
+
+    chunks: list[str] = []
+    current_size = 0
+    for page in getattr(reader, "pages", []):
+        try:
+            text = page.extract_text() or ""
+        except Exception:
+            text = ""
+        if not text.strip():
+            continue
+
+        remaining = max_chars - current_size
+        if remaining <= 0:
+            break
+        trimmed = text[:remaining]
+        chunks.append(trimmed)
+        current_size += len(trimmed)
+
+    return "\n\n".join(chunks).strip()
+
+
+def _render_pdf_pages_to_image_data_urls(
+    pdf_bytes: bytes,
+    pdf_name: str,
+    channel: str | None,
+    max_images: int,
+) -> tuple[list[str], list[str], int]:
+    """Render selected PDF pages to PNG data URLs and save local copies."""
+    if fitz is None:
+        return [], [], 0
+    if not isinstance(pdf_bytes, bytes) or not pdf_bytes:
+        return [], [], 0
+    if not isinstance(max_images, int) or max_images <= 0:
+        return [], [], 0
+
+    data_urls: list[str] = []
+    saved_paths: list[str] = []
+    rendered_count = 0
+    try:
+        document = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception as exc:
+        app.logger.warning("Failed to open PDF for page rendering: %s", exc)
+        return [], [], 0
+
+    try:
+        pages_with_images: list[int] = []
+        for page_index in range(len(document)):
+            try:
+                page = document.load_page(page_index)
+                if page.get_images(full=True):
+                    pages_with_images.append(page_index)
+            except Exception:
+                continue
+
+        if pages_with_images:
+            target_pages = pages_with_images[: min(max_images, SLACK_MAX_PDF_IMAGE_PAGES)]
+        else:
+            target_pages = list(range(min(len(document), min(max_images, SLACK_MAX_PDF_IMAGE_PAGES))))
+
+        safe_stem = Path(_sanitize_slack_filename(pdf_name)).stem or "pdf"
+        for page_index in target_pages:
+            try:
+                page = document.load_page(page_index)
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+                png_bytes = pix.tobytes("png")
+            except Exception as exc:
+                app.logger.warning("Failed to render PDF page %s: %s", page_index + 1, exc)
+                continue
+
+            if len(png_bytes) > SLACK_MAX_IMAGE_BYTES:
+                app.logger.warning("Rendered PDF page exceeded image size limit: page=%s", page_index + 1)
+                continue
+
+            encoded = base64.b64encode(png_bytes).decode("ascii")
+            data_urls.append(f"data:image/png;base64,{encoded}")
+            rendered_count += 1
+
+            page_name = f"{safe_stem}_page_{page_index + 1}.png"
+            try:
+                saved_path = _save_slack_image_copy(png_bytes, page_name, "image/png", channel)
+            except Exception as exc:
+                app.logger.warning("Failed to save rendered PDF page image locally: %s", exc)
+                saved_path = None
+            if isinstance(saved_path, str) and saved_path:
+                saved_paths.append(saved_path)
+    finally:
+        document.close()
+
+    return data_urls, saved_paths, rendered_count
+
+
 def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | None) -> tuple[str, str, list[str]]:
     """Build prompt/reply snippets and image data URLs from Slack files when available."""
     files = event.get("files")
@@ -253,6 +395,7 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
     file_content_lines: list[str] = []
     image_data_urls: list[str] = []
     saved_image_paths: list[str] = []
+    saved_pdf_paths: list[str] = []
     reply_items: list[str] = []
     channel = event.get("channel")
     for file_item in files:
@@ -294,6 +437,62 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
                 bool(url_private),
                 bool(isinstance(slack_bot_token, str) and slack_bot_token.strip()),
             )
+
+        is_pdf_candidate = (
+            mimetype.lower() == "application/pdf"
+            or filetype.lower() == "pdf"
+            or name.lower().endswith(".pdf")
+        )
+        if is_pdf_candidate and url_private and isinstance(slack_bot_token, str) and slack_bot_token.strip():
+            pdf_data, pdf_content_type = _download_slack_binary_file(
+                url_private,
+                slack_bot_token,
+                max_bytes=SLACK_MAX_PDF_BYTES,
+            )
+            if isinstance(pdf_data, bytes) and pdf_data:
+                try:
+                    saved_pdf_path = _save_slack_pdf_copy(
+                        pdf_data,
+                        name,
+                        channel if isinstance(channel, str) else None,
+                    )
+                except Exception as exc:
+                    app.logger.warning("Failed to save Slack PDF locally (%s): %s", name, exc)
+                    saved_pdf_path = None
+                if isinstance(saved_pdf_path, str) and saved_pdf_path:
+                    saved_pdf_paths.append(saved_pdf_path)
+                    file_lines[-1] = f"{file_lines[-1]}; saved_pdf_as={saved_pdf_path}"
+
+                extracted_pdf_text = _extract_pdf_text(pdf_data)
+                rendered_pages = 0
+                if extracted_pdf_text:
+                    file_content_lines.append(f"PDF '{name}' extracted text:\n{extracted_pdf_text}")
+                    app.logger.info("Attached PDF text extracted: %s chars=%s", name, len(extracted_pdf_text))
+                    file_lines[-1] = f"{file_lines[-1]}; pdf_text_chars={len(extracted_pdf_text)}"
+
+                remaining_image_slots = max(SLACK_MAX_IMAGE_COUNT - len(image_data_urls), 0)
+                if remaining_image_slots > 0:
+                    pdf_image_urls, pdf_saved_paths, rendered_pages = _render_pdf_pages_to_image_data_urls(
+                        pdf_data,
+                        name,
+                        channel if isinstance(channel, str) else None,
+                        remaining_image_slots,
+                    )
+                    if pdf_image_urls:
+                        image_data_urls.extend(pdf_image_urls)
+                        app.logger.info("Attached PDF rendered for OpenAI vision: %s pages=%s", name, rendered_pages)
+                    if pdf_saved_paths:
+                        saved_image_paths.extend(pdf_saved_paths)
+                    if rendered_pages > 0:
+                        file_lines[-1] = f"{file_lines[-1]}; pdf_rendered_pages={rendered_pages}"
+
+                if not extracted_pdf_text and rendered_pages == 0:
+                    file_lines[-1] = f"{file_lines[-1]}; pdf_processed=true"
+
+                if pdf_content_type and pdf_content_type != "application/pdf":
+                    file_lines[-1] = f"{file_lines[-1]}; detected_content_type={pdf_content_type}"
+            else:
+                app.logger.info("Attached PDF could not be downloaded: %s", name)
 
         is_image_candidate = (
             mimetype.lower().startswith("image/")
@@ -345,6 +544,9 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
     if saved_image_paths:
         prompt_suffix += "\n\nSaved local image copies:\n" + "\n".join(f"- {path}" for path in saved_image_paths)
         app.logger.info("Saved %s Slack image(s) under local generated_data path", len(saved_image_paths))
+    if saved_pdf_paths:
+        prompt_suffix += "\n\nSaved local PDF copies:\n" + "\n".join(f"- {path}" for path in saved_pdf_paths)
+        app.logger.info("Saved %s Slack PDF file(s) under local generated_data path", len(saved_pdf_paths))
     reply_suffix = "\n\nAttachments in your message: " + ", ".join(reply_items)
     return prompt_suffix, reply_suffix, image_data_urls
 
@@ -366,6 +568,10 @@ if slack_event_adapter is not None:
         if event.get("bot_id"):
             return
 
+        if _is_duplicate_slack_event(event_data, event):
+            app.logger.info("Ignoring duplicate Slack event delivery")
+            return
+
         channel = event.get("channel")
         text = event.get("text", "")
         slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
@@ -375,10 +581,6 @@ if slack_event_adapter is not None:
         if not isinstance(text, str):
             return
         if not text.strip() and not file_prompt_suffix and not image_data_urls:
-            return
-
-        if _is_duplicate_slack_event(event_data, event):
-            app.logger.info("Ignoring duplicate Slack event delivery")
             return
 
         app.logger.info(
