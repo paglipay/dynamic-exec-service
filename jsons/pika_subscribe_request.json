@@ -1,0 +1,28 @@
+{
+  "module": "plugins.integrations.pika_plugin",
+  "class": "PikaPlugin",
+  "method": "subscribe",
+  "args_reference": {
+    "args[0]": "queue_name (str)",
+    "args[1]": "timeout_seconds (number)",
+    "args[2]": "ack_message (bool)",
+    "args[3]": "poll_interval_seconds (number)",
+    "args[4]": "declare_queue (bool)",
+    "args[5]": "durable (bool, used only when declare_queue=true)"
+  },
+  "constructor_args": {
+    "host": "localhost",
+    "port": 5672,
+    "virtual_host": "/",
+    "username": "guest",
+    "password": "guest"
+  },
+  "args": [
+    "demo_queue",
+    5.0,
+    true,
+    0.2,
+    true,
+    true
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "module": "plugins.integrations.pika_plugin",
+  "class": "PikaPlugin",
+  "method": "publish_message",
+  "constructor_args": {
+    "host": "localhost",
+    "port": 5672,
+    "virtual_host": "/",
+    "username": "guest",
+    "password": "guest"
+  },
+  "args": [
+    "demo_queue",
+    {
+      "event": "ping",
+      "source": "dynamic-exec-service",
+      "timestamp": "2026-03-01T00:00:00Z"
+    },
+    true,
+    true
+  ]
+}
