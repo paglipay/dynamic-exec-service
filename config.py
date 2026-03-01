@@ -111,7 +111,11 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
         "class": "PikaPlugin",
         "methods": [
             "publish_message",
+            "publish_workflow",
             "subscribe",
+            "consume",
+            "consume_and_execute_workflow",
+            "start_consuming_workflows",
         ],
     },
 }

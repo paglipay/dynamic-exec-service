@@ -1,7 +1,7 @@
 {
   "module": "plugins.integrations.pika_plugin",
   "class": "PikaPlugin",
-  "method": "subscribe",
+  "method": "consume",
   "constructor_args": {
     "host": "localhost",
     "port": 5672,
@@ -12,6 +12,7 @@
   "args": [
     {
       "queue_name": "demo_queue",
+      "max_messages": 5,
       "timeout_seconds": 5.0,
       "ack_message": true,
       "poll_interval_seconds": 0.2,

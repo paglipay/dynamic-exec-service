@@ -136,6 +136,11 @@ Only these module/class/method combinations are executable via API:
 - `excel_list_sheets_metadata_request.json`
 - `excel_list_sheet_names_request.json`
 - `test_generated_math_plugin_request.json`
+- `pika_publish_message_request.json`
+- `pika_subscribe_request.json`
+- `pika_consume_request.json`
+- `pika_publish_workflow_request.json`
+- `pika_consume_and_execute_workflow_request.json`
 
 ### Excel response notes
 - `excel_to_json` now includes `column_names` in its success payload.
@@ -217,5 +222,6 @@ Slack replies will continue the same conversation memory while the app process r
 - Always use allowlisted module/class/method triples from `config.py`.
 - Prefer `/execute` for single actions and `/workflow` for chained tasks.
 - Treat API as strict about input types (`constructor_args` object, `args` array).
+- Prefer object-style `args` payloads (single options object in `args[0]`) for readability; see `generated_data/docs/usage_tips/request_args_object_style.md`.
 - Parse `status` on every response and handle `error` cases explicitly.
 - Keep all constructor and method arguments JSON-serializable.

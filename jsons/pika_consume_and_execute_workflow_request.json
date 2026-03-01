@@ -1,7 +1,7 @@
 {
   "module": "plugins.integrations.pika_plugin",
   "class": "PikaPlugin",
-  "method": "subscribe",
+  "method": "consume_and_execute_workflow",
   "constructor_args": {
     "host": "localhost",
     "port": 5672,
@@ -11,12 +11,13 @@
   },
   "args": [
     {
-      "queue_name": "demo_queue",
-      "timeout_seconds": 5.0,
-      "ack_message": true,
+      "queue_name": "workflow_queue",
+      "timeout_seconds": 8.0,
       "poll_interval_seconds": 0.2,
       "declare_queue": true,
-      "durable": true
+      "durable": true,
+      "max_retries": 2,
+      "dead_letter_queue": "workflow_queue_dlq"
     }
   ]
 }

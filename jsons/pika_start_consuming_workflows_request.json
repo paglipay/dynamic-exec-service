@@ -1,0 +1,25 @@
+{
+  "module": "plugins.integrations.pika_plugin",
+  "class": "PikaPlugin",
+  "method": "start_consuming_workflows",
+  "constructor_args": {
+    "host": "localhost",
+    "port": 5672,
+    "virtual_host": "/",
+    "username": "guest",
+    "password": "guest"
+  },
+  "args": [
+    {
+      "queue_name": "workflow_queue",
+      "max_messages": 3,
+      "stop_after_seconds": 20.0,
+      "poll_interval_seconds": 1.0,
+      "declare_queue": true,
+      "durable": true,
+      "max_retries": 2,
+      "dead_letter_queue": "workflow_queue_dlq",
+      "prefetch_count": 1
+    }
+  ]
+}
