@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from typing import Any
 
@@ -15,6 +16,10 @@ from executor.permissions import validate_request
 
 class PikaPlugin:
     """Publish messages to RabbitMQ queues with basic validation."""
+
+    _shared_lock = threading.RLock()
+    _shared_connection: pika.BlockingConnection | None = None
+    _shared_connection_config: dict[str, Any] | None = None
 
     def __init__(
         self,
@@ -40,8 +45,172 @@ class PikaPlugin:
         self.virtual_host = virtual_host.strip()
         self.username = username.strip() if isinstance(username, str) else None
         self.password = password.strip() if isinstance(password, str) else None
+
+        has_explicit_connection_args = (
+            host.strip() != "localhost"
+            or port != 5672
+            or virtual_host.strip() != "/"
+            or self.username is not None
+            or self.password is not None
+        )
+        if has_explicit_connection_args:
+            self._set_shared_connection_config(
+                {
+                    "host": self.host,
+                    "port": self.port,
+                    "virtual_host": self.virtual_host,
+                    "username": self.username,
+                    "password": self.password,
+                },
+                force_reconnect=False,
+                connect_now=False,
+            )
+
         self._processed_workflow_ids: set[str] = set()
         self._workflow_ref_pattern = re.compile(r"^\$\{steps\.([^\.]+)\.result(?:\.(.+))?\}$")
+
+    def _normalized_connection_config(
+        self,
+        host: str,
+        port: int,
+        virtual_host: str,
+        username: str | None,
+        password: str | None,
+    ) -> dict[str, Any]:
+        if not isinstance(host, str) or not host.strip():
+            raise ValueError("host must be a non-empty string")
+        if not isinstance(port, int) or port <= 0:
+            raise ValueError("port must be a positive integer")
+        if not isinstance(virtual_host, str) or not virtual_host.strip():
+            raise ValueError("virtual_host must be a non-empty string")
+        if (username is None) ^ (password is None):
+            raise ValueError("username and password must be provided together")
+        if username is not None and (not username.strip() or not password or not password.strip()):
+            raise ValueError("username and password must be non-empty when provided")
+
+        return {
+            "host": host.strip(),
+            "port": port,
+            "virtual_host": virtual_host.strip(),
+            "username": username.strip() if isinstance(username, str) else None,
+            "password": password.strip() if isinstance(password, str) else None,
+        }
+
+    def _set_shared_connection_config(
+        self,
+        config: dict[str, Any],
+        force_reconnect: bool,
+        connect_now: bool,
+    ) -> None:
+        with PikaPlugin._shared_lock:
+            config_changed = PikaPlugin._shared_connection_config != config
+            PikaPlugin._shared_connection_config = dict(config)
+
+            if force_reconnect or config_changed:
+                existing = PikaPlugin._shared_connection
+                if existing is not None:
+                    try:
+                        if existing.is_open:
+                            existing.close()
+                    except Exception:
+                        pass
+                    PikaPlugin._shared_connection = None
+
+        if connect_now:
+            self._ensure_shared_connection()
+
+    def _invalidate_shared_connection(self) -> None:
+        with PikaPlugin._shared_lock:
+            existing = PikaPlugin._shared_connection
+            if existing is not None:
+                try:
+                    if existing.is_open:
+                        existing.close()
+                except Exception:
+                    pass
+            PikaPlugin._shared_connection = None
+
+    def _connection_summary(self) -> dict[str, Any]:
+        config = PikaPlugin._shared_connection_config or {}
+        return {
+            "host": config.get("host"),
+            "port": config.get("port"),
+            "virtual_host": config.get("virtual_host"),
+            "username": config.get("username"),
+            "has_password": bool(config.get("password")),
+        }
+
+    def connect(
+        self,
+        host: str | dict[str, Any] = "localhost",
+        port: int = 5672,
+        virtual_host: str = "/",
+        username: str | None = None,
+        password: str | None = None,
+        force_reconnect: bool = False,
+    ) -> dict[str, Any]:
+        """Store RabbitMQ credentials and establish a persistent shared connection."""
+        if isinstance(host, dict):
+            options = host
+            host = options.get("host", "localhost")
+            port = options.get("port", port)
+            virtual_host = options.get("virtual_host", virtual_host)
+            username = options.get("username", username)
+            password = options.get("password", password)
+            force_reconnect = options.get("force_reconnect", force_reconnect)
+
+        if not isinstance(force_reconnect, bool):
+            raise ValueError("force_reconnect must be a boolean")
+
+        config = self._normalized_connection_config(host, port, virtual_host, username, password)
+        self._set_shared_connection_config(config, force_reconnect=force_reconnect, connect_now=True)
+
+        connection = self._ensure_shared_connection()
+        return {
+            "status": "success",
+            "connected": connection.is_open,
+            "connection": self._connection_summary(),
+            "message": "RabbitMQ connection established and stored in memory",
+        }
+
+    def connection_status(self) -> dict[str, Any]:
+        """Return current shared RabbitMQ connection status."""
+        with PikaPlugin._shared_lock:
+            connection = PikaPlugin._shared_connection
+            has_config = PikaPlugin._shared_connection_config is not None
+            connected = bool(connection is not None and connection.is_open)
+
+        return {
+            "status": "success",
+            "connected": connected,
+            "has_config": has_config,
+            "connection": self._connection_summary(),
+        }
+
+    def disconnect(self, clear_config: bool = False) -> dict[str, Any]:
+        """Close the shared RabbitMQ connection, optionally clearing stored config."""
+        if not isinstance(clear_config, bool):
+            raise ValueError("clear_config must be a boolean")
+
+        with PikaPlugin._shared_lock:
+            existing = PikaPlugin._shared_connection
+            if existing is not None:
+                try:
+                    if existing.is_open:
+                        existing.close()
+                except Exception:
+                    pass
+            PikaPlugin._shared_connection = None
+
+            if clear_config:
+                PikaPlugin._shared_connection_config = None
+
+        return {
+            "status": "success",
+            "connected": False,
+            "config_cleared": clear_config,
+            "message": "RabbitMQ shared connection closed",
+        }
 
     def _validate_execution_fields(
         self,
@@ -214,20 +383,53 @@ class PikaPlugin:
             "meta": meta,
         }
 
-    def _create_connection(self) -> pika.BlockingConnection:
-        credentials: pika.PlainCredentials | None = None
-        if self.username is not None and self.password is not None:
-            credentials = pika.PlainCredentials(self.username, self.password)
+    def _create_connection(self, config: dict[str, Any]) -> pika.BlockingConnection:
+        parameters: dict[str, Any] = {
+            "host": config["host"],
+            "port": config["port"],
+            "virtual_host": config["virtual_host"],
+            "heartbeat": 30,
+            "blocked_connection_timeout": 10,
+        }
 
-        params = pika.ConnectionParameters(
-            host=self.host,
-            port=self.port,
-            virtual_host=self.virtual_host,
-            credentials=credentials,
-            heartbeat=30,
-            blocked_connection_timeout=10,
-        )
+        username = config.get("username")
+        password = config.get("password")
+        if isinstance(username, str) and isinstance(password, str):
+            parameters["credentials"] = pika.PlainCredentials(username, password)
+
+        params = pika.ConnectionParameters(**parameters)
         return pika.BlockingConnection(params)
+
+    def _ensure_shared_connection(self) -> pika.BlockingConnection:
+        with PikaPlugin._shared_lock:
+            current = PikaPlugin._shared_connection
+            if current is not None and current.is_open:
+                return current
+
+            config = PikaPlugin._shared_connection_config
+            if config is None:
+                raise ValueError(
+                    "RabbitMQ connection is not configured. Call connect() first or "
+                    "provide constructor_args with credentials."
+                )
+
+            try:
+                connection = self._create_connection(config)
+            except (pika.exceptions.AMQPError, OSError) as exc:
+                hint = self._connection_troubleshooting_hint(exc)
+                raise ValueError(f"Failed to connect to RabbitMQ: {exc}. {hint}") from exc
+
+            PikaPlugin._shared_connection = connection
+            return connection
+
+    def _get_channel(self):
+        try:
+            connection = self._ensure_shared_connection()
+            return connection.channel()
+        except (pika.exceptions.AMQPError, OSError):
+            self._invalidate_shared_connection()
+            connection = self._ensure_shared_connection()
+            return connection.channel()
 
     def _connection_troubleshooting_hint(self, exc: Exception) -> str:
         """Return a compact hint for common RabbitMQ connection failures."""
@@ -287,10 +489,8 @@ class PikaPlugin:
 
         delivery_mode = 2 if persistent else 1
 
-        connection: pika.BlockingConnection | None = None
         try:
-            connection = self._create_connection()
-            channel = connection.channel()
+            channel = self._get_channel()
             target_queue = queue_name.strip()
             channel.queue_declare(queue=target_queue, durable=durable)
             channel.basic_publish(
@@ -303,11 +503,9 @@ class PikaPlugin:
                 ),
             )
         except (pika.exceptions.AMQPError, OSError) as exc:
+            self._invalidate_shared_connection()
             hint = self._connection_troubleshooting_hint(exc)
             raise ValueError(f"Failed to publish message to RabbitMQ: {exc}. {hint}") from exc
-        finally:
-            if connection is not None and connection.is_open:
-                connection.close()
 
         return {
             "status": "success",
@@ -416,11 +614,8 @@ class PikaPlugin:
 
         target_queue = queue_name.strip()
         deadline = time.monotonic() + float(timeout_seconds)
-        connection: pika.BlockingConnection | None = None
-
         try:
-            connection = self._create_connection()
-            channel = connection.channel()
+            channel = self._get_channel()
 
             if declare_queue:
                 channel.queue_declare(queue=target_queue, durable=durable)
@@ -471,11 +666,9 @@ class PikaPlugin:
 
                 time.sleep(float(poll_interval_seconds))
         except (pika.exceptions.AMQPError, OSError) as exc:
+            self._invalidate_shared_connection()
             hint = self._connection_troubleshooting_hint(exc)
             raise ValueError(f"Failed to subscribe from RabbitMQ queue: {exc}. {hint}") from exc
-        finally:
-            if connection is not None and connection.is_open:
-                connection.close()
 
     def consume(
         self,
@@ -519,11 +712,8 @@ class PikaPlugin:
         target_queue = queue_name.strip()
         deadline = time.monotonic() + float(timeout_seconds)
         messages: list[dict[str, Any]] = []
-        connection: pika.BlockingConnection | None = None
-
         try:
-            connection = self._create_connection()
-            channel = connection.channel()
+            channel = self._get_channel()
 
             if declare_queue:
                 channel.queue_declare(queue=target_queue, durable=durable)
@@ -572,11 +762,9 @@ class PikaPlugin:
                 "message": "Messages consumed" if messages else "No messages consumed before timeout",
             }
         except (pika.exceptions.AMQPError, OSError) as exc:
+            self._invalidate_shared_connection()
             hint = self._connection_troubleshooting_hint(exc)
             raise ValueError(f"Failed to consume from RabbitMQ queue: {exc}. {hint}") from exc
-        finally:
-            if connection is not None and connection.is_open:
-                connection.close()
 
     def consume_and_execute_workflow(
         self,
@@ -617,11 +805,8 @@ class PikaPlugin:
         target_queue = queue_name.strip()
         dlq_name = dead_letter_queue.strip() if isinstance(dead_letter_queue, str) else None
         deadline = time.monotonic() + float(timeout_seconds)
-        connection: pika.BlockingConnection | None = None
-
         try:
-            connection = self._create_connection()
-            channel = connection.channel()
+            channel = self._get_channel()
 
             if declare_queue:
                 channel.queue_declare(queue=target_queue, durable=durable)
@@ -777,13 +962,11 @@ class PikaPlugin:
         except ValueError:
             raise
         except (pika.exceptions.AMQPError, OSError) as exc:
+            self._invalidate_shared_connection()
             hint = self._connection_troubleshooting_hint(exc)
             raise ValueError(
                 f"Failed to consume and execute workflow from RabbitMQ queue: {exc}. {hint}"
             ) from exc
-        finally:
-            if connection is not None and connection.is_open:
-                connection.close()
 
     def start_consuming_workflows(
         self,
@@ -851,7 +1034,7 @@ class PikaPlugin:
         channel: Any = None
 
         try:
-            connection = self._create_connection()
+            connection = self._ensure_shared_connection()
             channel = connection.channel()
             channel.basic_qos(prefetch_count=prefetch_count)
 
@@ -1045,6 +1228,7 @@ class PikaPlugin:
         except ValueError:
             raise
         except (pika.exceptions.AMQPError, OSError) as exc:
+            self._invalidate_shared_connection()
             hint = self._connection_troubleshooting_hint(exc)
             raise ValueError(
                 f"Failed to start consuming workflows from RabbitMQ queue: {exc}. {hint}"
@@ -1055,5 +1239,3 @@ class PikaPlugin:
                     channel.cancel()
                 except Exception:
                     pass
-            if connection is not None and connection.is_open:
-                connection.close()

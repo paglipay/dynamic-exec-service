@@ -1,0 +1,7 @@
+{
+  "module": "plugins.integrations.pika_plugin",
+  "class": "PikaPlugin",
+  "method": "connection_status",
+  "constructor_args": {},
+  "args": []
+}
