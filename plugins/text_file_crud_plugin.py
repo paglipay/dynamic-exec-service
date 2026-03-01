@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 class TextFileCRUDPlugin:
-    """CRUD operations for .txt/.md files within a base directory."""
+    """CRUD operations for .txt/.md/.json files within a base directory."""
 
     def __init__(self, base_dir: str = "generated_data") -> None:
         if not isinstance(base_dir, str) or not base_dir:
@@ -15,16 +15,26 @@ class TextFileCRUDPlugin:
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def _resolve_filename(self, filename: str) -> Path:
-        if not isinstance(filename, str) or not filename:
+        if not isinstance(filename, str) or not filename.strip():
             raise ValueError("filename must be a non-empty string")
-        if not filename.endswith((".txt", ".md")):
-            raise ValueError("Only .txt and .md files are allowed")
-        if "/" in filename or "\\" in filename:
-            raise ValueError("filename must not contain path separators")
+        normalized_filename = filename.strip()
+        if not normalized_filename.endswith((".txt", ".md", ".json")):
+            raise ValueError("Only .txt, .md, and .json files are allowed")
+        candidate = Path(normalized_filename)
 
-        file_path = (self.base_dir / filename).resolve()
-        if file_path.parent != self.base_dir:
+        if candidate.is_absolute():
+            file_path = candidate.resolve()
+        else:
+            candidate_parts = candidate.parts
+            if candidate_parts and candidate_parts[0] == self.base_dir.name:
+                candidate = Path(*candidate_parts[1:]) if len(candidate_parts) > 1 else Path("")
+            file_path = (self.base_dir / candidate).resolve()
+
+        try:
+            file_path.relative_to(self.base_dir)
+        except ValueError as exc:
             raise ValueError("Invalid file path")
+
         return file_path
 
     def create_text(self, filename: str, content: str):
@@ -33,6 +43,7 @@ class TextFileCRUDPlugin:
         file_path = self._resolve_filename(filename)
         if file_path.exists():
             raise ValueError("File already exists")
+        file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(content, encoding="utf-8")
         return {"status": "success", "action": "create", "filename": filename}
 
@@ -60,8 +71,8 @@ class TextFileCRUDPlugin:
 
     def list_text_files(self):
         files = sorted(
-            path.name
-            for path in self.base_dir.iterdir()
-            if path.is_file() and path.suffix in {".txt", ".md"}
+            str(path.relative_to(self.base_dir)).replace("\\", "/")
+            for path in self.base_dir.rglob("*")
+            if path.is_file() and path.suffix in {".txt", ".md", ".json"}
         )
         return {"status": "success", "action": "list", "files": files}

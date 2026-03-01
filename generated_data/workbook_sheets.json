@@ -1,0 +1,2558 @@
+[
+  {
+    "Device Name": "ec-102ndst-r1"
+  },
+  {
+    "Device Name": "es-107thst-r1"
+  },
+  {
+    "Device Name": "es-109thst-r1"
+  },
+  {
+    "Device Name": "es-10thst-r1"
+  },
+  {
+    "Device Name": "ec-112thst-r1"
+  },
+  {
+    "Device Name": "es-112thst-r1"
+  },
+  {
+    "Device Name": "es-116thst-r1"
+  },
+  {
+    "Device Name": "es-118thst-r1"
+  },
+  {
+    "Device Name": "es-122ndst-r1"
+  },
+  {
+    "Device Name": "es-135thst-r1"
+  },
+  {
+    "Device Name": "es-153rdst-r1"
+  },
+  {
+    "Device Name": "es-156thst-r1"
+  },
+  {
+    "Device Name": "es-15thst-r1"
+  },
+  {
+    "Device Name": "es-186thst-r1"
+  },
+  {
+    "Device Name": "es-1st-r1"
+  },
+  {
+    "Device Name": "es-20thst-r1"
+  },
+  {
+    "Device Name": "es-232ndpl-r1"
+  },
+  {
+    "Device Name": "es-24thst-r1"
+  },
+  {
+    "Device Name": "ec-28thst-r1"
+  },
+  {
+    "Device Name": "es-28thst-r1"
+  },
+  {
+    "Device Name": "es-2ndst-r1"
+  },
+  {
+    "Device Name": "es-32nduscperart-r1"
+  },
+  {
+    "Device Name": "ec-36thst-r1"
+  },
+  {
+    "Device Name": "ec-37thst-r1"
+  },
+  {
+    "Device Name": "es-3rdst-r1"
+  },
+  {
+    "Device Name": "es-42ndst-r1"
+  },
+  {
+    "Device Name": "es-49thst-r1"
+  },
+  {
+    "Device Name": "es-4thst-r1"
+  },
+  {
+    "Device Name": "es-4thstpc-r1"
+  },
+  {
+    "Device Name": "es-52ndst-r1"
+  },
+  {
+    "Device Name": "es-54thst-r1"
+  },
+  {
+    "Device Name": "es-59thst-r1"
+  },
+  {
+    "Device Name": "es-61stst-r1"
+  },
+  {
+    "Device Name": "ec-66thst-r1"
+  },
+  {
+    "Device Name": "es-66thst-r1"
+  },
+  {
+    "Device Name": "es-6thave-r1"
+  },
+  {
+    "Device Name": "es-74thst-r1"
+  },
+  {
+    "Device Name": "ec-75thst-r1"
+  },
+  {
+    "Device Name": "es-75thst-r1"
+  },
+  {
+    "Device Name": "es-7thst-r1"
+  },
+  {
+    "Device Name": "es-92ndst-r1"
+  },
+  {
+    "Device Name": "es-93rdst-r1"
+  },
+  {
+    "Device Name": "ec-95thst-r1"
+  },
+  {
+    "Device Name": "es-95thst-r1"
+  },
+  {
+    "Device Name": "es-96thst-r1"
+  },
+  {
+    "Device Name": "ec-97thst-r1"
+  },
+  {
+    "Device Name": "es-99thst-r1"
+  },
+  {
+    "Device Name": "es-9thst-r1"
+  },
+  {
+    "Device Name": "es-acadenrichsci-r1"
+  },
+  {
+    "Device Name": "ms-adams-r1"
+  },
+  {
+    "Device Name": "hs-aggeler-r1"
+  },
+  {
+    "Device Name": "ec-albion-r1"
+  },
+  {
+    "Device Name": "es-albion-r1"
+  },
+  {
+    "Device Name": "es-aldama-r1"
+  },
+  {
+    "Device Name": "es-alexanderscisc-r1"
+  },
+  {
+    "Device Name": "ec-alexandria-r1"
+  },
+  {
+    "Device Name": "es-alexandria-r1"
+  },
+  {
+    "Device Name": "es-allesandro-r1"
+  },
+  {
+    "Device Name": "es-altacalifornia-r1"
+  },
+  {
+    "Device Name": "es-altaloma-r1"
+  },
+  {
+    "Device Name": "es-amanecerpc-r1"
+  },
+  {
+    "Device Name": "es-ambler-r1"
+  },
+  {
+    "Device Name": "es-amestoy-r1"
+  },
+  {
+    "Device Name": "es-anatola-r1"
+  },
+  {
+    "Device Name": "es-andasol-r1"
+  },
+  {
+    "Device Name": "es-angelesmesa-r1"
+  },
+  {
+    "Device Name": "hs-angeloucommfnarts-r1"
+  },
+  {
+    "Device Name": "hs-angelsgate-r1"
+  },
+  {
+    "Device Name": "es-annalee-r1"
+  },
+  {
+    "Device Name": "es-annandale-r1"
+  },
+  {
+    "Device Name": "es-ann-r1"
+  },
+  {
+    "Device Name": "es-anton-r1"
+  },
+  {
+    "Device Name": "es-apperson-r1"
+  },
+  {
+    "Device Name": "es-aragon-r1"
+  },
+  {
+    "Device Name": "hs-arleta-r1"
+  },
+  {
+    "Device Name": "es-arlingtonhts-r1"
+  },
+  {
+    "Device Name": "ec-arminta-r1"
+  },
+  {
+    "Device Name": "es-arminta-r1"
+  },
+  {
+    "Device Name": "es-arroyosecomusmsci-r1"
+  },
+  {
+    "Device Name": "es-ascot-r1"
+  },
+  {
+    "Device Name": "of-assisttech-r1"
+  },
+  {
+    "Device Name": "es-atwater-r1"
+  },
+  {
+    "Device Name": "ms-audubon-r1"
+  },
+  {
+    "Device Name": "es-aurora-r1"
+  },
+  {
+    "Device Name": "es-avalongardens-r1"
+  },
+  {
+    "Device Name": "hs-avalon-r1"
+  },
+  {
+    "Device Name": "es-bacaarts-r1"
+  },
+  {
+    "Device Name": "es-bakewellpc-r1"
+  },
+  {
+    "Device Name": "es-balboa-r1"
+  },
+  {
+    "Device Name": "es-baldwinhills-r1"
+  },
+  {
+    "Device Name": "ms-bancroft-r1"
+  },
+  {
+    "Device Name": "es-bandini-r1"
+  },
+  {
+    "Device Name": "se-banneker-r1"
+  },
+  {
+    "Device Name": "hs-banning-r1"
+  },
+  {
+    "Device Name": "es-barrett-r1"
+  },
+  {
+    "Device Name": "es-bartonhill-r1"
+  },
+  {
+    "Device Name": "es-bassett-r1"
+  },
+  {
+    "Device Name": "es-beachy-r1"
+  },
+  {
+    "Device Name": "es-beckford-r1"
+  },
+  {
+    "Device Name": "es-beethoven-r1"
+  },
+  {
+    "Device Name": "ad-bell-r1"
+  },
+  {
+    "Device Name": "hs-cityofangelsbellevue-r1"
+  },
+  {
+    "Device Name": "es-bellinghampc-r1"
+  },
+  {
+    "Device Name": "hs-bell-r1"
+  },
+  {
+    "Device Name": "hs-belmont-r1"
+  },
+  {
+    "Device Name": "es-belvedere-r1"
+  },
+  {
+    "Device Name": "ms-belvedere-r1"
+  },
+  {
+    "Device Name": "ms-berendo-r1"
+  },
+  {
+    "Device Name": "hs-bernstein-r1"
+  },
+  {
+    "Device Name": "es-bertrand-r1"
+  },
+  {
+    "Device Name": "ms-bethune-r1"
+  },
+  {
+    "Device Name": "es-blythe-r1"
+  },
+  {
+    "Device Name": "es-bonita-r1"
+  },
+  {
+    "Device Name": "es-braddockdrive-r1"
+  },
+  {
+    "Device Name": "es-bradleyenvhuman-r1"
+  },
+  {
+    "Device Name": "es-brainard-r1"
+  },
+  {
+    "Device Name": "hs-bravomedical-r1"
+  },
+  {
+    "Device Name": "es-breed-r1"
+  },
+  {
+    "Device Name": "es-brentwoodsci-r1"
+  },
+  {
+    "Device Name": "es-harrybridges-r1"
+  },
+  {
+    "Device Name": "es-bridge-r1"
+  },
+  {
+    "Device Name": "es-bright-r1"
+  },
+  {
+    "Device Name": "es-broadacres-r1"
+  },
+  {
+    "Device Name": "es-broadave-r1"
+  },
+  {
+    "Device Name": "ec-broadous-r1"
+  },
+  {
+    "Device Name": "es-broadous-r1"
+  },
+  {
+    "Device Name": "es-broadway-r1"
+  },
+  {
+    "Device Name": "es-brockton-r1"
+  },
+  {
+    "Device Name": "ec-brooklyn-r1"
+  },
+  {
+    "Device Name": "es-brooklynave-r1"
+  },
+  {
+    "Device Name": "es-bryson-r1"
+  },
+  {
+    "Device Name": "of-itdsanjulian-r1"
+  },
+  {
+    "Device Name": "of-bsdsepbusgar-r1"
+  },
+  {
+    "Device Name": "es-clearcreek-r1"
+  },
+  {
+    "Device Name": "of-btbmsschoolunit-r1"
+  },
+  {
+    "Device Name": "hs-pointfermincamp-r1"
+  },
+  {
+    "Device Name": "of-btbreadysetgo-r1"
+  },
+  {
+    "Device Name": "es-buchanan-r1"
+  },
+  {
+    "Device Name": "es-budlong-r1"
+  },
+  {
+    "Device Name": "es-burbank-r1"
+  },
+  {
+    "Device Name": "ms-burbank-r1"
+  },
+  {
+    "Device Name": "hs-burke-r1"
+  },
+  {
+    "Device Name": "ms-burroughs-r1"
+  },
+  {
+    "Device Name": "es-burton-r1"
+  },
+  {
+    "Device Name": "es-bushnellway-r1"
+  },
+  {
+    "Device Name": "of-bsdpurchasing-r1"
+  },
+  {
+    "Device Name": "ms-byrd-r1"
+  },
+  {
+    "Device Name": "of-maintcentral1fa-r1"
+  },
+  {
+    "Device Name": "of-maintcentral2fa-r1"
+  },
+  {
+    "Device Name": "of-maintc3faspsvc-r1"
+  },
+  {
+    "Device Name": "ec-cabrillo-r1"
+  },
+  {
+    "Device Name": "es-cabrillo-r1"
+  },
+  {
+    "Device Name": "es-cahuenga-r1"
+  },
+  {
+    "Device Name": "es-calabash-r1"
+  },
+  {
+    "Device Name": "es-calahan-r1"
+  },
+  {
+    "Device Name": "es-calvert-r1"
+  },
+  {
+    "Device Name": "es-camellia-r1"
+  },
+  {
+    "Device Name": "es-canfield-r1"
+  },
+  {
+    "Device Name": "ec-canogapark-r1"
+  },
+  {
+    "Device Name": "es-canogapark-r1"
+  },
+  {
+    "Device Name": "hs-canogapark-r1"
+  },
+  {
+    "Device Name": "es-cantara-r1"
+  },
+  {
+    "Device Name": "es-canterbury-r1"
+  },
+  {
+    "Device Name": "es-canyon-r1"
+  },
+  {
+    "Device Name": "es-canyoncreek-r1"
+  },
+  {
+    "Device Name": "es-capistrano-r1"
+  },
+  {
+    "Device Name": "es-cardenas-r1"
+  },
+  {
+    "Device Name": "ms-carnegie-r1"
+  },
+  {
+    "Device Name": "es-caroldalelrngcomm-r1"
+  },
+  {
+    "Device Name": "es-carpenter-r1"
+  },
+  {
+    "Device Name": "es-carsongoreemy-r1"
+  },
+  {
+    "Device Name": "hs-carson-r1"
+  },
+  {
+    "Device Name": "es-carson-r1"
+  },
+  {
+    "Device Name": "es-carthaycenter-r1"
+  },
+  {
+    "Device Name": "ms-carver-r1"
+  },
+  {
+    "Device Name": "es-castelar-r1"
+  },
+  {
+    "Device Name": "es-castlebayln-r1"
+  },
+  {
+    "Device Name": "es-castlehts-r1"
+  },
+  {
+    "Device Name": "es-catskill-r1"
+  },
+  {
+    "Device Name": "hs-johnston-r1"
+  },
+  {
+    "Device Name": "hs-westhollywood-r1"
+  },
+  {
+    "Device Name": "hs-centralhielysian-r1"
+  },
+  {
+    "Device Name": "hs-centralhislvrlake-r1"
+  },
+  {
+    "Device Name": "hs-centralangelsflight-r1"
+  },
+  {
+    "Device Name": "hs-centralhimarvista-r1"
+  },
+  {
+    "Device Name": "es-centurypk-r1"
+  },
+  {
+    "Device Name": "es-chandler-r1"
+  },
+  {
+    "Device Name": "es-chapman-r1"
+  },
+  {
+    "Device Name": "es-charnockroad-r1"
+  },
+  {
+    "Device Name": "ec-chase-r1"
+  },
+  {
+    "Device Name": "es-chase-r1"
+  },
+  {
+    "Device Name": "hs-chatsworth-r1"
+  },
+  {
+    "Device Name": "es-chatsworth-r1"
+  },
+  {
+    "Device Name": "es-chavez-r1"
+  },
+  {
+    "Device Name": "hs-chavezlatchr-r1"
+  },
+  {
+    "Device Name": "es-cheremoya-r1"
+  },
+  {
+    "Device Name": "es-cienega-r1"
+  },
+  {
+    "Device Name": "es-cimarron-r1"
+  },
+  {
+    "Device Name": "of-cityofangels-r1"
+  },
+  {
+    "Device Name": "of-cityofangelscounselingcenter-r1"
+  },
+  {
+    "Device Name": "hs-cityofangelswoodlandhills-r1"
+  },
+  {
+    "Device Name": "es-cityterrace-r1"
+  },
+  {
+    "Device Name": "hs-cleveland-r1"
+  },
+  {
+    "Device Name": "es-clifford-r1"
+  },
+  {
+    "Device Name": "ms-clinton-r1"
+  },
+  {
+    "Device Name": "es-clover-r1"
+  },
+  {
+    "Device Name": "ms-cochran-r1"
+  },
+  {
+    "Device Name": "es-coeurdalene-r1"
+  },
+  {
+    "Device Name": "es-cohasset-r1"
+  },
+  {
+    "Device Name": "es-coldwatercyn-r1"
+  },
+  {
+    "Device Name": "es-colfax-r1"
+  },
+  {
+    "Device Name": "es-coliseum-r1"
+  },
+  {
+    "Device Name": "ec-collins-r1"
+  },
+  {
+    "Device Name": "es-columbusave-r1"
+  },
+  {
+    "Device Name": "ms-columbus-r1"
+  },
+  {
+    "Device Name": "es-commonwealth-r1"
+  },
+  {
+    "Device Name": "es-communitynet-r1"
+  },
+  {
+    "Device Name": "es-compton-r1"
+  },
+  {
+    "Device Name": "hs-contreraslc-r1"
+  },
+  {
+    "Device Name": "es-corona-r1"
+  },
+  {
+    "Device Name": "hs-cortinesofvpa-r1"
+  },
+  {
+    "Device Name": "es-coughlin-r1"
+  },
+  {
+    "Device Name": "es-cowan-r1"
+  },
+  {
+    "Device Name": "hs-crenshaw-r1"
+  },
+  {
+    "Device Name": "ec-crescenthts-r1"
+  },
+  {
+    "Device Name": "es-crescenthts-r1"
+  },
+  {
+    "Device Name": "es-crestwoodst-r1"
+  },
+  {
+    "Device Name": "ec-cruz-r1"
+  },
+  {
+    "Device Name": "ms-curtiss-r1"
+  },
+  {
+    "Device Name": "ec-dacotah-r1"
+  },
+  {
+    "Device Name": "es-dahliahts-r1"
+  },
+  {
+    "Device Name": "ms-dana-r1"
+  },
+  {
+    "Device Name": "es-danube-r1"
+  },
+  {
+    "Device Name": "es-darby-r1"
+  },
+  {
+    "Device Name": "ec-dayton-r1"
+  },
+  {
+    "Device Name": "es-daytonheights-r1"
+  },
+  {
+    "Device Name": "hs-downtwnbusiness-r1"
+  },
+  {
+    "Device Name": "es-dearborn-r1"
+  },
+  {
+    "Device Name": "es-delamo-r1"
+  },
+  {
+    "Device Name": "es-delatorrejr-r1"
+  },
+  {
+    "Device Name": "es-delevandrive-r1"
+  },
+  {
+    "Device Name": "es-delolmo-r1"
+  },
+  {
+    "Device Name": "es-dena-r1"
+  },
+  {
+    "Device Name": "es-denker-r1"
+  },
+  {
+    "Device Name": "es-dixiecanyon-r1"
+  },
+  {
+    "Device Name": "ms-dodson-r1"
+  },
+  {
+    "Device Name": "es-dolores-r1"
+  },
+  {
+    "Device Name": "es-dominguez-r1"
+  },
+  {
+    "Device Name": "es-dorrisplace-r1"
+  },
+  {
+    "Device Name": "hs-dorsey-r1"
+  },
+  {
+    "Device Name": "ms-drew-r1"
+  },
+  {
+    "Device Name": "es-dyer-r1"
+  },
+  {
+    "Device Name": "hs-dymally-r1"
+  },
+  {
+    "Device Name": "es-eaglerock-r1"
+  },
+  {
+    "Device Name": "hs-eaglerock-r1"
+  },
+  {
+    "Device Name": "ec-eastman-r1"
+  },
+  {
+    "Device Name": "es-eastman-r1"
+  },
+  {
+    "Device Name": "hs-eastvalley-r1"
+  },
+  {
+    "Device Name": "ms-edison-r1"
+  },
+  {
+    "Device Name": "of-edlbroadcastingsv-r1"
+  },
+  {
+    "Device Name": "ad-ela-r1"
+  },
+  {
+    "Device Name": "es-eldorado-r1"
+  },
+  {
+    "Device Name": "es-elementary-r1"
+  },
+  {
+    "Device Name": "es-elizabethlc-r1"
+  },
+  {
+    "Device Name": "es-eloro-r1"
+  },
+  {
+    "Device Name": "ec-elsereno-r1"
+  },
+  {
+    "Device Name": "es-elsereno-r1"
+  },
+  {
+    "Device Name": "ms-elsereno-r1"
+  },
+  {
+    "Device Name": "es-elysianheights-r1"
+  },
+  {
+    "Device Name": "es-emelita-r1"
+  },
+  {
+    "Device Name": "of-roybaleoc-r1"
+  },
+  {
+    "Device Name": "ms-emerson-r1"
+  },
+  {
+    "Device Name": "es-enadia-r1"
+  },
+  {
+    "Device Name": "es-encino-r1"
+  },
+  {
+    "Device Name": "of-transabsregb-r1"
+  },
+  {
+    "Device Name": "es-erwin-r1"
+  },
+  {
+    "Device Name": "es-escalante-r1"
+  },
+  {
+    "Device Name": "es-escutiapc-r1"
+  },
+  {
+    "Device Name": "es-eshelman-r1"
+  },
+  {
+    "Device Name": "es-esperanza-r1"
+  },
+  {
+    "Device Name": "es-estrella-r1"
+  },
+  {
+    "Device Name": "es-euclid-r1"
+  },
+  {
+    "Device Name": "ad-evans-r1"
+  },
+  {
+    "Device Name": "ec-evergreen-r1"
+  },
+  {
+    "Device Name": "es-evergreen-r1"
+  },
+  {
+    "Device Name": "hs-evergreen-r1"
+  },
+  {
+    "Device Name": "ec-fair-r1"
+  },
+  {
+    "Device Name": "es-fair-r1"
+  },
+  {
+    "Device Name": "es-fairburn-r1"
+  },
+  {
+    "Device Name": "hs-fairfax-r1"
+  },
+  {
+    "Device Name": "es-farmdale-r1"
+  },
+  {
+    "Device Name": "es-fernangeles-r1"
+  },
+  {
+    "Device Name": "es-figueroa-r1"
+  },
+  {
+    "Device Name": "es-fishburn-r1"
+  },
+  {
+    "Device Name": "ms-fleming-r1"
+  },
+  {
+    "Device Name": "es-fletcherdr-r1"
+  },
+  {
+    "Device Name": "es-florence-r1"
+  },
+  {
+    "Device Name": "es-flournoy-r1"
+  },
+  {
+    "Device Name": "es-fordblvd-r1"
+  },
+  {
+    "Device Name": "hs-foshaylc-r1"
+  },
+  {
+    "Device Name": "es-franklin-r1"
+  },
+  {
+    "Device Name": "hs-franklin-r1"
+  },
+  {
+    "Device Name": "hs-fremont-r1"
+  },
+  {
+    "Device Name": "ad-friedman-r1"
+  },
+  {
+    "Device Name": "es-fries-r1"
+  },
+  {
+    "Device Name": "ms-frost-r1"
+  },
+  {
+    "Device Name": "es-fullbright-r1"
+  },
+  {
+    "Device Name": "ms-fulton-r1"
+  },
+  {
+    "Device Name": "ms-gage-r1"
+  },
+  {
+    "Device Name": "es-garcetti-r1"
+  },
+  {
+    "Device Name": "es-gardena-r1"
+  },
+  {
+    "Device Name": "of-gardenabusgar-r1"
+  },
+  {
+    "Device Name": "hs-gardena-r1"
+  },
+  {
+    "Device Name": "es-gardengrove-r1"
+  },
+  {
+    "Device Name": "es-gardner-r1"
+  },
+  {
+    "Device Name": "hs-garfield-r1"
+  },
+  {
+    "Device Name": "es-garvanza-r1"
+  },
+  {
+    "Device Name": "es-garzapc-r1"
+  },
+  {
+    "Device Name": "ec-gates-r1"
+  },
+  {
+    "Device Name": "es-gates-r1"
+  },
+  {
+    "Device Name": "es-gault-r1"
+  },
+  {
+    "Device Name": "es-germain-r1"
+  },
+  {
+    "Device Name": "ec-glassellpark-r1"
+  },
+  {
+    "Device Name": "es-glassellpark-r1"
+  },
+  {
+    "Device Name": "ec-gledhill-r1"
+  },
+  {
+    "Device Name": "es-gledhill-r1"
+  },
+  {
+    "Device Name": "es-glenalta-r1"
+  },
+  {
+    "Device Name": "ec-glenfeliz-r1"
+  },
+  {
+    "Device Name": "es-glenfelizblvd-r1"
+  },
+  {
+    "Device Name": "es-glenwood-r1"
+  },
+  {
+    "Device Name": "ms-gompers-r1"
+  },
+  {
+    "Device Name": "ec-graham-r1"
+  },
+  {
+    "Device Name": "es-graham-r1"
+  },
+  {
+    "Device Name": "es-granada-r1"
+  },
+  {
+    "Device Name": "es-grandview-r1"
+  },
+  {
+    "Device Name": "ec-grant-r1"
+  },
+  {
+    "Device Name": "es-grant-r1"
+  },
+  {
+    "Device Name": "hs-grant-r1"
+  },
+  {
+    "Device Name": "es-grape-r1"
+  },
+  {
+    "Device Name": "ec-gratts-r1"
+  },
+  {
+    "Device Name": "es-gratts-r1"
+  },
+  {
+    "Device Name": "es-gridley-r1"
+  },
+  {
+    "Device Name": "es-griffin-r1"
+  },
+  {
+    "Device Name": "es-griffithjoyner-r1"
+  },
+  {
+    "Device Name": "ms-griffith-r1"
+  },
+  {
+    "Device Name": "es-gulf-r1"
+  },
+  {
+    "Device Name": "ec-haddon-r1"
+  },
+  {
+    "Device Name": "es-haddon-r1"
+  },
+  {
+    "Device Name": "ms-hale-r1"
+  },
+  {
+    "Device Name": "es-halldale-r1"
+  },
+  {
+    "Device Name": "es-hamasaki-r1"
+  },
+  {
+    "Device Name": "hs-hamiltoncomplex-r1"
+  },
+  {
+    "Device Name": "es-hamlin-r1"
+  },
+  {
+    "Device Name": "es-hancockpark-r1"
+  },
+  {
+    "Device Name": "ad-harborcas-r1"
+  },
+  {
+    "Device Name": "es-harborcity-r1"
+  },
+  {
+    "Device Name": "ad-harbor-r1"
+  },
+  {
+    "Device Name": "hs-harbortchr-r1"
+  },
+  {
+    "Device Name": "es-harding-r1"
+  },
+  {
+    "Device Name": "es-harmony-r1"
+  },
+  {
+    "Device Name": "es-harrison-r1"
+  },
+  {
+    "Device Name": "ms-harte-r1"
+  },
+  {
+    "Device Name": "es-hartst-r1"
+  },
+  {
+    "Device Name": "es-harvard-r1"
+  },
+  {
+    "Device Name": "es-haskell-r1"
+  },
+  {
+    "Device Name": "ec-hawaiian-r1"
+  },
+  {
+    "Device Name": "es-hawaiian-r1"
+  },
+  {
+    "Device Name": "hs-hawkins-r1"
+  },
+  {
+    "Device Name": "es-haynes-r1"
+  },
+  {
+    "Device Name": "es-hazeltine-r1"
+  },
+  {
+    "Device Name": "es-heliotrope-r1"
+  },
+  {
+    "Device Name": "ms-henry-r1"
+  },
+  {
+    "Device Name": "es-herrick-r1"
+  },
+  {
+    "Device Name": "es-hesbyoaks-r1"
+  },
+  {
+    "Device Name": "hs-highlandpark-r1"
+  },
+  {
+    "Device Name": "es-hillcrestdr-r1"
+  },
+  {
+    "Device Name": "es-hillside-r1"
+  },
+  {
+    "Device Name": "ec-hobart-r1"
+  },
+  {
+    "Device Name": "es-hobartblvd-r1"
+  },
+  {
+    "Device Name": "ms-hollenbeck-r1"
+  },
+  {
+    "Device Name": "es-hollywoodpc-r1"
+  },
+  {
+    "Device Name": "hs-hollywood-r1"
+  },
+  {
+    "Device Name": "ec-holmes-r1"
+  },
+  {
+    "Device Name": "es-holmes-r1"
+  },
+  {
+    "Device Name": "ms-holmes-r1"
+  },
+  {
+    "Device Name": "ec-hooper-r1"
+  },
+  {
+    "Device Name": "es-hooper-r1"
+  },
+  {
+    "Device Name": "es-hooperpc-r1"
+  },
+  {
+    "Device Name": "es-hoover-r1"
+  },
+  {
+    "Device Name": "es-hope-r1"
+  },
+  {
+    "Device Name": "of-hrtchrtmgacad-r1"
+  },
+  {
+    "Device Name": "hs-tric6thave-r1"
+  },
+  {
+    "Device Name": "es-hubbard-r1"
+  },
+  {
+    "Device Name": "es-huerta-r1"
+  },
+  {
+    "Device Name": "es-hughes-r1"
+  },
+  {
+    "Device Name": "es-humphreys-r1"
+  },
+  {
+    "Device Name": "es-huntingtondr-r1"
+  },
+  {
+    "Device Name": "es-huntingtonpark-r1"
+  },
+  {
+    "Device Name": "hs-huntingtonpark-r1"
+  },
+  {
+    "Device Name": "ec-hydepark-r1"
+  },
+  {
+    "Device Name": "es-independence-r1"
+  },
+  {
+    "Device Name": "hs-independence-r1"
+  },
+  {
+    "Device Name": "hs-internationalstlc-r1"
+  },
+  {
+    "Device Name": "ms-irving-r1"
+  },
+  {
+    "Device Name": "of-itdadmtrngzelzah-r1"
+  },
+  {
+    "Device Name": "of-itdcompelomrrep-r1"
+  },
+  {
+    "Device Name": "es-Cisco-Lab-r1.es-Cisco-Lab-r1.lausd.net"
+  },
+  {
+    "Device Name": "vn-dc-office-r1"
+  },
+  {
+    "Device Name": "vn-dc-office2-r1"
+  },
+  {
+    "Device Name": "es-ivanhoe-r1"
+  },
+  {
+    "Device Name": "hs-jefferson-r1"
+  },
+  {
+    "Device Name": "es-jones-r1"
+  },
+  {
+    "Device Name": "es-jonespc-r1"
+  },
+  {
+    "Device Name": "hs-jordan-r1"
+  },
+  {
+    "Device Name": "es-justice-r1"
+  },
+  {
+    "Device Name": "es-kennedy-r1"
+  },
+  {
+    "Device Name": "ad-kennedysanfernad-r1"
+  },
+  {
+    "Device Name": "hs-kennedy-r1"
+  },
+  {
+    "Device Name": "es-kentercanyon-r1"
+  },
+  {
+    "Device Name": "es-kentwood-r1"
+  },
+  {
+    "Device Name": "es-kester-r1"
+  },
+  {
+    "Device Name": "ms-kimemy-r1"
+  },
+  {
+    "Device Name": "es-kim-r1"
+  },
+  {
+    "Device Name": "hs-kingdrewmed-r1"
+  },
+  {
+    "Device Name": "es-kingjr-r1"
+  },
+  {
+    "Device Name": "ms-king-r1"
+  },
+  {
+    "Device Name": "es-kingsley-r1"
+  },
+  {
+    "Device Name": "es-kittridge-r1"
+  },
+  {
+    "Device Name": "es-knollwood-r1"
+  },
+  {
+    "Device Name": "es-knox-r1"
+  },
+  {
+    "Device Name": "es-korenstein-r1"
+  },
+  {
+    "Device Name": "hs-laces-r1"
+  },
+  {
+    "Device Name": "es-lafayetteparkpc-r1"
+  },
+  {
+    "Device Name": "es-lakestpc-r1"
+  },
+  {
+    "Device Name": "es-lanai-r1"
+  },
+  {
+    "Device Name": "es-lane-r1"
+  },
+  {
+    "Device Name": "es-langdon-r1"
+  },
+  {
+    "Device Name": "es-lankershim-r1"
+  },
+  {
+    "Device Name": "se-lanterman-r1"
+  },
+  {
+    "Device Name": "es-lasalle-r1"
+  },
+  {
+    "Device Name": "of-lasbestoffice-r1"
+  },
+  {
+    "Device Name": "of-laspdsouthdiv-r1"
+  },
+  {
+    "Device Name": "es-lassen-r1"
+  },
+  {
+    "Device Name": "es-latona-r1"
+  },
+  {
+    "Device Name": "ec-laurel-r1"
+  },
+  {
+    "Device Name": "es-laurel-r1"
+  },
+  {
+    "Device Name": "ms-lawrence-r1"
+  },
+  {
+    "Device Name": "es-lawson-r1"
+  },
+  {
+    "Device Name": "es-leapwood-r1"
+  },
+  {
+    "Device Name": "ms-leconte-r1"
+  },
+  {
+    "Device Name": "es-leemedhlth-r1"
+  },
+  {
+    "Device Name": "hs-legshst-r1"
+  },
+  {
+    "Device Name": "se-leichman-r1"
+  },
+  {
+    "Device Name": "es-leland-r1"
+  },
+  {
+    "Device Name": "ec-lemay-r1"
+  },
+  {
+    "Device Name": "es-lemay-r1"
+  },
+  {
+    "Device Name": "es-lexingtonavepc-r1"
+  },
+  {
+    "Device Name": "es-liberty-r1"
+  },
+  {
+    "Device Name": "ms-liechty-r1"
+  },
+  {
+    "Device Name": "es-liggett-r1"
+  },
+  {
+    "Device Name": "es-lillian-r1"
+  },
+  {
+    "Device Name": "es-limerick-r1"
+  },
+  {
+    "Device Name": "hs-lincoln-r1"
+  },
+  {
+    "Device Name": "es-lizarraga-r1"
+  },
+  {
+    "Device Name": "of-locdistnw-r1"
+  },
+  {
+    "Device Name": "of-locdistso-r1"
+  },
+  {
+    "Device Name": "of-locdistwe-r1"
+  },
+  {
+    "Device Name": "ec-locke-r1"
+  },
+  {
+    "Device Name": "es-lockhurst-r1"
+  },
+  {
+    "Device Name": "es-lockwood-r1"
+  },
+  {
+    "Device Name": "es-logan-r1"
+  },
+  {
+    "Device Name": "ec-logan-r1"
+  },
+  {
+    "Device Name": "se-lokrantz-r1"
+  },
+  {
+    "Device Name": "es-lomavista-r1"
+  },
+  {
+    "Device Name": "es-lomita-r1"
+  },
+  {
+    "Device Name": "es-lorena-r1"
+  },
+  {
+    "Device Name": "es-loreto-r1"
+  },
+  {
+    "Device Name": "es-lorne-r1"
+  },
+  {
+    "Device Name": "ms-losangeles-r1"
+  },
+  {
+    "Device Name": "es-losangeles-r1"
+  },
+  {
+    "Device Name": "hs-losangeles-r1"
+  },
+  {
+    "Device Name": "ad-losangeles-r1"
+  },
+  {
+    "Device Name": "es-losfeliz-r1"
+  },
+  {
+    "Device Name": "se-lowman-r1"
+  },
+  {
+    "Device Name": "es-loyolavillage-r1"
+  },
+  {
+    "Device Name": "es-macarthurparkpc-r1"
+  },
+  {
+    "Device Name": "hs-maces-r1"
+  },
+  {
+    "Device Name": "es-mack-r1"
+  },
+  {
+    "Device Name": "ms-maclay-r1"
+  },
+  {
+    "Device Name": "es-madison-r1"
+  },
+  {
+    "Device Name": "ms-madison-r1"
+  },
+  {
+    "Device Name": "es-magnolia-r1"
+  },
+  {
+    "Device Name": "es-mainst-r1"
+  },
+  {
+    "Device Name": "es-malabar-r1"
+  },
+  {
+    "Device Name": "es-manchester-r1"
+  },
+  {
+    "Device Name": "es-manhattan-r1"
+  },
+  {
+    "Device Name": "ms-mann-r1"
+  },
+  {
+    "Device Name": "hs-manualarts-r1"
+  },
+  {
+    "Device Name": "es-maplepc-r1"
+  },
+  {
+    "Device Name": "es-marianna-r1"
+  },
+  {
+    "Device Name": "ms-marinadelrey-r1"
+  },
+  {
+    "Device Name": "ec-marina-r1"
+  },
+  {
+    "Device Name": "ad-marineaveadult-r1"
+  },
+  {
+    "Device Name": "es-mariposanabipc-r1"
+  },
+  {
+    "Device Name": "ms-markham-r1"
+  },
+  {
+    "Device Name": "ms-marktwain-r1"
+  },
+  {
+    "Device Name": "se-marlton-r1"
+  },
+  {
+    "Device Name": "es-marquez-r1"
+  },
+  {
+    "Device Name": "hs-marqueza-r1"
+  },
+  {
+    "Device Name": "hs-marshall-r1"
+  },
+  {
+    "Device Name": "ec-marvin-r1"
+  },
+  {
+    "Device Name": "es-marvin-r1"
+  },
+  {
+    "Device Name": "es-marvista-r1"
+  },
+  {
+    "Device Name": "es-mayall-r1"
+  },
+  {
+    "Device Name": "es-mayberry-r1"
+  },
+  {
+    "Device Name": "hs-maywood-r1"
+  },
+  {
+    "Device Name": "es-maywood-r1"
+  },
+  {
+    "Device Name": "ec-mcauliffe-r1"
+  },
+  {
+    "Device Name": "es-mckinley-r1"
+  },
+  {
+    "Device Name": "ad-mdctyadblmntcmad-r1"
+  },
+  {
+    "Device Name": "ad-midcityadulted-r1"
+  },
+  {
+    "Device Name": "es-melrose-r1"
+  },
+  {
+    "Device Name": "es-melvin-r1"
+  },
+  {
+    "Device Name": "hs-mendezlc-r1"
+  },
+  {
+    "Device Name": "es-menlo-r1"
+  },
+  {
+    "Device Name": "of-mentalhc-r1"
+  },
+  {
+    "Device Name": "ec-meridian-r1"
+  },
+  {
+    "Device Name": "hs-metropolitan-r1"
+  },
+  {
+    "Device Name": "es-meyler-r1"
+  },
+  {
+    "Device Name": "es-micheltorena-r1"
+  },
+  {
+    "Device Name": "es-midcitypres-r1"
+  },
+  {
+    "Device Name": "hs-middlecollege-r1"
+  },
+  {
+    "Device Name": "es-middleton-r1"
+  },
+  {
+    "Device Name": "es-middletonpc-r1"
+  },
+  {
+    "Device Name": "ec-mikes-r1"
+  },
+  {
+    "Device Name": "es-milesbil-r1"
+  },
+  {
+    "Device Name": "se-miller-r1"
+  },
+  {
+    "Device Name": "es-miller-r1"
+  },
+  {
+    "Device Name": "ms-millikan-r1"
+  },
+  {
+    "Device Name": "ec-miramonte-r1"
+  },
+  {
+    "Device Name": "es-miramonte-r1"
+  },
+  {
+    "Device Name": "hs-mission-r1"
+  },
+  {
+    "Device Name": "es-monlux-r1"
+  },
+  {
+    "Device Name": "hs-monroe-r1"
+  },
+  {
+    "Device Name": "es-montaraave-r1"
+  },
+  {
+    "Device Name": "hs-monterey-r1"
+  },
+  {
+    "Device Name": "ec-montevista-r1"
+  },
+  {
+    "Device Name": "es-montevista-r1"
+  },
+  {
+    "Device Name": "es-moore-r1"
+  },
+  {
+    "Device Name": "es-morningside-r1"
+  },
+  {
+    "Device Name": "es-mosk-r1"
+  },
+  {
+    "Device Name": "es-mountainview-r1"
+  },
+  {
+    "Device Name": "ms-mountgleason-r1"
+  },
+  {
+    "Device Name": "hs-mtlukens-r1"
+  },
+  {
+    "Device Name": "es-mtwashington-r1"
+  },
+  {
+    "Device Name": "ms-muir-r1"
+  },
+  {
+    "Device Name": "ms-mulholland-r1"
+  },
+  {
+    "Device Name": "es-multnomah-r1"
+  },
+  {
+    "Device Name": "es-murchison-r1"
+  },
+  {
+    "Device Name": "of-maintnorth2fa-r1"
+  },
+  {
+    "Device Name": "es-napa-r1"
+  },
+  {
+    "Device Name": "hs-narbonne-r1"
+  },
+  {
+    "Device Name": "ms-navalaartcult-r1"
+  },
+  {
+    "Device Name": "es-nestle-r1"
+  },
+  {
+    "Device Name": "es-nevada-r1"
+  },
+  {
+    "Device Name": "es-nevin-r1"
+  },
+  {
+    "Device Name": "es-newcastle-r1"
+  },
+  {
+    "Device Name": "of-newmanchnutr-r1"
+  },
+  {
+    "Device Name": "hs-newmark-r1"
+  },
+  {
+    "Device Name": "hs-nhhslazoobiol-r1"
+  },
+  {
+    "Device Name": "ms-nightingale-r1"
+  },
+  {
+    "Device Name": "ms-nimitz-r1"
+  },
+  {
+    "Device Name": "ms-nobel-r1"
+  },
+  {
+    "Device Name": "ec-noble-r1"
+  },
+  {
+    "Device Name": "es-noble-r1"
+  },
+  {
+    "Device Name": "hs-nohollywood-r1"
+  },
+  {
+    "Device Name": "ec-normandie-r1"
+  },
+  {
+    "Device Name": "es-normandie-r1"
+  },
+  {
+    "Device Name": "ec-normont-r1"
+  },
+  {
+    "Device Name": "es-normont-r1"
+  },
+  {
+    "Device Name": "hs-northridge-r1"
+  },
+  {
+    "Device Name": "ms-northridge-r1"
+  },
+  {
+    "Device Name": "ad-novalley-r1"
+  },
+  {
+    "Device Name": "es-norwood-r1"
+  },
+  {
+    "Device Name": "es-nuevavista-r1"
+  },
+  {
+    "Device Name": "ad-nvocaviation-r1"
+  },
+  {
+    "Device Name": "es-obamael-r1"
+  },
+  {
+    "Device Name": "ms-obamaglbl-r1"
+  },
+  {
+    "Device Name": "es-ochoa-r1"
+  },
+  {
+    "Device Name": "hs-odyssey-r1"
+  },
+  {
+    "Device Name": "ms-olivevista-r1"
+  },
+  {
+    "Device Name": "es-olympicpc-r1"
+  },
+  {
+    "Device Name": "es-omelveny-r1"
+  },
+  {
+    "Device Name": "es-opennet-r1"
+  },
+  {
+    "Device Name": "ms-orchardemies-r1"
+  },
+  {
+    "Device Name": "hs-orthopaedichosp-r1"
+  },
+  {
+    "Device Name": "es-osceola-r1"
+  },
+  {
+    "Device Name": "es-overland-r1"
+  },
+  {
+    "Device Name": "es-oxnard-r1"
+  },
+  {
+    "Device Name": "es-pacificblvd-r1"
+  },
+  {
+    "Device Name": "ec-pacoima-r1"
+  },
+  {
+    "Device Name": "ms-pacoima-r1"
+  },
+  {
+    "Device Name": "es-pacificpalisades-r1"
+  },
+  {
+    "Device Name": "es-palms-r1"
+  },
+  {
+    "Device Name": "ms-palms-r1"
+  },
+  {
+    "Device Name": "es-panoramacity-r1"
+  },
+  {
+    "Device Name": "hs-panorama-r1"
+  },
+  {
+    "Device Name": "es-parkave-r1"
+  },
+  {
+    "Device Name": "ec-parkshuerta-r1"
+  },
+  {
+    "Device Name": "es-parkslc-r1"
+  },
+  {
+    "Device Name": "ec-parkwestern-r1"
+  },
+  {
+    "Device Name": "es-parkwestern-r1"
+  },
+  {
+    "Device Name": "es-parmelee-r1"
+  },
+  {
+    "Device Name": "es-parthenia-r1"
+  },
+  {
+    "Device Name": "es-paseodelreynatsc-r1"
+  },
+  {
+    "Device Name": "of-midcities-r1"
+  },
+  {
+    "Device Name": "hs-pearljourncomm-r1"
+  },
+  {
+    "Device Name": "ms-peary-r1"
+  },
+  {
+    "Device Name": "se-perez-r1"
+  },
+  {
+    "Device Name": "hs-phoenix-r1"
+  },
+  {
+    "Device Name": "ec-pinewood-r1"
+  },
+  {
+    "Device Name": "es-pinewood-r1"
+  },
+  {
+    "Device Name": "ms-piopico-r1"
+  },
+  {
+    "Device Name": "es-plainview-r1"
+  },
+  {
+    "Device Name": "es-plasencia-r1"
+  },
+  {
+    "Device Name": "es-playadelrey-r1"
+  },
+  {
+    "Device Name": "es-playavista-r1"
+  },
+  {
+    "Device Name": "es-plummer-r1"
+  },
+  {
+    "Device Name": "es-poindexter-r1"
+  },
+  {
+    "Device Name": "es-politi-r1"
+  },
+  {
+    "Device Name": "hs-poly-r1"
+  },
+  {
+    "Device Name": "es-pomelo-r1"
+  },
+  {
+    "Device Name": "ms-porter-r1"
+  },
+  {
+    "Device Name": "es-porterranch-r1"
+  },
+  {
+    "Device Name": "ms-portola-r1"
+  },
+  {
+    "Device Name": "es-president-r1"
+  },
+  {
+    "Device Name": "es-primaryemypc-r1"
+  },
+  {
+    "Device Name": "of-efnorthregion-r1"
+  },
+  {
+    "Device Name": "es-pointfermin-r1"
+  },
+  {
+    "Device Name": "es-purche-r1"
+  },
+  {
+    "Device Name": "es-queenanne-r1"
+  },
+  {
+    "Device Name": "es-ramona-r1"
+  },
+  {
+    "Device Name": "hs-ramona-r1"
+  },
+  {
+    "Device Name": "es-ranchito-r1"
+  },
+  {
+    "Device Name": "hs-ranchodomingz-r1"
+  },
+  {
+    "Device Name": "es-raymondave-r1"
+  },
+  {
+    "Device Name": "ms-reed-r1"
+  },
+  {
+    "Device Name": "es-reseda-r1"
+  },
+  {
+    "Device Name": "hs-reseda-r1"
+  },
+  {
+    "Device Name": "ms-revere-r1"
+  },
+  {
+    "Device Name": "es-rfknewopenwld-r1"
+  },
+  {
+    "Device Name": "es-richland-r1"
+  },
+  {
+    "Device Name": "es-ride-r1"
+  },
+  {
+    "Device Name": "hs-rileycyesis-r1"
+  },
+  {
+    "Device Name": "es-riordanpc-r1"
+  },
+  {
+    "Device Name": "es-riovista-r1"
+  },
+  {
+    "Device Name": "es-ritter-r1"
+  },
+  {
+    "Device Name": "hs-rivera-r1"
+  },
+  {
+    "Device Name": "es-riverside-r1"
+  },
+  {
+    "Device Name": "ec-roberti-r1"
+  },
+  {
+    "Device Name": "es-rockdale-r1"
+  },
+  {
+    "Device Name": "hs-rodia-r1"
+  },
+  {
+    "Device Name": "ms-romer-r1"
+  },
+  {
+    "Device Name": "hs-roosevelt-r1"
+  },
+  {
+    "Device Name": "es-roscoe-r1"
+  },
+  {
+    "Device Name": "es-roscomare-r1"
+  },
+  {
+    "Device Name": "ec-rosemont-r1"
+  },
+  {
+    "Device Name": "es-rosemont-r1"
+  },
+  {
+    "Device Name": "es-rosewood-r1"
+  },
+  {
+    "Device Name": "es-rowan-r1"
+  },
+  {
+    "Device Name": "es-roybalallard-r1"
+  },
+  {
+    "Device Name": "hs-royballc-r1"
+  },
+  {
+    "Device Name": "es-russell-r1"
+  },
+  {
+    "Device Name": "of-maintsouth1fa-r1"
+  },
+  {
+    "Device Name": "of-maintsouth2fa-r1"
+  },
+  {
+    "Device Name": "se-salvin-r1"
+  },
+  {
+    "Device Name": "es-sanantonio-r1"
+  },
+  {
+    "Device Name": "ec-sanfernando-r1"
+  },
+  {
+    "Device Name": "es-sanfernando-r1"
+  },
+  {
+    "Device Name": "ms-sanfernando-r1"
+  },
+  {
+    "Device Name": "hs-sanfernando-r1"
+  },
+  {
+    "Device Name": "es-sangabriel-r1"
+  },
+  {
+    "Device Name": "es-sanjose-r1"
+  },
+  {
+    "Device Name": "es-sanmiguel-r1"
+  },
+  {
+    "Device Name": "es-sanpascual-r1"
+  },
+  {
+    "Device Name": "of-sanpedromst-r1"
+  },
+  {
+    "Device Name": "hs-sanpedro-r1"
+  },
+  {
+    "Device Name": "hs-sanpedromarms-r1"
+  },
+  {
+    "Device Name": "es-sanpedro-r1"
+  },
+  {
+    "Device Name": "es-santanaartsemy-r1"
+  },
+  {
+    "Device Name": "hs-santee-r1"
+  },
+  {
+    "Device Name": "es-saticoy-r1"
+  },
+  {
+    "Device Name": "es-saturn-r1"
+  },
+  {
+    "Device Name": "of-bsdtransbrregb-r1"
+  },
+  {
+    "Device Name": "of-maintpucn-r1"
+  },
+  {
+    "Device Name": "es-selma-r1"
+  },
+  {
+    "Device Name": "es-sendak-r1"
+  },
+  {
+    "Device Name": "ms-sepulveda-r1"
+  },
+  {
+    "Device Name": "es-serrania-r1"
+  },
+  {
+    "Device Name": "es-sharp-r1"
+  },
+  {
+    "Device Name": "ec-shenandoah-r1"
+  },
+  {
+    "Device Name": "es-shenandoah-r1"
+  },
+  {
+    "Device Name": "es-sheridanst-r1"
+  },
+  {
+    "Device Name": "es-shermanoaks-r1"
+  },
+  {
+    "Device Name": "es-shirley-r1"
+  },
+  {
+    "Device Name": "es-short-r1"
+  },
+  {
+    "Device Name": "es-sierrapark-r1"
+  },
+  {
+    "Device Name": "es-sierravista-r1"
+  },
+  {
+    "Device Name": "ad-slawson-r1"
+  },
+  {
+    "Device Name": "hs-soces-r1"
+  },
+  {
+    "Device Name": "es-solano-r1"
+  },
+  {
+    "Device Name": "hs-solislearning-r1"
+  },
+  {
+    "Device Name": "hs-sotomayorlrn-r1"
+  },
+  {
+    "Device Name": "es-soto-r1"
+  },
+  {
+    "Device Name": "ms-southeast-r1"
+  },
+  {
+    "Device Name": "hs-southeasthigh-r1"
+  },
+  {
+    "Device Name": "ms-southgate-r1"
+  },
+  {
+    "Device Name": "hs-southgate-r1"
+  },
+  {
+    "Device Name": "es-southpark-r1"
+  },
+  {
+    "Device Name": "es-sores-r1"
+  },
+  {
+    "Device Name": "es-stagg-r1"
+  },
+  {
+    "Device Name": "es-stanford-r1"
+  },
+  {
+    "Device Name": "es-stanfordpc-r1"
+  },
+  {
+    "Device Name": "ec-state-r1"
+  },
+  {
+    "Device Name": "es-state-r1"
+  },
+  {
+    "Device Name": "es-sterry-r1"
+  },
+  {
+    "Device Name": "ms-stevenson-r1"
+  },
+  {
+    "Device Name": "es-stonehurst-r1"
+  },
+  {
+    "Device Name": "es-stoner-r1"
+  },
+  {
+    "Device Name": "es-strathern-r1"
+  },
+  {
+    "Device Name": "es-sunland-r1"
+  },
+  {
+    "Device Name": "es-sunnybrae-r1"
+  },
+  {
+    "Device Name": "es-sunrise-r1"
+  },
+  {
+    "Device Name": "of-sunvalbusgarage-r1"
+  },
+  {
+    "Device Name": "ms-sunvalley-r1"
+  },
+  {
+    "Device Name": "hs-voces-r1"
+  },
+  {
+    "Device Name": "es-superior-r1"
+  },
+  {
+    "Device Name": "ms-sutter-r1"
+  },
+  {
+    "Device Name": "hs-sylmar-r1"
+  },
+  {
+    "Device Name": "es-sylmar-r1"
+  },
+  {
+    "Device Name": "es-sylmarldshpacad-r1"
+  },
+  {
+    "Device Name": "ec-sylvanpark-r1"
+  },
+  {
+    "Device Name": "es-sylvanpark-r1"
+  },
+  {
+    "Device Name": "hs-taft-r1"
+  },
+  {
+    "Device Name": "es-taper-r1"
+  },
+  {
+    "Device Name": "es-tarzana-r1"
+  },
+  {
+    "Device Name": "ec-telfair-r1"
+  },
+  {
+    "Device Name": "es-telfair-r1"
+  },
+  {
+    "Device Name": "of-templeadmin-r1"
+  },
+  {
+    "Device Name": "hs-thoreau-r1"
+  },
+  {
+    "Device Name": "es-tolandway-r1"
+  },
+  {
+    "Device Name": "es-tolucalake-r1"
+  },
+  {
+    "Device Name": "es-topanga-r1"
+  },
+  {
+    "Device Name": "es-topekadr-r1"
+  },
+  {
+    "Device Name": "hs-torres-r1"
+  },
+  {
+    "Device Name": "es-towne-r1"
+  },
+  {
+    "Device Name": "of-vannuyslot-r1"
+  },
+  {
+    "Device Name": "ec-trinity-r1"
+  },
+  {
+    "Device Name": "es-trinity-r1"
+  },
+  {
+    "Device Name": "es-tulsa-r1"
+  },
+  {
+    "Device Name": "es-tweedy-r1"
+  },
+  {
+    "Device Name": "ad-tweedylearning-r1"
+  },
+  {
+    "Device Name": "es-union-r1"
+  },
+  {
+    "Device Name": "hs-university-r1"
+  },
+  {
+    "Device Name": "es-utah-r1"
+  },
+  {
+    "Device Name": "es-valerio-r1"
+  },
+  {
+    "Device Name": "hs-valleyartssci-r1"
+  },
+  {
+    "Device Name": "es-lakebalboa-r1"
+  },
+  {
+    "Device Name": "es-valleyview-r1"
+  },
+  {
+    "Device Name": "ec-vanalden-r1"
+  },
+  {
+    "Device Name": "es-vanalden-r1"
+  },
+  {
+    "Device Name": "es-vandeene-r1"
+  },
+  {
+    "Device Name": "es-vangogh-r1"
+  },
+  {
+    "Device Name": "es-vanness-r1"
+  },
+  {
+    "Device Name": "es-vannuys-r1"
+  },
+  {
+    "Device Name": "ms-vannuys-r1"
+  },
+  {
+    "Device Name": "hs-vannuys-r1"
+  },
+  {
+    "Device Name": "ec-vaughn-r1"
+  },
+  {
+    "Device Name": "es-vena-r1"
+  },
+  {
+    "Device Name": "hs-venice-r1"
+  },
+  {
+    "Device Name": "ad-venice-r1"
+  },
+  {
+    "Device Name": "hs-verdugohills-r1"
+  },
+  {
+    "Device Name": "es-vermont-r1"
+  },
+  {
+    "Device Name": "es-vernoncity-r1"
+  },
+  {
+    "Device Name": "es-victoria-r1"
+  },
+  {
+    "Device Name": "es-victory-r1"
+  },
+  {
+    "Device Name": "es-vinedale-r1"
+  },
+  {
+    "Device Name": "ec-vine-r1"
+  },
+  {
+    "Device Name": "es-vine-r1"
+  },
+  {
+    "Device Name": "es-vintage-r1"
+  },
+  {
+    "Device Name": "ms-virgil-r1"
+  },
+  {
+    "Device Name": "es-virginia-r1"
+  },
+  {
+    "Device Name": "es-vistadelvalle-r1"
+  },
+  {
+    "Device Name": "ms-vista-r1"
+  },
+  {
+    "Device Name": "ec-wadsworth-r1"
+  },
+  {
+    "Device Name": "es-wadsworth-r1"
+  },
+  {
+    "Device Name": "es-walgrove-r1"
+  },
+  {
+    "Device Name": "es-walnutpark-r1"
+  },
+  {
+    "Device Name": "ms-walnutparka-r1"
+  },
+  {
+    "Device Name": "es-warner-r1"
+  },
+  {
+    "Device Name": "es-washingtonpc-r1"
+  },
+  {
+    "Device Name": "hs-washington-r1"
+  },
+  {
+    "Device Name": "ad-empwaters-r1"
+  },
+  {
+    "Device Name": "ad-watson-r1"
+  },
+  {
+    "Device Name": "ms-webster-r1"
+  },
+  {
+    "Device Name": "es-weemes-r1"
+  },
+  {
+    "Device Name": "es-weigand-r1"
+  },
+  {
+    "Device Name": "es-welby-r1"
+  },
+  {
+    "Device Name": "hs-westchester-r1"
+  },
+  {
+    "Device Name": "hs-westadams-r1"
+  },
+  {
+    "Device Name": "es-westathens-r1"
+  },
+  {
+    "Device Name": "ad-westchester-r1"
+  },
+  {
+    "Device Name": "es-western-r1"
+  },
+  {
+    "Device Name": "es-westhollywood-r1"
+  },
+  {
+    "Device Name": "ec-westminster-r1"
+  },
+  {
+    "Device Name": "es-westminster-r1"
+  },
+  {
+    "Device Name": "es-westporthts-r1"
+  },
+  {
+    "Device Name": "es-westsideglbl-r1"
+  },
+  {
+    "Device Name": "ad-westval-r1"
+  },
+  {
+    "Device Name": "es-westvernon-r1"
+  },
+  {
+    "Device Name": "es-westwood-r1"
+  },
+  {
+    "Device Name": "es-white-r1"
+  },
+  {
+    "Device Name": "ms-white-r1"
+  },
+  {
+    "Device Name": "es-whitepoint-r1"
+  },
+  {
+    "Device Name": "hs-whitman-r1"
+  },
+  {
+    "Device Name": "se-widney-r1"
+  },
+  {
+    "Device Name": "es-wilbur-r1"
+  },
+  {
+    "Device Name": "se-willenberg-r1"
+  },
+  {
+    "Device Name": "es-willow-r1"
+  },
+  {
+    "Device Name": "hs-cityofangelswilmington-r1"
+  },
+  {
+    "Device Name": "ec-wilmington-r1"
+  },
+  {
+    "Device Name": "ms-wilmington-r1"
+  },
+  {
+    "Device Name": "es-wilmingtonpk-r1"
+  },
+  {
+    "Device Name": "es-wilshirecrest-r1"
+  },
+  {
+    "Device Name": "es-wilshirepark-r1"
+  },
+  {
+    "Device Name": "hs-wilson-r1"
+  },
+  {
+    "Device Name": "es-wiltonpl-r1"
+  },
+  {
+    "Device Name": "es-windsormsaero-r1"
+  },
+  {
+    "Device Name": "es-winnetka-r1"
+  },
+  {
+    "Device Name": "es-wisdom-r1"
+  },
+  {
+    "Device Name": "es-wonderland-r1"
+  },
+  {
+    "Device Name": "es-woodcrest-r1"
+  },
+  {
+    "Device Name": "hs-wooden-r1"
+  },
+  {
+    "Device Name": "es-woodlake-r1"
+  },
+  {
+    "Device Name": "ms-woodlandhills-r1"
+  },
+  {
+    "Device Name": "es-woodlandhills-r1"
+  },
+  {
+    "Device Name": "es-woodlawn-r1"
+  },
+  {
+    "Device Name": "ms-wright-r1"
+  },
+  {
+    "Device Name": "es-yesemy-r1"
+  },
+  {
+    "Device Name": "es-yorkdale-r1"
+  },
+  {
+    "Device Name": "hs-young-r1"
+  },
+  {
+    "Device Name": "hs-ythoppunltdalt-r1"
+  }
+]

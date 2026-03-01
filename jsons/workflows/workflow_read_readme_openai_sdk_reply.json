@@ -1,0 +1,41 @@
+{
+  "stop_on_error": true,
+  "steps": [
+    {
+      "id": "read_readme",
+      "module": "plugins.text_file_crud_plugin",
+      "class": "TextFileCRUDPlugin",
+      "method": "read_text",
+      "constructor_args": {
+        "base_dir": "generated_data"
+      },
+      "args": ["README.md"]
+    },
+    {
+      "id": "openai_reply",
+      "module": "plugins.integrations.openai_sdk_plugin",
+      "class": "OpenAISDKPlugin",
+      "method": "generate_text_with_history",
+      "constructor_args": {},
+      "args": [
+        "readme-reply-thread",
+        "${steps.read_readme.result.content}",
+        "gpt-4.1-mini",
+        true
+      ]
+    },
+    {
+      "id": "openai_followup",
+      "module": "plugins.integrations.openai_sdk_plugin",
+      "class": "OpenAISDKPlugin",
+      "method": "generate_text_with_history",
+      "constructor_args": {},
+      "args": [
+        "readme-reply-thread",
+        "What were we talking about?",
+        "gpt-4.1-mini",
+        true
+      ]
+    }
+  ]
+}

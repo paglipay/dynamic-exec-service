@@ -49,10 +49,53 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "pip_freeze",
         ],
     },
+    "plugins.system_tools.subprocess_plugin": {
+        "class": "SubprocessPlugin",
+        "methods": [
+            "run_python_script",
+        ],
+    },
+    "plugins.system_tools.excel_plugin": {
+        "class": "ExcelPlugin",
+        "methods": [
+            "excel_to_json",
+            "list_columns_in_sheet",
+            "list_sheet_names",
+        ],
+    },
+    "plugins.system_tools.markdown_pdf_plugin": {
+        "class": "MarkdownPDFPlugin",
+        "methods": [
+            "markdown_to_pdf",
+        ],
+    },
     "plugins.integrations.slack_plugin": {
         "class": "SlackPlugin",
         "methods": [
             "post_message",
+            "upload_text_file",
+            "upload_local_file",
+        ],
+    },
+    "plugins.integrations.openai_http_plugin": {
+        "class": "OpenAIHTTPPlugin",
+        "methods": [
+            "generate_text",
+        ],
+    },
+    "plugins.integrations.openai_sdk_plugin": {
+        "class": "OpenAISDKPlugin",
+        "methods": [
+            "generate_text",
+            "generate_text_with_history",
+            "reply_with_plugins",
+        ],
+    },
+    "plugins.integrations.openai_plugin": {
+        "class": "OpenAIFunctionCallingPlugin",
+        "methods": [
+            "generate_with_function_calls",
+            "generate_with_function_calls_and_history",
         ],
     },
 }

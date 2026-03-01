@@ -1,0 +1,14 @@
+{
+  "module": "plugins.system_tools.markdown_pdf_plugin",
+  "class": "MarkdownPDFPlugin",
+  "method": "markdown_to_pdf",
+  "constructor_args": {
+    "base_dir": "generated_data",
+    "allow_outside_base_dir": true
+  },
+  "args": [
+    "README.md",
+    "README.pdf",
+    "Generated Data README"
+  ]
+}

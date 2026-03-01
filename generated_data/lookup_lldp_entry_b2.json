@@ -1,0 +1,6 @@
+[
+  {
+    "mac": "b8a4.4faf.7857",
+    "sh_lldp_entry_out": "--- show run | i hostname ---\nhostname 5877_LDC_70_2\n--- show clock ---\n15:04:36.919 pst Wed Dec 24 2025\n--- sh cdp entry axis-b8a44faf7857 ---\n-------------------------\nDevice ID: axis-b8a44faf7857\nEntry address(es): \n  IP address: 10.178.233.19\nPlatform: Linux,  Capabilities: Host \nInterface: GigabitEthernet1/0/1,  Port ID (outgoing port): eth0\nHoldtime : 105 sec\n\nVersion :\nAXIS P3738-PLE Panoramic Camera 12.5.73\n\nadvertisement version: 2\nPeer Source MAC: b8a4.4faf.7857\n\n"
+  }
+]

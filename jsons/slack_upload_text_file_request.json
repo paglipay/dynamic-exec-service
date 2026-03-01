@@ -1,12 +1,15 @@
 {
   "module": "plugins.integrations.slack_plugin",
   "class": "SlackPlugin",
-  "method": "post_message",
+  "method": "upload_text_file",
   "constructor_args": {
     "default_channel": "#general"
   },
   "args": [
+    "notes.txt",
+    "This is a test upload from Dynamic Exec Service.",
     "#general",
-    "Joke of the day: Why do programmers prefer dark mode? Because light attracts bugs."
+    "Daily Report",
+    "Uploading test file from API"
   ]
 }

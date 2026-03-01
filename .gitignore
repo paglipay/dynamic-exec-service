@@ -36,3 +36,14 @@ htmlcov/
 # OS files
 .DS_Store
 Thumbs.db
+
+# pdf files
+*.pdf
+
+# image files
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff

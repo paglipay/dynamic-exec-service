@@ -1,2 +1,8 @@
 flask
 paramiko
+slackeventsapi
+python-dotenv
+openai
+pandas
+openpyxl
+reportlab

@@ -2,18 +2,465 @@
 
 from __future__ import annotations
 
+import base64
+import os
 import re
+import threading
+import time
+from pathlib import Path
 from typing import Any
+from urllib import error as urlerror, request as urlrequest
+from urllib.parse import urljoin
 
+from dotenv import load_dotenv
 from flask import Flask, jsonify, request
+from slackeventsapi import SlackEventAdapter
 
 from executor.engine import JSONExecutor
 from executor.permissions import validate_request
 
 
 app = Flask(__name__)
+try:
+    signing_secret = os.environ["SIGNING_SECRET"]
+except KeyError:
+    env_path = Path(".") / ".env"
+    load_dotenv(dotenv_path=env_path)
+    signing_secret = os.getenv("SIGNING_SECRET")
+
+slack_event_adapter: SlackEventAdapter | None = None
+if signing_secret:
+    slack_event_adapter = SlackEventAdapter(
+        signing_secret, "/slack/events", app
+    )
+else:
+    app.logger.warning("SIGNING_SECRET is not set; Slack event subscriptions are disabled")
 executor = JSONExecutor()
 WORKFLOW_REF_PATTERN = re.compile(r"^\$\{steps\.([^\.]+)\.result(?:\.(.+))?\}$")
+SLACK_EVENT_TTL_SECONDS = 300
+SLACK_MAX_IMAGE_BYTES = 5 * 1024 * 1024
+SLACK_MAX_IMAGE_COUNT = 3
+SLACK_IMAGE_SAVE_BASE_DIR = os.getenv("SLACK_IMAGE_SAVE_BASE_DIR", "generated_data")
+_processed_slack_events: dict[str, float] = {}
+_processed_slack_events_lock = threading.Lock()
+
+
+def _is_duplicate_slack_event(event_data: dict[str, Any], event: dict[str, Any]) -> bool:
+    """Return True when a Slack event appears to be a duplicate delivery."""
+    event_id = event_data.get("event_id")
+    if not isinstance(event_id, str) or not event_id.strip():
+        event_id = "|".join(
+            [
+                str(event.get("channel", "")),
+                str(event.get("user", "")),
+                str(event.get("ts", "")),
+                str(event.get("text", "")),
+            ]
+        )
+
+    now = time.time()
+    with _processed_slack_events_lock:
+        expired = [
+            key for key, seen_at in _processed_slack_events.items()
+            if (now - seen_at) > SLACK_EVENT_TTL_SECONDS
+        ]
+        for key in expired:
+            del _processed_slack_events[key]
+
+        if event_id in _processed_slack_events:
+            return True
+
+        _processed_slack_events[event_id] = now
+        return False
+
+
+def _download_slack_text_file(url: str, bot_token: str, max_chars: int = 12000) -> str | None:
+    """Download a Slack private text file and return a bounded UTF-8 string."""
+    if not isinstance(url, str) or not url.strip():
+        return None
+    if not isinstance(bot_token, str) or not bot_token.strip():
+        return None
+
+    current_url = url.strip()
+    auth_header = f"Bearer {bot_token.strip()}"
+    for redirect_count in range(6):
+        req = urlrequest.Request(
+            current_url,
+            headers={"Authorization": auth_header},
+            method="GET",
+        )
+        try:
+            app.logger.info("Attempting Slack file download from private URL")
+            with urlrequest.urlopen(req, timeout=20) as response:
+                status = getattr(response, "status", 200)
+                content_type = str(response.headers.get("Content-Type", "")).lower()
+
+                if status in {301, 302, 303, 307, 308}:
+                    location = response.headers.get("Location")
+                    if not location:
+                        app.logger.warning("Slack file redirect missing Location header")
+                        return None
+                    current_url = urljoin(current_url, location)
+                    app.logger.info("Following Slack file redirect to %s", current_url)
+                    continue
+
+                content = response.read().decode("utf-8", errors="replace")
+                app.logger.info("Slack file download succeeded; bytes=%s content_type=%s", len(content), content_type)
+
+                if "text/html" in content_type or "<!doctype html" in content.lower()[:500]:
+                    app.logger.warning("Slack file download returned HTML instead of raw text file")
+                    return None
+
+                return content[:max_chars]
+        except urlerror.HTTPError as exc:
+            if exc.code in {301, 302, 303, 307, 308}:
+                location = exc.headers.get("Location") if exc.headers else None
+                if location:
+                    current_url = urljoin(current_url, location)
+                    app.logger.info("Following Slack file redirect via HTTPError to %s", current_url)
+                    continue
+            app.logger.warning("Slack file download failed with HTTP %s: %s", exc.code, exc)
+            return None
+        except urlerror.URLError as exc:
+            app.logger.warning("Slack file download failed: %s", exc)
+            return None
+
+        if redirect_count >= 5:
+            break
+
+    app.logger.warning("Slack file download exceeded redirect limit")
+    return None
+
+
+def _download_slack_binary_file(url: str, bot_token: str, max_bytes: int = SLACK_MAX_IMAGE_BYTES) -> tuple[bytes | None, str]:
+    """Download a Slack private file as bytes with content type."""
+    if not isinstance(url, str) or not url.strip():
+        return None, ""
+    if not isinstance(bot_token, str) or not bot_token.strip():
+        return None, ""
+    if not isinstance(max_bytes, int) or max_bytes <= 0:
+        return None, ""
+
+    current_url = url.strip()
+    auth_header = f"Bearer {bot_token.strip()}"
+    for _ in range(6):
+        req = urlrequest.Request(
+            current_url,
+            headers={"Authorization": auth_header},
+            method="GET",
+        )
+        try:
+            with urlrequest.urlopen(req, timeout=25) as response:
+                status = getattr(response, "status", 200)
+                content_type = str(response.headers.get("Content-Type", "")).lower().split(";")[0].strip()
+
+                if status in {301, 302, 303, 307, 308}:
+                    location = response.headers.get("Location")
+                    if not location:
+                        return None, ""
+                    current_url = urljoin(current_url, location)
+                    continue
+
+                data = response.read(max_bytes + 1)
+                if len(data) > max_bytes:
+                    app.logger.warning("Slack binary file exceeded max allowed size")
+                    return None, ""
+
+                return data, content_type
+        except urlerror.HTTPError as exc:
+            if exc.code in {301, 302, 303, 307, 308}:
+                location = exc.headers.get("Location") if exc.headers else None
+                if location:
+                    current_url = urljoin(current_url, location)
+                    continue
+            app.logger.warning("Slack binary file download failed with HTTP %s: %s", exc.code, exc)
+            return None, ""
+        except urlerror.URLError as exc:
+            app.logger.warning("Slack binary file download failed: %s", exc)
+            return None, ""
+
+    return None, ""
+
+
+def _sanitize_slack_filename(name: str) -> str:
+    """Return a filesystem-safe filename while preserving extension when possible."""
+    candidate = Path(name).name.strip() if isinstance(name, str) else ""
+    if not candidate:
+        candidate = "image"
+
+    sanitized = re.sub(r"[^A-Za-z0-9._-]", "_", candidate)
+    sanitized = sanitized.strip("._")
+    if not sanitized:
+        sanitized = "image"
+    return sanitized
+
+
+def _guess_image_extension(content_type: str, fallback_name: str) -> str:
+    """Choose a file extension based on content type or existing filename."""
+    suffix = Path(fallback_name).suffix.lower()
+    if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}:
+        return suffix
+
+    mapping = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+        "image/bmp": ".bmp",
+    }
+    return mapping.get(content_type.lower().strip(), ".png")
+
+
+def _save_slack_image_copy(
+    binary_data: bytes,
+    original_name: str,
+    content_type: str,
+    channel: str | None,
+) -> str | None:
+    """Save downloaded Slack image bytes under generated_data with nested folders."""
+    if not isinstance(binary_data, bytes) or not binary_data:
+        return None
+
+    channel_segment = str(channel).strip() if isinstance(channel, str) and channel.strip() else "unknown_channel"
+    channel_segment = re.sub(r"[^A-Za-z0-9_-]", "_", channel_segment)
+    timestamp = time.strftime("%Y/%m/%d")
+
+    base_dir = Path(SLACK_IMAGE_SAVE_BASE_DIR).resolve()
+    target_dir = (base_dir / "slack_downloads" / "images" / channel_segment / timestamp).resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = _sanitize_slack_filename(original_name)
+    stem = Path(safe_name).stem or "image"
+    extension = _guess_image_extension(content_type, safe_name)
+
+    unique_suffix = str(int(time.time() * 1000))
+    target_path = target_dir / f"{stem}_{unique_suffix}{extension}"
+    target_path.write_bytes(binary_data)
+    return str(target_path)
+
+
+def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | None) -> tuple[str, str, list[str]]:
+    """Build prompt/reply snippets and image data URLs from Slack files when available."""
+    files = event.get("files")
+    if not isinstance(files, list) or not files:
+        app.logger.info("No Slack files attached on this event")
+        return "", "", []
+
+    app.logger.info("Slack files detected: count=%s", len(files))
+
+    file_lines: list[str] = []
+    file_content_lines: list[str] = []
+    image_data_urls: list[str] = []
+    saved_image_paths: list[str] = []
+    reply_items: list[str] = []
+    channel = event.get("channel")
+    for file_item in files:
+        if not isinstance(file_item, dict):
+            app.logger.info("Skipping non-dict file item in Slack event")
+            continue
+
+        name = str(file_item.get("name") or "(unnamed)")
+        filetype = str(file_item.get("filetype") or file_item.get("mimetype") or "unknown")
+        mimetype = str(file_item.get("mimetype") or "")
+        title = str(file_item.get("title") or "")
+        url_private = str(file_item.get("url_private_download") or file_item.get("url_private") or "")
+
+        details = f"name={name}; type={filetype}"
+        if title:
+            details += f"; title={title}"
+        if url_private:
+            details += f"; url_private={url_private}"
+        file_lines.append(details)
+        reply_items.append(name)
+
+        is_text_candidate = (
+            name.lower().endswith((".txt", ".md"))
+            or filetype.lower() in {"text", "txt", "markdown", "md"}
+            or mimetype.startswith("text/")
+        )
+        if is_text_candidate and url_private and isinstance(slack_bot_token, str) and slack_bot_token.strip():
+            file_text = _download_slack_text_file(url_private, slack_bot_token)
+            if isinstance(file_text, str) and file_text.strip():
+                app.logger.info("Attached text file content captured: %s", name)
+                file_content_lines.append(f"File '{name}' content:\n{file_text.strip()}")
+            else:
+                app.logger.info("Attached text file could not be read: %s", name)
+        else:
+            app.logger.info(
+                "Skipping file content fetch for %s (text_candidate=%s, has_url=%s, has_token=%s)",
+                name,
+                is_text_candidate,
+                bool(url_private),
+                bool(isinstance(slack_bot_token, str) and slack_bot_token.strip()),
+            )
+
+        is_image_candidate = (
+            mimetype.lower().startswith("image/")
+            or name.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"))
+        )
+        if (
+            is_image_candidate
+            and len(image_data_urls) < SLACK_MAX_IMAGE_COUNT
+            and url_private
+            and isinstance(slack_bot_token, str)
+            and slack_bot_token.strip()
+        ):
+            binary_data, detected_content_type = _download_slack_binary_file(url_private, slack_bot_token)
+            if isinstance(binary_data, bytes) and binary_data:
+                mime = detected_content_type if detected_content_type.startswith("image/") else mimetype.lower()
+                if not mime.startswith("image/"):
+                    mime = "image/png"
+
+                try:
+                    saved_path = _save_slack_image_copy(binary_data, name, mime, channel if isinstance(channel, str) else None)
+                except Exception as exc:
+                    app.logger.warning("Failed to save Slack image locally (%s): %s", name, exc)
+                    saved_path = None
+                if isinstance(saved_path, str) and saved_path:
+                    saved_image_paths.append(saved_path)
+                    file_lines[-1] = f"{file_lines[-1]}; saved_as={saved_path}"
+
+                encoded = base64.b64encode(binary_data).decode("ascii")
+                image_data_urls.append(f"data:{mime};base64,{encoded}")
+                app.logger.info("Attached image captured for OpenAI vision input: %s", name)
+            else:
+                app.logger.info("Attached image could not be downloaded: %s", name)
+
+    if not file_lines:
+        app.logger.info("No usable Slack file metadata extracted")
+        return "", "", []
+
+    prompt_suffix = "\n\nSlack attached files metadata:\n" + "\n".join(f"- {line}" for line in file_lines)
+    if file_content_lines:
+        prompt_suffix += "\n\nSlack attached text file contents:\n" + "\n\n".join(file_content_lines)
+        app.logger.info("Slack file context includes %s file content block(s)", len(file_content_lines))
+    else:
+        app.logger.info("Slack file context includes metadata only (no downloadable text content)")
+    if image_data_urls:
+        prompt_suffix += (
+            f"\n\nSlack attached image count for analysis: {len(image_data_urls)}"
+        )
+        app.logger.info("Slack file context includes %s image(s) for OpenAI vision", len(image_data_urls))
+    if saved_image_paths:
+        prompt_suffix += "\n\nSaved local image copies:\n" + "\n".join(f"- {path}" for path in saved_image_paths)
+        app.logger.info("Saved %s Slack image(s) under local generated_data path", len(saved_image_paths))
+    reply_suffix = "\n\nAttachments in your message: " + ", ".join(reply_items)
+    return prompt_suffix, reply_suffix, image_data_urls
+
+
+if slack_event_adapter is not None:
+    @slack_event_adapter.on("message")
+    def handle_slack_message(event_data: dict[str, Any]) -> None:
+        """Handle Slack messages by generating and posting an AI reply."""
+        event = event_data.get("event", {}) if isinstance(event_data, dict) else {}
+        if not isinstance(event, dict):
+            return
+
+        subtype = event.get("subtype")
+        app.logger.info("Slack message event received: subtype=%s", subtype)
+        if subtype not in {None, "file_share"}:
+            app.logger.info("Skipping Slack event due to unsupported subtype=%s", subtype)
+            return
+
+        if event.get("bot_id"):
+            return
+
+        channel = event.get("channel")
+        text = event.get("text", "")
+        slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
+        file_prompt_suffix, file_reply_suffix, image_data_urls = _extract_slack_file_context(event, slack_bot_token)
+        if not isinstance(channel, str) or not channel:
+            return
+        if not isinstance(text, str):
+            return
+        if not text.strip() and not file_prompt_suffix and not image_data_urls:
+            return
+
+        if _is_duplicate_slack_event(event_data, event):
+            app.logger.info("Ignoring duplicate Slack event delivery")
+            return
+
+        app.logger.info(
+            "Slack message received: channel=%s user=%s text=%s",
+            channel,
+            event.get("user"),
+            text,
+        )
+
+        forced_conversation_id = os.getenv("SLACK_CONVERSATION_ID", "").strip()
+        if forced_conversation_id:
+            conversation_id = forced_conversation_id
+        else:
+            conversation_key = event.get("thread_ts") or channel
+            conversation_id = f"slack:{conversation_key}"
+        model_name = os.getenv("SLACK_OPENAI_MODEL", "gpt-4.1-mini")
+        max_tool_rounds_raw = os.getenv("SLACK_OPENAI_MAX_TOOL_ROUNDS", "5").strip()
+        try:
+            max_tool_rounds = int(max_tool_rounds_raw)
+        except ValueError:
+            max_tool_rounds = 5
+        if max_tool_rounds <= 0:
+            max_tool_rounds = 5
+
+        try:
+            validate_request(
+                "plugins.integrations.openai_plugin",
+                "OpenAIFunctionCallingPlugin",
+                "generate_with_function_calls_and_history",
+            )
+            executor.instantiate(
+                "plugins.integrations.openai_plugin",
+                "OpenAIFunctionCallingPlugin",
+                {},
+            )
+            ai_result = executor.call_method(
+                "plugins.integrations.openai_plugin",
+                "generate_with_function_calls_and_history",
+                [
+                    conversation_id,
+                    (text.strip() or "Please analyze attached files.") + file_prompt_suffix,
+                    model_name,
+                    max_tool_rounds,
+                    image_data_urls,
+                ],
+            )
+            if isinstance(ai_result, dict):
+                reply_text = str(ai_result.get("text", "")).strip()
+            else:
+                reply_text = str(ai_result).strip()
+        except Exception:
+            app.logger.exception("Failed to generate Slack AI reply")
+            reply_text = "Sorry, I couldn't generate a reply right now."
+
+        if reply_text and file_reply_suffix:
+            reply_text = f"{reply_text}{file_reply_suffix}"
+
+        if not reply_text:
+            return
+
+        if not isinstance(slack_bot_token, str) or not slack_bot_token.strip():
+            app.logger.warning("SLACK_BOT_TOKEN is not set; cannot post Slack reply")
+            return
+
+        try:
+            validate_request(
+                "plugins.integrations.slack_plugin",
+                "SlackPlugin",
+                "post_message",
+            )
+            executor.instantiate(
+                "plugins.integrations.slack_plugin",
+                "SlackPlugin",
+                {"bot_token": slack_bot_token.strip(), "default_channel": "#general"},
+            )
+            executor.call_method(
+                "plugins.integrations.slack_plugin",
+                "post_message",
+                [channel, reply_text],
+            )
+        except Exception:
+            app.logger.exception("Failed to post Slack AI reply")
 
 
 def _error_response(message: str, status_code: int = 400):
@@ -99,8 +546,9 @@ def execute() -> Any:
         return jsonify({"status": "success", "result": result})
     except ValueError as exc:
         return _error_response(str(exc), status_code=400)
-    except (ImportError, AttributeError, TypeError):
-        return _error_response("Invalid execution request", status_code=400)
+    except (ImportError, AttributeError, TypeError) as exc:
+        message = str(exc) if str(exc) else "Invalid execution request"
+        return _error_response(message, status_code=400)
     except Exception:
         app.logger.exception("Unhandled execution error")
         return _error_response("Internal server error", status_code=500)

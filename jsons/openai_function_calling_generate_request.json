@@ -1,0 +1,13 @@
+{
+  "module": "plugins.integrations.openai_plugin",
+  "class": "OpenAIFunctionCallingPlugin",
+  "method": "generate_with_function_calls",
+  "constructor_args": {
+    "api_key": "sk-your-openai-api-key"
+  },
+  "args": [
+    "Create a file named test.txt in generated_data with a short joke, then confirm what you did.",
+    "gpt-4.1-mini",
+    5
+  ]
+}
