@@ -57,11 +57,23 @@ class ExcelPlugin:
             series = filtered[column]
 
             if op in {"equals", "eq", "=="}:
-                filtered = filtered[series == value]
+                if isinstance(value, str):
+                    filtered = filtered[
+                        series.astype(str).str.contains(value, case=False, na=False, regex=False)
+                    ]
+                else:
+                    filtered = filtered[series == value]
             elif op in {"not_equals", "neq", "!="}:
-                filtered = filtered[series != value]
+                if isinstance(value, str):
+                    filtered = filtered[
+                        ~series.astype(str).str.contains(value, case=False, na=False, regex=False)
+                    ]
+                else:
+                    filtered = filtered[series != value]
             elif op in {"contains"}:
-                filtered = filtered[series.astype(str).str.contains(str(value), case=False, na=False)]
+                filtered = filtered[
+                    series.astype(str).str.contains(str(value), case=False, na=False, regex=False)
+                ]
             elif op in {"in"}:
                 if not isinstance(value, list):
                     raise ValueError("'in' filter value must be an array")
@@ -183,7 +195,7 @@ class ExcelPlugin:
             "filters_applied": len(filter_by) if isinstance(filter_by, list) else 0,
             "row_count": len(records),
             "save_as": str(output_path),
-            "save_as_content": records,
+            "save_as_content": records[:50],
         }
 
     def list_columns_in_sheet(self, file_path: str | dict[str, Any], sheet: str | int = 0) -> dict[str, Any]:

@@ -1,0 +1,24 @@
+{
+  "module": "plugins.system_tools.excel_plugin",
+  "class": "ExcelPlugin",
+  "method": "excel_to_json",
+  "constructor_args": {
+    "base_dir": "generated_data",
+    "allow_outside_base_dir": true
+  },
+  "args": [
+    {
+      "file_path": "C:/Users/Paul/Documents/Projects/paramiko/temp.xlsx",
+      "sheet": "r1",
+      "columns": ["School Name"],
+      "filter_by": [
+        {
+          "column": "School Name",
+          "operator": "contains",
+          "value": "south park"
+        }
+      ],
+      "save_as": "workbook_export_contains_case_insensitive.json"
+    }
+  ]
+}
