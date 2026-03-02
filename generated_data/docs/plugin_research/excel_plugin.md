@@ -33,4 +33,4 @@
 
 ### Example File Source
 
-The Excel file `C:\Users\Paul\Documents\Projects\temp.xlsx` is an example source workbook for network and site data that the Excel plugin can process. It contains multiple sheets with relevant columns for filtering and exporting to JSON.
+The Excel file `C:\Users\Paul\Documents\Projects\paramiko\temp.xlsm` is an example source workbook for network and site data that the Excel plugin can process. It contains multiple sheets with relevant columns for filtering and exporting to JSON.
