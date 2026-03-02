@@ -14,6 +14,15 @@ This README is intended to help an AI agent use the current service safely and c
 3. Check `status` in every response and handle `error` messages explicitly.
 4. Only call allowlisted module/class/method combinations listed below.
 
+## Agent documentation index
+- Central nested docs index for AI agents:
+  - `generated_data/docs/AI_AGENT_REFERENCE.md`
+- This file maps and summarizes documentation under:
+  - `generated_data/docs/api_reference/`
+  - `generated_data/docs/integration_guides/`
+  - `generated_data/docs/plugin_research/`
+  - `generated_data/docs/usage_tips/`
+
 ## Priority: Slack image reference convention
 - Slack image attachments are saved under:
   - `target_dir = (base_dir / "slack_downloads").resolve()`
