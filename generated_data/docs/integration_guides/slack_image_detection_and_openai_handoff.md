@@ -16,7 +16,7 @@ This document explains how the service detects Slack image attachments and hands
 4. For each file, image candidacy is determined.
 5. Candidate images are downloaded from Slack private URLs using the bot token.
 6. Downloaded image bytes are:
-   - saved locally under `generated_data/slack_downloads/images/<channel>/<YYYY/MM/DD>/...`
+   - saved locally under `generated_data/slack_downloads/...` (flat folder)
    - converted to Base64 data URLs (`data:<mime>;base64,...`)
 7. The handler calls OpenAI with:
    - user text + file metadata suffix
@@ -48,7 +48,7 @@ Binary downloads use authenticated requests to Slack private file URLs.
 
 When an image download succeeds, a local copy is written under:
 
-- `generated_data/slack_downloads/images/<channel>/<YYYY/MM/DD>/`
+- `generated_data/slack_downloads/`
 
 The filename is sanitized, and a millisecond timestamp suffix is appended to keep filenames unique.
 

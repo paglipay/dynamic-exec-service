@@ -34,7 +34,7 @@ Purpose: quick navigation and decision support for AI agents working with docume
   End-to-end Slack image flow: event parsing, image candidacy checks, secure download, local persistence, base64 data URL conversion, and OpenAI multimodal handoff.
 
 - [Slack Image Upload and Markdown Reference Guide](./integration_guides/slack_image_upload_and_markdown_references.md)  
-  Canonical path conventions for saved Slack images and preferred markdown linking style (`slack_downloads/images/...`) for files under `generated_data`.
+  Canonical path conventions for saved Slack images and preferred markdown linking style (`slack_downloads/...`) for files under `generated_data`.
 
 ## Plugin Research
 
