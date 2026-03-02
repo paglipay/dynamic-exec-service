@@ -49,6 +49,16 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "pip_freeze",
         ],
     },
+    "plugins.system_tools.file_system_plugin": {
+        "class": "FileSystemPlugin",
+        "methods": [
+            "list_directory",
+            "create_directory",
+            "move_path",
+            "delete_path",
+            "path_info",
+        ],
+    },
     "plugins.system_tools.subprocess_plugin": {
         "class": "SubprocessPlugin",
         "methods": [

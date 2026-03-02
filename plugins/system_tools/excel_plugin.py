@@ -43,7 +43,7 @@ class ExcelPlugin:
                 raise ValueError("Each filter_by entry must be an object")
 
             column = item.get("column")
-            operator = item.get("operator", "equals")
+            operator = item.get("operator", "contains")
             value = item.get("value")
 
             if not isinstance(column, str) or not column:
@@ -56,18 +56,12 @@ class ExcelPlugin:
             op = operator.lower()
             series = filtered[column]
 
-            if op in {"equals", "eq", "=="}:
-                filtered = filtered[series == value]
-            elif op in {"not_equals", "neq", "!="}:
-                filtered = filtered[series != value]
-            elif op in {"contains"}:
-                filtered = filtered[series.astype(str).str.contains(str(value), case=False, na=False)]
-            elif op in {"in"}:
-                if not isinstance(value, list):
-                    raise ValueError("'in' filter value must be an array")
-                filtered = filtered[series.isin(value)]
-            else:
-                raise ValueError(f"unsupported filter operator: {operator}")
+            if op != "contains":
+                raise ValueError(f"unsupported filter operator: {operator}. only 'contains' is supported")
+
+            filtered = filtered[
+                series.astype(str).str.contains(str(value), case=False, na=False, regex=False)
+            ]
 
         return filtered
 
@@ -183,7 +177,7 @@ class ExcelPlugin:
             "filters_applied": len(filter_by) if isinstance(filter_by, list) else 0,
             "row_count": len(records),
             "save_as": str(output_path),
-            "save_as_content": records,
+            "save_as_content": records[:50],
         }
 
     def list_columns_in_sheet(self, file_path: str | dict[str, Any], sheet: str | int = 0) -> dict[str, Any]:

@@ -18,8 +18,7 @@
           "value": "south park"
         }
       ],
-      "save_as": "workbook_export.json"
+      "save_as": "workbook_export_contains_case_insensitive.json"
     }
   ]
 }
-
