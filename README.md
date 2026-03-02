@@ -177,6 +177,7 @@ Recommended minimum OAuth scopes:
 
 ### Excel response notes
 - `excel_to_json` now includes `column_names` in its success payload.
+- `excel_to_json` `filter_by` supports only `operator: "contains"` (case-insensitive literal substring match).
 - `excel_list_sheets_metadata_request.json` now calls `list_columns_in_sheet` and returns:
   - `sheet_index`, `sheet_name`
   - `row_count`, `column_count`

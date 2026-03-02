@@ -9,13 +9,13 @@
   "args": [
     {
       "file_path": "C:/Users/Paul/Documents/Projects/paramiko/temp.xlsx",
-      "sheet": "ad-venice-s1",
-      "columns": ["mac"],
+      "sheet": "r1",
+      "columns": ["School Name"],
       "filter_by": [
         {
-          "column": "mac",
-          "operator": "equals",
-          "value": "b8a4.4fb1.e3cf"
+          "column": "School Name",
+          "operator": "contains",
+          "value": "south park"
         }
       ],
       "save_as": "workbook_export.json"

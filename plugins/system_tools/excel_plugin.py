@@ -43,7 +43,7 @@ class ExcelPlugin:
                 raise ValueError("Each filter_by entry must be an object")
 
             column = item.get("column")
-            operator = item.get("operator", "equals")
+            operator = item.get("operator", "contains")
             value = item.get("value")
 
             if not isinstance(column, str) or not column:
@@ -56,30 +56,12 @@ class ExcelPlugin:
             op = operator.lower()
             series = filtered[column]
 
-            if op in {"equals", "eq", "=="}:
-                if isinstance(value, str):
-                    filtered = filtered[
-                        series.astype(str).str.contains(value, case=False, na=False, regex=False)
-                    ]
-                else:
-                    filtered = filtered[series == value]
-            elif op in {"not_equals", "neq", "!="}:
-                if isinstance(value, str):
-                    filtered = filtered[
-                        ~series.astype(str).str.contains(value, case=False, na=False, regex=False)
-                    ]
-                else:
-                    filtered = filtered[series != value]
-            elif op in {"contains"}:
-                filtered = filtered[
-                    series.astype(str).str.contains(str(value), case=False, na=False, regex=False)
-                ]
-            elif op in {"in"}:
-                if not isinstance(value, list):
-                    raise ValueError("'in' filter value must be an array")
-                filtered = filtered[series.isin(value)]
-            else:
-                raise ValueError(f"unsupported filter operator: {operator}")
+            if op != "contains":
+                raise ValueError(f"unsupported filter operator: {operator}. only 'contains' is supported")
+
+            filtered = filtered[
+                series.astype(str).str.contains(str(value), case=False, na=False, regex=False)
+            ]
 
         return filtered
 
