@@ -111,6 +111,11 @@ Only these module/class/method combinations are executable via API:
   - methods: `get_environment_summary`, `list_directory`, `discover_folder_structure`, `pip_freeze`
   - purpose: cross-platform read-only environment introspection
 
+- `plugins.system_tools.file_system_plugin` → `FileSystemPlugin`
+  - methods: `list_directory`, `create_directory`, `move_path`, `delete_path`, `path_info`
+  - purpose: read and modify files/directories only within `generated_data` (or provided `base_dir`)
+  - blocks absolute paths and traversal outside configured base directory
+
 - `plugins.system_tools.subprocess_plugin` → `SubprocessPlugin`
   - methods: `run_python_script`
   - purpose: run Python scripts via subprocess (can allow script paths outside base directory)
