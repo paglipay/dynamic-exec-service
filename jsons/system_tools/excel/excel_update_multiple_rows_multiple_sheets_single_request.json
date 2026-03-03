@@ -8,27 +8,15 @@
   },
   "args": [
     {
-      "file_path": "C:/Users/Paul/Documents/Projects/paramiko/temp.xlsx",
+      "file_path": "C:/Users/Paul/Documents/Projects/paramiko/temp.xlsm",
       "header_row": 1,
-      "save_as": "C:/Users/Paul/Documents/Projects/paramiko/sample_updated.xlsx",
+      "save_as": "C:/Users/Paul/Documents/Projects/paramiko/temp.xlsm",
       "updates": [
         {
           "sheet": "r1",
-          "row": 2,
-          "columns": ["Contractor", "Warranty"],
-          "values": ["R1_ROW_2", "YES"]
-        },
-        {
-          "sheet": "r1",
-          "row": 3,
-          "columns": ["Contractor", "Warranty"],
-          "values": ["R1_ROW_3", "NO"]
-        },
-        {
-          "sheet": "s1",
-          "row": 2,
-          "columns": ["Phone"],
-          "values": ["R2_ROW_2"]
+          "row": 846,
+          "columns": ["Network Engineer"],
+          "values": ["Paul Aglipay"]
         }
       ]
     }

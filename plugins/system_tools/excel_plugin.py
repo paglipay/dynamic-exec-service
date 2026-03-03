@@ -150,11 +150,14 @@ class ExcelPlugin:
         except Exception as exc:
             raise ValueError(f"Failed to read Excel file: {exc}") from exc
 
+        frame = frame.copy()
+        frame.insert(0, "row", frame.index.astype(int) + 2)
+
         if columns:
             missing_columns = [column for column in columns if column not in frame.columns]
             if missing_columns:
                 raise ValueError(f"columns not found in sheet: {', '.join(missing_columns)}")
-            frame = frame[columns]
+            frame = frame[["row", *columns]]
 
         if filter_by:
             frame = self._apply_filters(frame, filter_by)
