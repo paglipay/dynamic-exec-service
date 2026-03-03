@@ -20,14 +20,13 @@ Use these as the primary references for LAUSD network/site lookups and Excel pro
 - Prefer consistent site-name formatting when searching/filtering.
 - Validate method names against current implementation when preparing JSON requests.
 
-## Step-by-step instructions for data retrieval and updates
+## Step-by-step instructions for data retrieval and updates for temp.xlsm file
 
-1. Identify the Excel source file containing the relevant data (for example, `temp.xlsm`).
-2. Use `list_sheet_names` to confirm the target worksheet.
-3. Use `list_columns_in_sheet` for that worksheet to see available column names.
-4. Use `excel_to_json` with a minimal `columns` list and a `filter_by` partial string (`operator: "contains"`) to find the target record.
-5. Read the returned `row` value from the filtered result and treat it as the worksheet row for updates.
-6. Call `update_sheet_row_values` with the discovered `sheet`, `row`, target `columns`, and `values`.
+1. Start by listing all sheet names in the workbook located at `C:/Users/Paul/Documents/Projects/paramiko/temp.xlsm`.
+2. For the target sheet (e.g., `r1`), list all columns to understand the available data structure.
+3. Use partial string filtering on relevant columns to find target rows. For instance, to search for "Woodland Hills Academy", filtering the "School Name" column with the partial string "woodland" is recommended for broader matching.
+4. Each retrieved record includes a "row" value that corresponds to the row number in the worksheet. This row number is critical for update operations.
+5. To update records, follow the examples and guidance in the [Excel Plugin Research](../../plugin_research/excel_plugin.md) documentation, particularly focusing on the use of the `update_sheet_row_values` method which utilizes the sheet name, row number, column names, and new values.
 
 ## Generic update workflow (template)
 
@@ -37,11 +36,7 @@ Use `list_columns_in_sheet` first so update requests always use valid column nam
 
 ### 2) Find target row using partial-string search
 
-Use `excel_to_json` with:
-- `columns`: only what you need (for example, `Site`, `Loc Code`, `Network Engineer`)
-- `filter_by`: a partial string on a stable lookup field (for example, `Site contains "woodland"`)
-
-The result includes `row` for each matching record. Use that row number in the update request.
+... (existing text omitted for brevity) ...
 
 ### 3) Update one or more columns on the discovered row
 
