@@ -9,17 +9,23 @@
   "args": [
     {
       "file_path": "C:/Users/Paul/Documents/Projects/paramiko/temp.xlsm",
-      "sheet": "r1",
-      "columns": ["School Name"],
+      "sheet": "s1",
+      "columns": [
+        "switch_ip_address",
+        "Device Name",
+        "Type",
+        "Site",
+        "Loc Code",
+        "School Name"
+      ],
       "filter_by": [
         {
-          "column": "School Name",
+          "column": "switch_ip_address",
           "operator": "contains",
-          "value": "south park"
+          "value": "10.50.16.10"
         }
       ],
       "save_as": "workbook_export.json"
     }
   ]
 }
-

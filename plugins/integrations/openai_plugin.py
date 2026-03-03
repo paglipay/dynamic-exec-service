@@ -89,6 +89,32 @@ class OpenAIFunctionCallingPlugin:
                 "Use args in this order: [message_id, format, metadata_headers_or_null]."
             )
 
+        if (
+            module_name == "plugins.system_tools.excel_plugin"
+            and class_name == "ExcelPlugin"
+            and method_name == "excel_to_json"
+        ):
+            return (
+                "Export Excel rows to JSON. "
+                "Use args as a single payload object in args[0], for example: "
+                "[{file_path, sheet, columns, filter_by, save_as}]. "
+                "columns must be an array of exact sheet header strings. "
+                "filter_by must be an array of {column, operator, value}; operator supports 'contains'. "
+                "Do not place file_path/sheet/columns/filter_by/save_as at the top level of tool arguments; "
+                "they belong inside args[0]."
+            )
+
+        if (
+            module_name == "plugins.system_tools.excel_plugin"
+            and class_name == "ExcelPlugin"
+            and method_name == "list_columns_in_sheet"
+        ):
+            return (
+                "List available columns in a sheet before building excel_to_json filters. "
+                "Use args as a single payload object in args[0], for example: "
+                "[{file_path, sheet}]."
+            )
+
         return (
             f"Call plugin method {module_name}::{class_name}.{method_name}. "
             "Provide constructor_args and args when needed."
@@ -220,6 +246,8 @@ class OpenAIFunctionCallingPlugin:
             "Use tool calls for concrete actions and then provide a concise final answer. "
             "You are running inside a tool-enabled environment with access to local files through allowlisted plugins. "
             "If a user provides a local file path, do not claim you cannot access local files; call the appropriate tool instead. "
+            "For plugin tool calls, put method inputs inside 'args' as positional arguments; "
+            "when a plugin method accepts a payload object, pass it as args[0]. "
             "If the user asks to send an email attachment, include attachment file paths in Gmail send_email args. "
             "Do not claim an attachment was sent unless the Gmail tool result shows attachment_count > 0. "
             "Slack image attachments are saved locally under "

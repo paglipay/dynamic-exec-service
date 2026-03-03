@@ -1,22 +1,11 @@
 [
   {
-    "row": 64,
-    "notes": "O – take looks took active"
-  },
-  {
-    "row": 119,
-    "notes": "o – take active"
-  },
-  {
-    "row": 463,
-    "notes": "O – take active"
-  },
-  {
-    "row": 592,
-    "notes": "O – take"
-  },
-  {
-    "row": 803,
-    "notes": "O – take"
+    "row": 815,
+    "switch_ip_address": "10.50.16.10",
+    "Device Name": "hs-washington-s1",
+    "Type": "MDF Switch",
+    "Site": "WASHINGTON PREP SH",
+    "Loc Code": 8928.0,
+    "School Name": "George Washington Preparatory Senior High"
   }
 ]
