@@ -93,6 +93,27 @@ class ExcelPlugin:
 
         return value
 
+    def _normalize_positive_int(self, value: Any, field_name: str, minimum: int = 1) -> int:
+        if isinstance(value, bool):
+            raise ValueError(f"{field_name} must be an integer >= {minimum}")
+
+        if isinstance(value, int):
+            normalized = value
+        elif isinstance(value, float) and value.is_integer():
+            normalized = int(value)
+        elif isinstance(value, str):
+            stripped = value.strip()
+            if stripped.isdigit():
+                normalized = int(stripped)
+            else:
+                raise ValueError(f"{field_name} must be an integer >= {minimum}")
+        else:
+            raise ValueError(f"{field_name} must be an integer >= {minimum}")
+
+        if normalized < minimum:
+            raise ValueError(f"{field_name} must be an integer >= {minimum}")
+        return normalized
+
     def excel_to_json(
         self,
         file_path: str | dict[str, Any],
@@ -150,11 +171,14 @@ class ExcelPlugin:
         except Exception as exc:
             raise ValueError(f"Failed to read Excel file: {exc}") from exc
 
+        frame = frame.copy()
+        frame.insert(0, "row", frame.index.astype(int) + 2)
+
         if columns:
             missing_columns = [column for column in columns if column not in frame.columns]
             if missing_columns:
                 raise ValueError(f"columns not found in sheet: {', '.join(missing_columns)}")
-            frame = frame[columns]
+            frame = frame[["row", *columns]]
 
         if filter_by:
             frame = self._apply_filters(frame, filter_by)
@@ -386,13 +410,11 @@ class ExcelPlugin:
 
         if sheet is not None and not isinstance(sheet, (str, int)):
             raise ValueError("sheet must be a string or integer")
-        if not isinstance(header_row, int) or header_row < 1:
-            raise ValueError("header_row must be an integer >= 1")
+        header_row = self._normalize_positive_int(header_row, "header_row", minimum=1)
 
         update_specs: list[tuple[str | int, int, list[str], list[Any]]] = []
         if updates_payload is None:
-            if not isinstance(row, int) or row < 1:
-                raise ValueError("row must be an integer >= 1")
+            row = self._normalize_positive_int(row, "row", minimum=1)
             if not isinstance(columns, list) or not columns or any(not isinstance(col, str) or not col.strip() for col in columns):
                 raise ValueError("columns must be a non-empty array of non-empty strings")
 
@@ -421,8 +443,10 @@ class ExcelPlugin:
 
                 if not isinstance(item_sheet, (str, int)):
                     raise ValueError(f"updates[{index}].sheet must be a string or integer")
-                if not isinstance(item_row, int) or item_row < 1:
-                    raise ValueError(f"updates[{index}].row must be an integer >= 1")
+                try:
+                    item_row = self._normalize_positive_int(item_row, f"updates[{index}].row", minimum=1)
+                except ValueError as exc:
+                    raise ValueError(str(exc)) from exc
                 if not isinstance(item_columns, list) or not item_columns or any(not isinstance(col, str) or not col.strip() for col in item_columns):
                     raise ValueError(f"updates[{index}].columns must be a non-empty array of non-empty strings")
 

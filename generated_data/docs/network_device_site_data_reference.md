@@ -40,4 +40,4 @@ To find specific info such as the location code for a site, one can:
 
 ## Example Source File
 
-The source of this type of network device and site data can be the Excel file located at `C:\Users\Paul\Documents\Projects\temp.xlsx`. This file contains detailed columns such as "School Name", "Address", "City", "Loc Code", and device related data which can be queried for location and device info.
+The source of this type of network device and site data can be the Excel file located at `C:\Users\Paul\Documents\Projects\paramiko\temp.xlsm`. This file contains detailed columns such as "School Name", "Address", "City", "Loc Code", and device related data which can be queried for location and device info.

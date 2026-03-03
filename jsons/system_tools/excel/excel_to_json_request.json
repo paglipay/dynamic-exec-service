@@ -8,7 +8,7 @@
   },
   "args": [
     {
-      "file_path": "C:/Users/Paul/Documents/Projects/paramiko/temp.xlsx",
+      "file_path": "C:/Users/Paul/Documents/Projects/paramiko/temp.xlsm",
       "sheet": "r1",
       "columns": ["School Name"],
       "filter_by": [
