@@ -185,11 +185,11 @@ class ExcelPlugin:
 
         records = self._to_json_safe(frame.where(pd.notna(frame), None).to_dict(orient="records"))
 
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            output_path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception as exc:
-            raise ValueError(f"Failed to write JSON output: {exc}") from exc
+        # output_path.parent.mkdir(parents=True, exist_ok=True)
+        # try:
+        #     output_path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+        # except Exception as exc:
+        #     raise ValueError(f"Failed to write JSON output: {exc}") from exc
 
         return {
             "status": "success",
