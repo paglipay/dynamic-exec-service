@@ -36,12 +36,9 @@ from executor.permissions import validate_request
 
 
 app = Flask(__name__)
-try:
-    signing_secret = os.environ["SIGNING_SECRET"]
-except KeyError:
-    env_path = Path(".") / ".env"
-    load_dotenv(dotenv_path=env_path)
-    signing_secret = os.getenv("SIGNING_SECRET")
+env_path = Path(".") / ".env"
+load_dotenv(dotenv_path=env_path)
+signing_secret = os.getenv("SIGNING_SECRET")
 
 slack_event_adapter: SlackEventAdapter | None = None
 if signing_secret:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from plugins.integrations.conversation_history_manager import ConversationHistoryManager
 from plugins.integrations.openai_plugin import OpenAIFunctionCallingPlugin
 
 
@@ -23,6 +24,47 @@ def test_system_prompt_requires_attachment_count_verification() -> None:
     prompt = plugin._build_system_prompt()
 
     assert "attachment_count > 0" in prompt
+
+
+def test_tool_mapping_includes_openai_sdk_generate_image_only() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+
+    mapping = plugin._build_tool_mapping()
+    targets = set(mapping.values())
+
+    assert (
+        "plugins.integrations.openai_sdk_plugin",
+        "OpenAISDKPlugin",
+        "generate_image",
+    ) in targets
+    assert (
+        "plugins.integrations.openai_sdk_plugin",
+        "OpenAISDKPlugin",
+        "generate_text",
+    ) not in targets
+    assert (
+        "plugins.integrations.openai_sdk_plugin",
+        "OpenAISDKPlugin",
+        "generate_text_with_history",
+    ) not in targets
+    assert (
+        "plugins.integrations.openai_sdk_plugin",
+        "OpenAISDKPlugin",
+        "reply_with_plugins",
+    ) not in targets
+
+
+def test_generate_image_tool_description_mentions_arg_order() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+
+    description = plugin._build_tool_description(
+        "plugins.integrations.openai_sdk_plugin",
+        "OpenAISDKPlugin",
+        "generate_image",
+    )
+
+    assert "exact order" in description
+    assert "gpt-image-1" in description
 
 
 def test_history_storage_falls_back_to_memory_when_redis_unavailable() -> None:
@@ -174,3 +216,126 @@ def test_execute_chat_turn_appends_final_assistant_message_to_history() -> None:
     assert final_text == "Hello from assistant"
     assert executed_tool_calls == 0
     assert messages[-1] == {"role": "assistant", "content": "Hello from assistant"}
+
+
+def test_save_history_compacts_and_keeps_recent_messages() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+    plugin._redis_client = None
+    plugin._conversation_store = {}
+    plugin._history_manager = ConversationHistoryManager(
+        max_messages=6,
+        keep_last_messages=2,
+        max_estimated_tokens=100000,
+        summary_max_chars=600,
+    )
+
+    messages = [
+        {"role": "system", "content": "System prompt."},
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "u2"},
+        {"role": "assistant", "content": "a2"},
+        {"role": "user", "content": "u3"},
+        {"role": "assistant", "content": "a3"},
+    ]
+
+    plugin._save_conversation_history("conv-compact", messages)
+    stored = plugin._load_conversation_history("conv-compact")
+
+    assert len(stored) <= 6
+    assert stored[0] == {"role": "system", "content": "System prompt."}
+    assert stored[1]["role"] == "system"
+    assert "Conversation summary (older context):" in stored[1]["content"]
+    assert stored[-2] == {"role": "user", "content": "u3"}
+    assert stored[-1] == {"role": "assistant", "content": "a3"}
+
+
+def test_save_history_compacts_for_token_budget_even_if_message_count_small() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+    plugin._redis_client = None
+    plugin._conversation_store = {}
+    plugin._history_manager = ConversationHistoryManager(
+        max_messages=20,
+        keep_last_messages=2,
+        max_estimated_tokens=40,
+        summary_max_chars=500,
+    )
+
+    long_text = "x" * 400
+    messages = [
+        {"role": "system", "content": "System prompt."},
+        {"role": "user", "content": long_text},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "latest question"},
+        {"role": "assistant", "content": "latest answer"},
+    ]
+
+    plugin._save_conversation_history("conv-token", messages)
+    stored = plugin._load_conversation_history("conv-token")
+
+    assert stored[0] == {"role": "system", "content": "System prompt."}
+    assert stored[1]["role"] == "system"
+    assert "Conversation summary (older context):" in stored[1]["content"]
+    assert stored[-2] == {"role": "user", "content": "latest question"}
+    assert stored[-1] == {"role": "assistant", "content": "latest answer"}
+
+
+def test_compaction_drops_orphan_tool_message_from_tail() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+    plugin._redis_client = None
+    plugin._conversation_store = {}
+    plugin._history_manager = ConversationHistoryManager(
+        max_messages=4,
+        keep_last_messages=2,
+        max_estimated_tokens=100000,
+        summary_max_chars=600,
+    )
+
+    messages = [
+        {"role": "system", "content": "System prompt."},
+        {"role": "user", "content": "turn 1"},
+        {"role": "assistant", "content": "turn 1 response"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call-1", "function": {"name": "plugin_tool_001", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "{\"status\":\"success\"}"},
+    ]
+
+    # Simulate a bad persisted state where tool response survives but its assistant tool_calls turn is dropped.
+    bad_history = [messages[0], messages[1], messages[2], messages[4]]
+    plugin._save_conversation_history("conv-orphan-tool", bad_history)
+    stored = plugin._load_conversation_history("conv-orphan-tool")
+
+    assert not any(message.get("role") == "tool" for message in stored)
+
+
+def test_compaction_keeps_valid_assistant_tool_sequence() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+    plugin._redis_client = None
+    plugin._conversation_store = {}
+    plugin._history_manager = ConversationHistoryManager(
+        max_messages=5,
+        keep_last_messages=2,
+        max_estimated_tokens=100000,
+        summary_max_chars=600,
+    )
+
+    messages = [
+        {"role": "system", "content": "System prompt."},
+        {"role": "user", "content": "older"},
+        {"role": "assistant", "content": "older reply"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call-2", "function": {"name": "plugin_tool_002", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "call-2", "content": "{\"status\":\"success\"}"},
+    ]
+
+    plugin._save_conversation_history("conv-valid-tool-seq", messages)
+    stored = plugin._load_conversation_history("conv-valid-tool-seq")
+
+    assert any(message.get("role") == "assistant" and message.get("tool_calls") for message in stored)
+    assert any(message.get("role") == "tool" and message.get("tool_call_id") == "call-2" for message in stored)
