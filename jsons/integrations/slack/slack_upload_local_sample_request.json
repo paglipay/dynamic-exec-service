@@ -1,0 +1,14 @@
+{
+  "module": "plugins.integrations.slack_plugin",
+  "class": "SlackPlugin",
+  "method": "upload_local_file",
+  "constructor_args": {
+    "default_channel": "#general"
+  },
+  "args": [
+    "./generated_data/slack_downloads/sample.md",
+    "#general",
+    "Slack Download Sample",
+    "Uploading local sample file for test"
+  ]
+}

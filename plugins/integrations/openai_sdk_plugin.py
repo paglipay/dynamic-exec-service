@@ -10,6 +10,7 @@ from typing import Any
 from openai import OpenAI
 
 from config import ALLOWED_MODULES
+from plugins.integrations.conversation_history_manager import ConversationHistoryManager
 from plugins.text_file_crud_plugin import TextFileCRUDPlugin
 
 
@@ -28,6 +29,22 @@ class OpenAISDKPlugin:
             raise ValueError("api_key must be provided (or set OPENAI_API_KEY)")
 
         self.client = OpenAI(api_key=resolved_api_key.strip())
+        self._history_manager = ConversationHistoryManager.from_env()
+
+    def _compact_history(self, conversation_id: str) -> list[dict[str, str]]:
+        """Apply bounded-history compaction before a conversation turn."""
+        raw_history = self._conversation_store.setdefault(conversation_id, [])
+        history_manager = getattr(self, "_history_manager", ConversationHistoryManager())
+        compacted, _meta = history_manager.compact(raw_history)
+        normalized = [
+            message
+            for message in compacted
+            if isinstance(message, dict)
+            and isinstance(message.get("role"), str)
+            and isinstance(message.get("content"), str)
+        ]
+        self._conversation_store[conversation_id] = normalized
+        return normalized
 
     def _extract_output_text(self, response: Any) -> str:
         """Extract normalized text output from an SDK response."""
@@ -212,7 +229,7 @@ class OpenAISDKPlugin:
             raise ValueError("include_tools_context must be a boolean")
 
         key = conversation_id.strip()
-        history = self._conversation_store.setdefault(key, [])
+        history = self._compact_history(key)
         request_messages = [*history, {"role": "user", "content": prompt.strip()}]
         if include_tools_context:
             request_messages.insert(0, {"role": "system", "content": self._build_tools_awareness_prompt()})
@@ -235,6 +252,7 @@ class OpenAISDKPlugin:
 
         history.append({"role": "user", "content": prompt.strip()})
         history.append({"role": "assistant", "content": output_text})
+        history = self._compact_history(key)
 
         return {
             "status": "success",
@@ -264,11 +282,12 @@ class OpenAISDKPlugin:
             raise ValueError("include_tools_context must be a boolean")
 
         key = conversation_id.strip()
+        history = self._compact_history(key)
         action_reply = self._try_execute_plugin_action(prompt.strip())
         if action_reply is not None:
-            history = self._conversation_store.setdefault(key, [])
             history.append({"role": "user", "content": prompt.strip()})
             history.append({"role": "assistant", "content": action_reply})
+            history = self._compact_history(key)
             return {
                 "status": "success",
                 "conversation_id": key,

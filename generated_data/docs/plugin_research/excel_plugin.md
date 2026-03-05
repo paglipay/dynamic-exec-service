@@ -29,3 +29,8 @@
 ## Usage Notes
 - Use a relative file path under `base_dir` (default `generated_data`) for easiest interoperability with `TextFileCRUDPlugin`
 - Validate target method against `config.ALLOWED_MODULES` before making calls
+
+
+### Example File Source
+
+The Excel file `C:\Users\Paul\Documents\Projects\paramiko\temp.xlsm` is an example source workbook for network and site data that the Excel plugin can process. It contains multiple sheets with relevant columns for filtering and exporting to JSON.

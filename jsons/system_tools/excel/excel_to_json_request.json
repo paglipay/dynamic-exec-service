@@ -1,0 +1,31 @@
+{
+  "module": "plugins.system_tools.excel_plugin",
+  "class": "ExcelPlugin",
+  "method": "excel_to_json",
+  "constructor_args": {
+    "base_dir": "generated_data",
+    "allow_outside_base_dir": true
+  },
+  "args": [
+    {
+      "file_path": "C:/Users/Paul/Documents/Projects/paramiko/temp.xlsm",
+      "sheet": "s1",
+      "columns": [
+        "switch_ip_address",
+        "Device Name",
+        "Type",
+        "Site",
+        "Loc Code",
+        "School Name"
+      ],
+      "filter_by": [
+        {
+          "column": "switch_ip_address",
+          "operator": "contains",
+          "value": "10.50.16.10"
+        }
+      ],
+      "save_as": "workbook_export.json"
+    }
+  ]
+}

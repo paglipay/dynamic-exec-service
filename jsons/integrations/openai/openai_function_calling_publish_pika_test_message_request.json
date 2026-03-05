@@ -1,0 +1,13 @@
+{
+  "module": "plugins.integrations.openai_plugin",
+  "class": "OpenAIFunctionCallingPlugin",
+  "method": "generate_with_function_calls",
+  "constructor_args": {
+    "api_key": "sk-your-openai-api-key"
+  },
+  "args": [
+    "Use plugin tools to publish a WORKFLOW ENVELOPE to RabbitMQ queue 'openai_test_queue'. Required target is plugins.integrations.pika_plugin::PikaPlugin.publish_workflow. Use constructor_args: {\"host\":\"localhost\",\"port\":5672,\"virtual_host\":\"/\",\"username\":\"guest\",\"password\":\"guest\"}. Use args: [{\"queue_name\":\"openai_test_queue\",\"workflow_id\":\"wf-openai-test-001\",\"max_retries\":2,\"workflow\":{\"stop_on_error\":true,\"steps\":[{\"id\":\"multiply_step\",\"module\":\"plugins.generated_math_plugin\",\"class\":\"GeneratedMathPlugin\",\"method\":\"multiply\",\"constructor_args\":{},\"args\":[6,7]}]},\"durable\":true,\"persistent\":true}]. After tool execution, return a short confirmation with queue name, workflow_id, and status.",
+    "gpt-4.1-mini",
+    6
+  ]
+}

@@ -43,7 +43,7 @@ class ExcelPlugin:
                 raise ValueError("Each filter_by entry must be an object")
 
             column = item.get("column")
-            operator = item.get("operator", "equals")
+            operator = item.get("operator", "contains")
             value = item.get("value")
 
             if not isinstance(column, str) or not column:
@@ -56,18 +56,12 @@ class ExcelPlugin:
             op = operator.lower()
             series = filtered[column]
 
-            if op in {"equals", "eq", "=="}:
-                filtered = filtered[series == value]
-            elif op in {"not_equals", "neq", "!="}:
-                filtered = filtered[series != value]
-            elif op in {"contains"}:
-                filtered = filtered[series.astype(str).str.contains(str(value), case=False, na=False)]
-            elif op in {"in"}:
-                if not isinstance(value, list):
-                    raise ValueError("'in' filter value must be an array")
-                filtered = filtered[series.isin(value)]
-            else:
-                raise ValueError(f"unsupported filter operator: {operator}")
+            if op != "contains":
+                raise ValueError(f"unsupported filter operator: {operator}. only 'contains' is supported")
+
+            filtered = filtered[
+                series.astype(str).str.contains(str(value), case=False, na=False, regex=False)
+            ]
 
         return filtered
 
@@ -98,6 +92,27 @@ class ExcelPlugin:
                 pass
 
         return value
+
+    def _normalize_positive_int(self, value: Any, field_name: str, minimum: int = 1) -> int:
+        if isinstance(value, bool):
+            raise ValueError(f"{field_name} must be an integer >= {minimum}")
+
+        if isinstance(value, int):
+            normalized = value
+        elif isinstance(value, float) and value.is_integer():
+            normalized = int(value)
+        elif isinstance(value, str):
+            stripped = value.strip()
+            if stripped.isdigit():
+                normalized = int(stripped)
+            else:
+                raise ValueError(f"{field_name} must be an integer >= {minimum}")
+        else:
+            raise ValueError(f"{field_name} must be an integer >= {minimum}")
+
+        if normalized < minimum:
+            raise ValueError(f"{field_name} must be an integer >= {minimum}")
+        return normalized
 
     def excel_to_json(
         self,
@@ -156,22 +171,25 @@ class ExcelPlugin:
         except Exception as exc:
             raise ValueError(f"Failed to read Excel file: {exc}") from exc
 
+        frame = frame.copy()
+        frame.insert(0, "row", frame.index.astype(int) + 2)
+
         if columns:
             missing_columns = [column for column in columns if column not in frame.columns]
             if missing_columns:
                 raise ValueError(f"columns not found in sheet: {', '.join(missing_columns)}")
-            frame = frame[columns]
+            frame = frame[["row", *columns]]
 
         if filter_by:
             frame = self._apply_filters(frame, filter_by)
 
         records = self._to_json_safe(frame.where(pd.notna(frame), None).to_dict(orient="records"))
 
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            output_path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception as exc:
-            raise ValueError(f"Failed to write JSON output: {exc}") from exc
+        # output_path.parent.mkdir(parents=True, exist_ok=True)
+        # try:
+        #     output_path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+        # except Exception as exc:
+        #     raise ValueError(f"Failed to write JSON output: {exc}") from exc
 
         return {
             "status": "success",
@@ -183,7 +201,7 @@ class ExcelPlugin:
             "filters_applied": len(filter_by) if isinstance(filter_by, list) else 0,
             "row_count": len(records),
             "save_as": str(output_path),
-            "save_as_content": records,
+            "save_as_content": records[:50],
         }
 
     def list_columns_in_sheet(self, file_path: str | dict[str, Any], sheet: str | int = 0) -> dict[str, Any]:
@@ -392,13 +410,11 @@ class ExcelPlugin:
 
         if sheet is not None and not isinstance(sheet, (str, int)):
             raise ValueError("sheet must be a string or integer")
-        if not isinstance(header_row, int) or header_row < 1:
-            raise ValueError("header_row must be an integer >= 1")
+        header_row = self._normalize_positive_int(header_row, "header_row", minimum=1)
 
         update_specs: list[tuple[str | int, int, list[str], list[Any]]] = []
         if updates_payload is None:
-            if not isinstance(row, int) or row < 1:
-                raise ValueError("row must be an integer >= 1")
+            row = self._normalize_positive_int(row, "row", minimum=1)
             if not isinstance(columns, list) or not columns or any(not isinstance(col, str) or not col.strip() for col in columns):
                 raise ValueError("columns must be a non-empty array of non-empty strings")
 
@@ -427,8 +443,10 @@ class ExcelPlugin:
 
                 if not isinstance(item_sheet, (str, int)):
                     raise ValueError(f"updates[{index}].sheet must be a string or integer")
-                if not isinstance(item_row, int) or item_row < 1:
-                    raise ValueError(f"updates[{index}].row must be an integer >= 1")
+                try:
+                    item_row = self._normalize_positive_int(item_row, f"updates[{index}].row", minimum=1)
+                except ValueError as exc:
+                    raise ValueError(str(exc)) from exc
                 if not isinstance(item_columns, list) or not item_columns or any(not isinstance(col, str) or not col.strip() for col in item_columns):
                     raise ValueError(f"updates[{index}].columns must be a non-empty array of non-empty strings")
 

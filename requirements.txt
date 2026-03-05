@@ -1,8 +1,10 @@
 flask
+gunicorn
 paramiko
 slackeventsapi
 python-dotenv
 openai
+redis
 pandas
 openpyxl
 reportlab

@@ -1,0 +1,13 @@
+{
+  "module": "plugins.integrations.openai_plugin",
+  "class": "OpenAIFunctionCallingPlugin",
+  "method": "generate_with_function_calls",
+  "constructor_args": {
+    "api_key": "sk-your-openai-api-key"
+  },
+  "args": [
+    "Use plugin tools to start consuming workflow messages from RabbitMQ queue 'openai_test_queue'. Required target is plugins.integrations.pika_plugin::PikaPlugin.start_consuming_workflows. Use constructor_args: {\"host\":\"localhost\",\"port\":5672,\"virtual_host\":\"/\",\"username\":\"guest\",\"password\":\"guest\"}. Use args: [{\"queue_name\":\"openai_test_queue\",\"max_messages\":1,\"stop_after_seconds\":15.0,\"poll_interval_seconds\":1.0,\"declare_queue\":true,\"durable\":true,\"max_retries\":2,\"dead_letter_queue\":\"openai_test_queue_dlq\",\"prefetch_count\":1}]. After tool execution, return a short confirmation with queue name, processed_messages, and status.",
+    "gpt-4.1-mini",
+    6
+  ]
+}

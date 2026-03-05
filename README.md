@@ -14,15 +14,24 @@ This README is intended to help an AI agent use the current service safely and c
 3. Check `status` in every response and handle `error` messages explicitly.
 4. Only call allowlisted module/class/method combinations listed below.
 
+## Agent documentation index
+- Central nested docs index for AI agents:
+  - `generated_data/docs/AI_AGENT_REFERENCE.md`
+- This file maps and summarizes documentation under:
+  - `generated_data/docs/api_reference/`
+  - `generated_data/docs/integration_guides/`
+  - `generated_data/docs/plugin_research/`
+  - `generated_data/docs/usage_tips/`
+
 ## Priority: Slack image reference convention
 - Slack image attachments are saved under:
-  - `target_dir = (base_dir / "slack_downloads" / "images" / channel_segment / timestamp).resolve()`
+  - `target_dir = (base_dir / "slack_downloads").resolve()`
 - With default `base_dir=generated_data`, images land in paths like:
-  - `generated_data/slack_downloads/images/C01FMQVG5RU/2026/02/28/...`
+  - `generated_data/slack_downloads/<filename>_<timestamp>.<ext>`
 - For markdown/image links in files created under `generated_data`, prioritize **base_dir-relative** references:
-  - `slack_downloads/images/...`
+  - `slack_downloads/...`
 - Alternative supported form:
-  - `generated_data/slack_downloads/images/...`
+  - `generated_data/slack_downloads/...`
 - This convention is documented in:
   - `generated_data/docs/integration_guides/slack_image_upload_and_markdown_references.md`
 
@@ -102,6 +111,11 @@ Only these module/class/method combinations are executable via API:
   - methods: `get_environment_summary`, `list_directory`, `discover_folder_structure`, `pip_freeze`
   - purpose: cross-platform read-only environment introspection
 
+- `plugins.system_tools.file_system_plugin` → `FileSystemPlugin`
+  - methods: `list_directory`, `create_directory`, `move_path`, `delete_path`, `path_info`
+  - purpose: read and modify files/directories only within `generated_data` (or provided `base_dir`)
+  - blocks absolute paths and traversal outside configured base directory
+
 - `plugins.system_tools.subprocess_plugin` → `SubprocessPlugin`
   - methods: `run_python_script`
   - purpose: run Python scripts via subprocess (can allow script paths outside base directory)
@@ -121,11 +135,57 @@ Only these module/class/method combinations are executable via API:
 - `plugins.integrations.openai_sdk_plugin` → `OpenAISDKPlugin`
   - methods: `generate_text`, `generate_text_with_history`, `reply_with_plugins`
   - style: official OpenAI SDK
-  - memory: `generate_text_with_history` keeps conversation history in process memory by `conversation_id`
+  - memory: `generate_text_with_history` keeps per-`conversation_id` history with automatic compaction (summary + recent tail)
 
 - `plugins.integrations.openai_plugin` → `OpenAIFunctionCallingPlugin`
   - methods: `generate_with_function_calls`, `generate_with_function_calls_and_history`
   - style: OpenAI function-calling (`tool_choice=auto`) that maps allowlisted plugin methods into callable tools
+  - memory: conversation history uses Redis when available (or in-memory fallback) with automatic compaction
+
+### OpenAI conversation history controls
+Both OpenAI history-enabled paths (`OpenAISDKPlugin` and `OpenAIFunctionCallingPlugin`) use bounded history to prevent unbounded context growth.
+
+Compaction strategy:
+- Keep the base system prompt.
+- Keep the most recent `N` non-system messages (`OPENAI_HISTORY_KEEP_LAST_MESSAGES`).
+- Replace older turns with a deterministic summary system message.
+- Trigger compaction when either message count or estimated token budget is exceeded.
+
+Environment variables (optional):
+- `OPENAI_CONVERSATION_TTL_SECONDS` (default `604800`): Redis TTL for persisted function-calling conversation history.
+- `OPENAI_HISTORY_MAX_MESSAGES` (default `60`): max stored messages before compaction.
+- `OPENAI_HISTORY_KEEP_LAST_MESSAGES` (default `24`): number of recent non-system messages preserved verbatim.
+- `OPENAI_HISTORY_MAX_ESTIMATED_TOKENS` (default `12000`): estimated token ceiling before compaction.
+- `OPENAI_HISTORY_SUMMARY_MAX_CHARS` (default `1800`): max length of generated summary text.
+
+Recommended production starting point:
+- Keep defaults for balanced latency/cost.
+- Increase `OPENAI_HISTORY_KEEP_LAST_MESSAGES` if your workflows depend on longer step-by-step continuity.
+- Decrease `OPENAI_HISTORY_MAX_ESTIMATED_TOKENS` if you need stricter token/cost control.
+
+- `plugins.integrations.pika_plugin` → `PikaPlugin`
+  - methods: `connect`, `connection_status`, `disconnect`, `publish_message`, `publish_workflow`, `subscribe`, `consume`, `consume_and_execute_workflow`, `start_consuming_workflows`
+
+- `plugins.integrations.gmail_plugin` → `GmailPlugin`
+  - methods: `get_profile`, `list_messages`, `get_message`, `send_email`
+  - purpose: Gmail API access for profile checks, message reads, and sending email
+  - `send_email` supports optional local file attachments via an `attachments` list argument
+
+## Gmail plugin setup (make Gmail accessible)
+1. Create a Google Cloud project and enable **Gmail API**.
+2. Configure OAuth consent screen and create OAuth client credentials.
+3. Download the OAuth client JSON to a local path, for example `credentials.json`.
+4. Install dependencies from `requirements.txt`.
+5. Run one Gmail request (for example `jsons/integrations/gmail/gmail_get_profile_request.json`) and complete the browser OAuth prompt.
+6. After successful auth, `gmail_token.json` is created and reused for future requests.
+
+Environment variables (optional):
+- `GMAIL_CREDENTIALS_PATH` (defaults to `credentials.json`)
+- `GMAIL_TOKEN_PATH` (defaults to `gmail_token.json`)
+
+Recommended minimum OAuth scopes:
+- Read: `https://www.googleapis.com/auth/gmail.readonly`
+- Send: `https://www.googleapis.com/auth/gmail.send`
 
 ## Useful request JSON files in jsons/
 
@@ -139,6 +199,7 @@ Only these module/class/method combinations are executable via API:
 
 ### Excel response notes
 - `excel_to_json` now includes `column_names` in its success payload.
+- `excel_to_json` `filter_by` supports only `operator: "contains"` (case-insensitive literal substring match).
 - `excel_list_sheets_metadata_request.json` now calls `list_columns_in_sheet` and returns:
   - `sheet_index`, `sheet_name`
   - `row_count`, `column_count`
@@ -168,6 +229,11 @@ Only these module/class/method combinations are executable via API:
 - `openai_sdk_generate_text_with_history_request.json`
 - `openai_function_calling_generate_request.json`
 
+### Gmail examples
+- `jsons/integrations/gmail/gmail_get_profile_request.json`
+- `jsons/integrations/gmail/gmail_list_messages_request.json`
+- `jsons/integrations/gmail/gmail_send_email_request.json`
+
 ### Workflow examples
 - `workflows/workflow_read_readme_openai_sdk_reply.json`
 - `workflows/workflow_read_notes_openai_sdk_reply.json`
@@ -193,7 +259,7 @@ Use `list_text_files` to get recursive relative file paths.
 ## Priming memory for Slack with README context
 To make Slack continue a seeded memory thread:
 
-1. POST `jsons/workflows/workflow_read_readme_openai_sdk_reply.json` to `/workflow`.
+1. POST `jsons/workflows/openai/workflow_read_readme_openai_sdk_reply.json` to `/workflow`.
 2. Set `SLACK_CONVERSATION_ID=readme-reply-thread` in environment/.env.
 3. Start/restart app and send Slack messages.
 
@@ -219,3 +285,22 @@ Slack replies will continue the same conversation memory while the app process r
 - Treat API as strict about input types (`constructor_args` object, `args` array).
 - Parse `status` on every response and handle `error` cases explicitly.
 - Keep all constructor and method arguments JSON-serializable.
+
+## Heroku deployment
+This repository now includes Heroku-ready process/runtime files:
+- `Procfile`: `web: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120`
+- `runtime.txt`: Python runtime pin for Heroku
+
+Quick deploy steps:
+1. Create app: `heroku create <your-app-name>`
+2. Configure required environment variables (example):
+  - `OPENAI_API_KEY`
+  - `SIGNING_SECRET` (if using Slack Events)
+  - `SLACK_BOT_TOKEN` (if Slack replies/downloads are needed)
+3. Deploy: `git push heroku main`
+4. Scale web dyno: `heroku ps:scale web=1`
+5. Open app: `heroku open`
+
+Optional checks:
+- View logs: `heroku logs --tail`
+- Verify health quickly: `curl https://<your-app-name>.herokuapp.com/execute -X POST -H "Content-Type: application/json" -d "{}"`

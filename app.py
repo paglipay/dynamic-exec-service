@@ -16,6 +16,10 @@ from urllib.parse import urljoin
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 from slackeventsapi import SlackEventAdapter
+try:
+    import redis  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover - optional dependency
+    redis = None
 
 try:
     from pypdf import PdfReader  # type: ignore[import-not-found]
@@ -57,6 +61,22 @@ SLACK_MAX_PDF_IMAGE_PAGES = 3
 SLACK_IMAGE_SAVE_BASE_DIR = os.getenv("SLACK_IMAGE_SAVE_BASE_DIR", "generated_data")
 _processed_slack_events: dict[str, float] = {}
 _processed_slack_events_lock = threading.Lock()
+SLACK_EVENT_REDIS_PREFIX = "slack:event:dedupe"
+
+
+def _build_redis_client() -> Any | None:
+    """Build Redis client from REDIS_URL when available."""
+    redis_url = os.getenv("REDIS_URL", "").strip()
+    if not redis_url or redis is None:
+        return None
+
+    try:
+        return redis.from_url(redis_url, decode_responses=True)
+    except Exception:
+        return None
+
+
+_slack_dedupe_redis_client = _build_redis_client()
 
 
 def _is_duplicate_slack_event(event_data: dict[str, Any], event: dict[str, Any]) -> bool:
@@ -73,6 +93,21 @@ def _is_duplicate_slack_event(event_data: dict[str, Any], event: dict[str, Any])
         )
 
     now = time.time()
+
+    redis_client = _slack_dedupe_redis_client
+    if redis_client is not None:
+        redis_key = f"{SLACK_EVENT_REDIS_PREFIX}:{event_id}"
+        try:
+            was_recorded = redis_client.set(
+                redis_key,
+                str(now),
+                ex=SLACK_EVENT_TTL_SECONDS,
+                nx=True,
+            )
+            return not bool(was_recorded)
+        except Exception as exc:
+            app.logger.warning("Slack dedupe Redis check failed; falling back to memory: %s", exc)
+
     with _processed_slack_events_lock:
         expired = [
             key for key, seen_at in _processed_slack_events.items()
@@ -232,16 +267,12 @@ def _save_slack_image_copy(
     content_type: str,
     channel: str | None,
 ) -> str | None:
-    """Save downloaded Slack image bytes under generated_data with nested folders."""
+    """Save downloaded Slack image bytes under a flat slack_downloads directory."""
     if not isinstance(binary_data, bytes) or not binary_data:
         return None
 
-    channel_segment = str(channel).strip() if isinstance(channel, str) and channel.strip() else "unknown_channel"
-    channel_segment = re.sub(r"[^A-Za-z0-9_-]", "_", channel_segment)
-    timestamp = time.strftime("%Y/%m/%d")
-
     base_dir = Path(SLACK_IMAGE_SAVE_BASE_DIR).resolve()
-    target_dir = (base_dir / "slack_downloads" / "images" / channel_segment / timestamp).resolve()
+    target_dir = (base_dir / "slack_downloads").resolve()
     target_dir.mkdir(parents=True, exist_ok=True)
 
     safe_name = _sanitize_slack_filename(original_name)
@@ -259,16 +290,12 @@ def _save_slack_pdf_copy(
     original_name: str,
     channel: str | None,
 ) -> str | None:
-    """Save downloaded Slack PDF bytes under generated_data with nested folders."""
+    """Save downloaded Slack PDF bytes under a flat slack_downloads directory."""
     if not isinstance(binary_data, bytes) or not binary_data:
         return None
 
-    channel_segment = str(channel).strip() if isinstance(channel, str) and channel.strip() else "unknown_channel"
-    channel_segment = re.sub(r"[^A-Za-z0-9_-]", "_", channel_segment)
-    timestamp = time.strftime("%Y/%m/%d")
-
     base_dir = Path(SLACK_IMAGE_SAVE_BASE_DIR).resolve()
-    target_dir = (base_dir / "slack_downloads" / "pdfs" / channel_segment / timestamp).resolve()
+    target_dir = (base_dir / "slack_downloads").resolve()
     target_dir.mkdir(parents=True, exist_ok=True)
 
     safe_name = _sanitize_slack_filename(original_name)

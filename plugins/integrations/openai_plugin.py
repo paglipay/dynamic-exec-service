@@ -5,19 +5,26 @@ from __future__ import annotations
 import json
 import os
 from typing import Any
+from uuid import uuid4
 
 from openai import OpenAI
+try:
+    import redis  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - optional dependency in some local environments
+    redis = None
 
 from config import ALLOWED_MODULES
 from executor.engine import JSONExecutor
 from executor.permissions import validate_request
+from plugins.integrations.conversation_history_manager import ConversationHistoryManager
 
 
 class OpenAIFunctionCallingPlugin:
     """Use OpenAI function calling with allowlisted plugin methods as tools."""
 
     _conversation_store: dict[str, list[dict[str, Any]]] = {}
-    _slack_images_root = "generated_data/slack_downloads/images"
+    _conversation_redis_prefix = "openai_function_calling:conversation"
+    _slack_images_root = "generated_data/slack_downloads"
 
     def __init__(self, api_key: str | None = None) -> None:
         resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
@@ -26,7 +33,147 @@ class OpenAIFunctionCallingPlugin:
 
         self.client = OpenAI(api_key=resolved_api_key.strip())
         self.executor = JSONExecutor()
+        self._history_ttl_seconds = self._resolve_history_ttl_seconds()
+        self._redis_client = self._build_redis_client()
+        self._history_manager = ConversationHistoryManager.from_env()
         self._tool_name_to_target = self._build_tool_mapping()
+
+    def _resolve_history_ttl_seconds(self) -> int:
+        """Resolve conversation history TTL from environment with a safe default."""
+        raw_ttl = os.getenv("OPENAI_CONVERSATION_TTL_SECONDS", "604800")
+        try:
+            ttl_seconds = int(raw_ttl)
+        except (TypeError, ValueError):
+            ttl_seconds = 604800
+
+        if ttl_seconds <= 0:
+            ttl_seconds = 604800
+
+        return ttl_seconds
+
+    def _build_redis_client(self) -> Any | None:
+        """Build Redis client from REDIS_URL when available."""
+        redis_url = os.getenv("REDIS_URL", "").strip()
+        if not redis_url or redis is None:
+            return None
+
+        try:
+            return redis.from_url(redis_url, decode_responses=True)
+        except Exception:
+            return None
+
+    def _conversation_history_key(self, conversation_id: str) -> str:
+        """Build Redis key for one conversation history."""
+        return f"{self._conversation_redis_prefix}:{conversation_id}"
+
+    def _load_conversation_history(self, conversation_id: str) -> list[dict[str, Any]]:
+        """Load conversation history from Redis or in-memory fallback."""
+        redis_client = getattr(self, "_redis_client", None)
+        if redis_client is None:
+            store = getattr(self, "_conversation_store", {})
+            if not isinstance(store, dict):
+                return []
+            return list(store.get(conversation_id, []))
+
+        redis_key = self._conversation_history_key(conversation_id)
+        try:
+            serialized = redis_client.get(redis_key)
+        except Exception:
+            return []
+
+        if not serialized:
+            return []
+
+        try:
+            history = json.loads(serialized)
+        except (TypeError, ValueError):
+            return []
+
+        if not isinstance(history, list):
+            return []
+
+        return [message for message in history if isinstance(message, dict)]
+
+    def _save_conversation_history(self, conversation_id: str, messages: list[dict[str, Any]]) -> None:
+        """Save conversation history to Redis or in-memory fallback."""
+        history_manager = getattr(self, "_history_manager", ConversationHistoryManager())
+        compacted_messages, _meta = history_manager.compact(messages)
+
+        redis_client = getattr(self, "_redis_client", None)
+        if redis_client is None:
+            self._conversation_store[conversation_id] = list(compacted_messages)
+            return
+
+        redis_key = self._conversation_history_key(conversation_id)
+        ttl_seconds = getattr(self, "_history_ttl_seconds", 604800)
+        serialized = json.dumps(compacted_messages, ensure_ascii=False)
+        try:
+            redis_client.setex(redis_key, ttl_seconds, serialized)
+        except Exception:
+            # Last-resort fallback keeps behavior functional if Redis is temporarily unavailable.
+            self._conversation_store[conversation_id] = list(compacted_messages)
+
+    def redis_health_check(self, conversation_id: str | None = None) -> dict[str, Any]:
+        """Return Redis diagnostics to verify shared history wiring in production."""
+        backend = "redis" if getattr(self, "_redis_client", None) is not None else "memory"
+        diagnostics: dict[str, Any] = {
+            "status": "success",
+            "backend": backend,
+            "redis_url_configured": bool(os.getenv("REDIS_URL", "").strip()),
+            "redis_package_installed": redis is not None,
+            "history_ttl_seconds": getattr(self, "_history_ttl_seconds", 604800),
+            "history_max_messages": getattr(getattr(self, "_history_manager", None), "max_messages", None),
+            "history_keep_last_messages": getattr(getattr(self, "_history_manager", None), "keep_last_messages", None),
+            "history_max_estimated_tokens": getattr(
+                getattr(self, "_history_manager", None),
+                "max_estimated_tokens",
+                None,
+            ),
+            "dyno": os.getenv("DYNO", "local"),
+            "redis_ping": None,
+            "round_trip_ok": None,
+        }
+
+        if conversation_id is not None:
+            if not isinstance(conversation_id, str) or not conversation_id.strip():
+                raise ValueError("conversation_id must be a non-empty string when provided")
+
+            key = conversation_id.strip()
+            diagnostics["conversation_id"] = key
+            diagnostics["history_messages"] = len(self._load_conversation_history(key))
+
+        redis_client = getattr(self, "_redis_client", None)
+        if redis_client is None:
+            diagnostics["message"] = "Redis client unavailable; using in-memory fallback"
+            return diagnostics
+
+        try:
+            diagnostics["redis_ping"] = bool(redis_client.ping())
+        except Exception as exc:
+            diagnostics["status"] = "error"
+            diagnostics["redis_ping"] = False
+            diagnostics["message"] = f"Redis ping failed: {exc}"
+            return diagnostics
+
+        health_key = f"{self._conversation_redis_prefix}:_healthcheck:{uuid4().hex}"
+        health_payload = json.dumps({"ok": True})
+        try:
+            redis_client.setex(health_key, 60, health_payload)
+            round_trip_payload = redis_client.get(health_key)
+            diagnostics["round_trip_ok"] = round_trip_payload == health_payload
+        except Exception as exc:
+            diagnostics["status"] = "error"
+            diagnostics["round_trip_ok"] = False
+            diagnostics["message"] = f"Redis read/write check failed: {exc}"
+            return diagnostics
+        finally:
+            try:
+                redis_client.delete(health_key)
+            except Exception:
+                pass
+
+        diagnostics["message"] = "Redis connectivity and write/read checks passed"
+        return diagnostics
 
     def _build_tool_mapping(self) -> dict[str, tuple[str, str, str]]:
         """Build a deterministic mapping from tool names to allowlisted targets."""
@@ -48,6 +195,78 @@ class OpenAIFunctionCallingPlugin:
 
         return mapping
 
+    def _build_tool_description(
+        self,
+        module_name: str,
+        class_name: str,
+        method_name: str,
+    ) -> str:
+        """Build method-specific usage guidance for each tool."""
+        if (
+            module_name == "plugins.integrations.gmail_plugin"
+            and class_name == "GmailPlugin"
+            and method_name == "send_email"
+        ):
+            return (
+                "Send an email through Gmail. "
+                "Use args in this exact order: "
+                "[to, subject, body_text, cc_or_null, bcc_or_null, attachments_or_null]. "
+                "attachments_or_null must be null or a list of file paths, for example "
+                "['generated_data/notes.txt']. "
+                "When the user asks for an attachment, include a non-empty attachments list."
+            )
+
+        if (
+            module_name == "plugins.integrations.gmail_plugin"
+            and class_name == "GmailPlugin"
+            and method_name == "list_messages"
+        ):
+            return (
+                "List Gmail messages. "
+                "Use args in this order: [query, max_results, label_ids_or_null]."
+            )
+
+        if (
+            module_name == "plugins.integrations.gmail_plugin"
+            and class_name == "GmailPlugin"
+            and method_name == "get_message"
+        ):
+            return (
+                "Fetch one Gmail message. "
+                "Use args in this order: [message_id, format, metadata_headers_or_null]."
+            )
+
+        if (
+            module_name == "plugins.system_tools.excel_plugin"
+            and class_name == "ExcelPlugin"
+            and method_name == "excel_to_json"
+        ):
+            return (
+                "Export Excel rows to JSON. "
+                "Use args as a single payload object in args[0], for example: "
+                "[{file_path, sheet, columns, filter_by, save_as}]. "
+                "columns must be an array of exact sheet header strings. "
+                "filter_by must be an array of {column, operator, value}; operator supports 'contains'. "
+                "Do not place file_path/sheet/columns/filter_by/save_as at the top level of tool arguments; "
+                "they belong inside args[0]."
+            )
+
+        if (
+            module_name == "plugins.system_tools.excel_plugin"
+            and class_name == "ExcelPlugin"
+            and method_name == "list_columns_in_sheet"
+        ):
+            return (
+                "List available columns in a sheet before building excel_to_json filters. "
+                "Use args as a single payload object in args[0], for example: "
+                "[{file_path, sheet}]."
+            )
+
+        return (
+            f"Call plugin method {module_name}::{class_name}.{method_name}. "
+            "Provide constructor_args and args when needed."
+        )
+
     def _build_tools(self) -> list[dict[str, Any]]:
         """Build OpenAI tool definitions from allowlisted plugin methods."""
         tools: list[dict[str, Any]] = []
@@ -57,9 +276,10 @@ class OpenAIFunctionCallingPlugin:
                     "type": "function",
                     "function": {
                         "name": tool_name,
-                        "description": (
-                            f"Call plugin method {module_name}::{class_name}.{method_name}. "
-                            "Provide constructor_args and args when needed."
+                        "description": self._build_tool_description(
+                            module_name,
+                            class_name,
+                            method_name,
                         ),
                         "parameters": {
                             "type": "object",
@@ -162,6 +382,12 @@ class OpenAIFunctionCallingPlugin:
 
             final_text = message.content or ""
             if final_text.strip():
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": final_text.strip(),
+                    }
+                )
                 return final_text.strip(), executed_tool_calls
 
         raise ValueError("Exceeded max tool-calling rounds without a final response")
@@ -173,8 +399,12 @@ class OpenAIFunctionCallingPlugin:
             "Use tool calls for concrete actions and then provide a concise final answer. "
             "You are running inside a tool-enabled environment with access to local files through allowlisted plugins. "
             "If a user provides a local file path, do not claim you cannot access local files; call the appropriate tool instead. "
+            "For plugin tool calls, put method inputs inside 'args' as positional arguments; "
+            "when a plugin method accepts a payload object, pass it as args[0]. "
+            "If the user asks to send an email attachment, include attachment file paths in Gmail send_email args. "
+            "Do not claim an attachment was sent unless the Gmail tool result shows attachment_count > 0. "
             "Slack image attachments are saved locally under "
-            f"'{self._slack_images_root}/<channel_segment>/<YYYY>/<MM>/<DD>/' by the app. "
+            f"'{self._slack_images_root}/' as a flat directory by the app. "
             "If the user asks to reference or locate Slack images, use this directory convention."
         )
 
@@ -266,8 +496,9 @@ class OpenAIFunctionCallingPlugin:
                 raise ValueError("image_data_urls must contain non-empty strings")
 
         key = conversation_id.strip()
-        history = self._conversation_store.setdefault(key, [])
-        messages = [*history]
+        messages = self._load_conversation_history(key)
+        history_manager = getattr(self, "_history_manager", ConversationHistoryManager())
+        messages, compaction_meta_before_turn = history_manager.compact(messages)
         if not any(
             isinstance(message, dict)
             and message.get("role") == "system"
@@ -284,14 +515,20 @@ class OpenAIFunctionCallingPlugin:
             max_tool_rounds,
         )
 
-        history.clear()
-        history.extend(messages)
+        self._save_conversation_history(key, messages)
+        stored_messages = self._load_conversation_history(key)
+        _, compaction_meta_after_turn = history_manager.compact(stored_messages)
 
         return {
             "status": "success",
             "conversation_id": key,
             "model": model.strip(),
             "text": final_text,
-            "history_messages": len(history),
+            "history_messages": len(stored_messages),
             "tool_calls_executed": executed_tool_calls,
+            "history_compacted": bool(
+                compaction_meta_before_turn.get("compacted")
+                or compaction_meta_after_turn.get("compacted")
+            ),
+            "history_estimated_tokens": compaction_meta_after_turn.get("after_estimated_tokens"),
         }

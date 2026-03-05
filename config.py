@@ -49,6 +49,16 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "pip_freeze",
         ],
     },
+    "plugins.system_tools.file_system_plugin": {
+        "class": "FileSystemPlugin",
+        "methods": [
+            "list_directory",
+            "create_directory",
+            "move_path",
+            "delete_path",
+            "path_info",
+        ],
+    },
     "plugins.system_tools.subprocess_plugin": {
         "class": "SubprocessPlugin",
         "methods": [
@@ -78,6 +88,21 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "pdf_to_images",
         ],
     },
+    "plugins.system_tools.apscheduler_plugin": {
+        "class": "APSchedulerPlugin",
+        "methods": [
+            "start_scheduler",
+            "stop_scheduler",
+            "health",
+            "list_jobs",
+            "remove_job",
+            "get_last_run",
+            "run_workflow_now",
+            "add_interval_workflow_job",
+            "add_date_workflow_job",
+            "add_cron_workflow_job",
+        ],
+    },
     "plugins.integrations.slack_plugin": {
         "class": "SlackPlugin",
         "methods": [
@@ -105,17 +130,30 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
         "methods": [
             "generate_with_function_calls",
             "generate_with_function_calls_and_history",
+            "redis_health_check",
         ],
     },
     "plugins.integrations.pika_plugin": {
         "class": "PikaPlugin",
         "methods": [
+            "connect",
+            "connection_status",
+            "disconnect",
             "publish_message",
             "publish_workflow",
             "subscribe",
             "consume",
             "consume_and_execute_workflow",
             "start_consuming_workflows",
+        ],
+    },
+    "plugins.integrations.gmail_plugin": {
+        "class": "GmailPlugin",
+        "methods": [
+            "get_profile",
+            "list_messages",
+            "get_message",
+            "send_email",
         ],
     },
 }
