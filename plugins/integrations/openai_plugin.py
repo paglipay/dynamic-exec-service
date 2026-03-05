@@ -370,6 +370,12 @@ class OpenAIFunctionCallingPlugin:
 
             final_text = message.content or ""
             if final_text.strip():
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": final_text.strip(),
+                    }
+                )
                 return final_text.strip(), executed_tool_calls
 
         raise ValueError("Exceeded max tool-calling rounds without a final response")

@@ -138,3 +138,39 @@ def test_redis_health_check_requires_non_empty_conversation_id() -> None:
         assert False, "Expected ValueError"
     except ValueError as exc:
         assert "conversation_id must be a non-empty string" in str(exc)
+
+
+def test_execute_chat_turn_appends_final_assistant_message_to_history() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+    plugin._tool_name_to_target = {}
+    plugin._build_tools = lambda: []
+
+    class FakeMessage:
+        content = "Hello from assistant"
+        tool_calls = None
+
+    class FakeChoice:
+        message = FakeMessage()
+
+    class FakeResponse:
+        choices = [FakeChoice()]
+
+    class FakeCompletions:
+        @staticmethod
+        def create(**_kwargs):
+            return FakeResponse()
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    plugin.client = FakeClient()
+    messages = [{"role": "user", "content": "hi"}]
+
+    final_text, executed_tool_calls = plugin._execute_chat_turn(messages, "gpt-4.1-mini", 1)
+
+    assert final_text == "Hello from assistant"
+    assert executed_tool_calls == 0
+    assert messages[-1] == {"role": "assistant", "content": "Hello from assistant"}
