@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from typing import Any
+from uuid import uuid4
 
 from openai import OpenAI
 try:
@@ -106,6 +107,61 @@ class OpenAIFunctionCallingPlugin:
         except Exception:
             # Last-resort fallback keeps behavior functional if Redis is temporarily unavailable.
             self._conversation_store[conversation_id] = list(messages)
+
+    def redis_health_check(self, conversation_id: str | None = None) -> dict[str, Any]:
+        """Return Redis diagnostics to verify shared history wiring in production."""
+        backend = "redis" if getattr(self, "_redis_client", None) is not None else "memory"
+        diagnostics: dict[str, Any] = {
+            "status": "success",
+            "backend": backend,
+            "redis_url_configured": bool(os.getenv("REDIS_URL", "").strip()),
+            "redis_package_installed": redis is not None,
+            "history_ttl_seconds": getattr(self, "_history_ttl_seconds", 604800),
+            "dyno": os.getenv("DYNO", "local"),
+            "redis_ping": None,
+            "round_trip_ok": None,
+        }
+
+        if conversation_id is not None:
+            if not isinstance(conversation_id, str) or not conversation_id.strip():
+                raise ValueError("conversation_id must be a non-empty string when provided")
+
+            key = conversation_id.strip()
+            diagnostics["conversation_id"] = key
+            diagnostics["history_messages"] = len(self._load_conversation_history(key))
+
+        redis_client = getattr(self, "_redis_client", None)
+        if redis_client is None:
+            diagnostics["message"] = "Redis client unavailable; using in-memory fallback"
+            return diagnostics
+
+        try:
+            diagnostics["redis_ping"] = bool(redis_client.ping())
+        except Exception as exc:
+            diagnostics["status"] = "error"
+            diagnostics["redis_ping"] = False
+            diagnostics["message"] = f"Redis ping failed: {exc}"
+            return diagnostics
+
+        health_key = f"{self._conversation_redis_prefix}:_healthcheck:{uuid4().hex}"
+        health_payload = json.dumps({"ok": True})
+        try:
+            redis_client.setex(health_key, 60, health_payload)
+            round_trip_payload = redis_client.get(health_key)
+            diagnostics["round_trip_ok"] = round_trip_payload == health_payload
+        except Exception as exc:
+            diagnostics["status"] = "error"
+            diagnostics["round_trip_ok"] = False
+            diagnostics["message"] = f"Redis read/write check failed: {exc}"
+            return diagnostics
+        finally:
+            try:
+                redis_client.delete(health_key)
+            except Exception:
+                pass
+
+        diagnostics["message"] = "Redis connectivity and write/read checks passed"
+        return diagnostics
 
     def _build_tool_mapping(self) -> dict[str, tuple[str, str, str]]:
         """Build a deterministic mapping from tool names to allowlisted targets."""
@@ -314,6 +370,12 @@ class OpenAIFunctionCallingPlugin:
 
             final_text = message.content or ""
             if final_text.strip():
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": final_text.strip(),
+                    }
+                )
                 return final_text.strip(), executed_tool_calls
 
         raise ValueError("Exceeded max tool-calling rounds without a final response")
