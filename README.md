@@ -133,9 +133,10 @@ Only these module/class/method combinations are executable via API:
   - style: raw HTTP request to OpenAI Responses API
 
 - `plugins.integrations.openai_sdk_plugin` → `OpenAISDKPlugin`
-  - methods: `generate_text`, `generate_text_with_history`, `reply_with_plugins`
+  - methods: `generate_text`, `generate_text_with_history`, `reply_with_plugins`, `generate_image`
   - style: official OpenAI SDK
   - memory: `generate_text_with_history` keeps per-`conversation_id` history with automatic compaction (summary + recent tail)
+  - images: `generate_image` creates images via OpenAI and saves base64 outputs to `generated_data/images/`
 
 - `plugins.integrations.openai_plugin` → `OpenAIFunctionCallingPlugin`
   - methods: `generate_with_function_calls`, `generate_with_function_calls_and_history`

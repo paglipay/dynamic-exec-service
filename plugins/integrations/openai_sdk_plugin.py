@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,8 @@ class OpenAISDKPlugin:
     _default_joke_text = "Why don't scientists trust atoms? Because they make up everything!"
     _default_markdown_base_dir = Path("generated_data").resolve()
     _default_system_prompt_markdown = "README.md"
+    _default_image_output_dir = _default_markdown_base_dir / "images"
+    _safe_image_name = re.compile(r"[^A-Za-z0-9._-]+")
 
     def __init__(self, api_key: str | None = None) -> None:
         resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
@@ -167,6 +171,32 @@ class OpenAISDKPlugin:
             f"{content.strip()}"
         )
 
+    def _sanitize_image_file_stem(self, file_name: str | None) -> str:
+        """Return a safe filename stem for generated images."""
+        if file_name is None:
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            return f"image_{timestamp}"
+
+        if not isinstance(file_name, str) or not file_name.strip():
+            raise ValueError("file_name must be a non-empty string when provided")
+
+        stem = Path(file_name.strip()).stem
+        stem = self._safe_image_name.sub("_", stem).strip("._-")
+        if not stem:
+            raise ValueError("file_name must contain at least one alphanumeric character")
+
+        return stem[:80]
+
+    def _ensure_supported_image_option(self, field_name: str, value: str, allowed: set[str]) -> str:
+        """Validate image generation option against an explicit allowlist."""
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field_name} must be a non-empty string")
+        normalized = value.strip().lower()
+        if normalized not in allowed:
+            allowed_csv = ", ".join(sorted(allowed))
+            raise ValueError(f"{field_name} must be one of: {allowed_csv}")
+        return normalized
+
     def generate_text(
         self,
         prompt: str,
@@ -209,6 +239,98 @@ class OpenAISDKPlugin:
             "response_id": getattr(response, "id", None),
             "text": output_text,
         }
+
+    def generate_image(
+        self,
+        prompt: str,
+        model: str = "gpt-image-1",
+        size: str = "1024x1024",
+        quality: str = "auto",
+        background: str = "auto",
+        output_format: str = "png",
+        file_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Generate an image from a prompt and store it under generated_data/images."""
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("prompt must be a non-empty string")
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError("model must be a non-empty string")
+
+        normalized_size = self._ensure_supported_image_option(
+            "size",
+            size,
+            {"1024x1024", "1024x1536", "1536x1024", "auto"},
+        )
+        normalized_quality = self._ensure_supported_image_option(
+            "quality",
+            quality,
+            {"auto", "low", "medium", "high"},
+        )
+        normalized_background = self._ensure_supported_image_option(
+            "background",
+            background,
+            {"auto", "transparent", "opaque"},
+        )
+        normalized_output_format = self._ensure_supported_image_option(
+            "output_format",
+            output_format,
+            {"png", "jpeg", "webp"},
+        )
+
+        try:
+            response = self.client.images.generate(
+                model=model.strip(),
+                prompt=prompt.strip(),
+                size=normalized_size,
+                quality=normalized_quality,
+                background=normalized_background,
+                output_format=normalized_output_format,
+            )
+        except Exception as exc:
+            raise ValueError(f"OpenAI image generation failed: {exc}") from exc
+
+        data = getattr(response, "data", None)
+        if not isinstance(data, list) or not data:
+            raise ValueError("OpenAI image generation response did not include image data")
+
+        image_item = data[0]
+        b64_json = getattr(image_item, "b64_json", None)
+        image_url = getattr(image_item, "url", None)
+        revised_prompt = getattr(image_item, "revised_prompt", None)
+
+        if isinstance(b64_json, str) and b64_json.strip():
+            try:
+                image_bytes = base64.b64decode(b64_json, validate=True)
+            except Exception as exc:
+                raise ValueError(f"OpenAI image data could not be decoded: {exc}") from exc
+
+            file_stem = self._sanitize_image_file_stem(file_name)
+            output_dir = self._default_image_output_dir
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = output_dir / f"{file_stem}.{normalized_output_format}"
+            output_path.write_bytes(image_bytes)
+
+            return {
+                "status": "success",
+                "model": getattr(response, "model", model.strip()),
+                "prompt": prompt.strip(),
+                "revised_prompt": revised_prompt,
+                "image_path": str(output_path),
+                "image_format": normalized_output_format,
+                "image_bytes": len(image_bytes),
+            }
+
+        if isinstance(image_url, str) and image_url.strip():
+            return {
+                "status": "success",
+                "model": getattr(response, "model", model.strip()),
+                "prompt": prompt.strip(),
+                "revised_prompt": revised_prompt,
+                "image_url": image_url.strip(),
+                "image_format": normalized_output_format,
+            }
+
+        raise ValueError("OpenAI image generation response did not include b64_json or image url")
 
     def generate_text_with_history(
         self,

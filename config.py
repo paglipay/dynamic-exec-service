@@ -123,6 +123,7 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "generate_text",
             "generate_text_with_history",
             "reply_with_plugins",
+            "generate_image",
         ],
     },
     "plugins.integrations.openai_plugin": {
