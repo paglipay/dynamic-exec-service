@@ -263,3 +263,22 @@ Slack replies will continue the same conversation memory while the app process r
 - Treat API as strict about input types (`constructor_args` object, `args` array).
 - Parse `status` on every response and handle `error` cases explicitly.
 - Keep all constructor and method arguments JSON-serializable.
+
+## Heroku deployment
+This repository now includes Heroku-ready process/runtime files:
+- `Procfile`: `web: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120`
+- `runtime.txt`: Python runtime pin for Heroku
+
+Quick deploy steps:
+1. Create app: `heroku create <your-app-name>`
+2. Configure required environment variables (example):
+  - `OPENAI_API_KEY`
+  - `SIGNING_SECRET` (if using Slack Events)
+  - `SLACK_BOT_TOKEN` (if Slack replies/downloads are needed)
+3. Deploy: `git push heroku main`
+4. Scale web dyno: `heroku ps:scale web=1`
+5. Open app: `heroku open`
+
+Optional checks:
+- View logs: `heroku logs --tail`
+- Verify health quickly: `curl https://<your-app-name>.herokuapp.com/execute -X POST -H "Content-Type: application/json" -d "{}"`
