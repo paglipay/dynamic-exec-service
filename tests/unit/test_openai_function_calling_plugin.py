@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from plugins.integrations.conversation_history_manager import ConversationHistoryManager
 from plugins.integrations.openai_plugin import OpenAIFunctionCallingPlugin
 
 
@@ -174,3 +175,65 @@ def test_execute_chat_turn_appends_final_assistant_message_to_history() -> None:
     assert final_text == "Hello from assistant"
     assert executed_tool_calls == 0
     assert messages[-1] == {"role": "assistant", "content": "Hello from assistant"}
+
+
+def test_save_history_compacts_and_keeps_recent_messages() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+    plugin._redis_client = None
+    plugin._conversation_store = {}
+    plugin._history_manager = ConversationHistoryManager(
+        max_messages=6,
+        keep_last_messages=2,
+        max_estimated_tokens=100000,
+        summary_max_chars=600,
+    )
+
+    messages = [
+        {"role": "system", "content": "System prompt."},
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "u2"},
+        {"role": "assistant", "content": "a2"},
+        {"role": "user", "content": "u3"},
+        {"role": "assistant", "content": "a3"},
+    ]
+
+    plugin._save_conversation_history("conv-compact", messages)
+    stored = plugin._load_conversation_history("conv-compact")
+
+    assert len(stored) <= 6
+    assert stored[0] == {"role": "system", "content": "System prompt."}
+    assert stored[1]["role"] == "system"
+    assert "Conversation summary (older context):" in stored[1]["content"]
+    assert stored[-2] == {"role": "user", "content": "u3"}
+    assert stored[-1] == {"role": "assistant", "content": "a3"}
+
+
+def test_save_history_compacts_for_token_budget_even_if_message_count_small() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+    plugin._redis_client = None
+    plugin._conversation_store = {}
+    plugin._history_manager = ConversationHistoryManager(
+        max_messages=20,
+        keep_last_messages=2,
+        max_estimated_tokens=40,
+        summary_max_chars=500,
+    )
+
+    long_text = "x" * 400
+    messages = [
+        {"role": "system", "content": "System prompt."},
+        {"role": "user", "content": long_text},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "latest question"},
+        {"role": "assistant", "content": "latest answer"},
+    ]
+
+    plugin._save_conversation_history("conv-token", messages)
+    stored = plugin._load_conversation_history("conv-token")
+
+    assert stored[0] == {"role": "system", "content": "System prompt."}
+    assert stored[1]["role"] == "system"
+    assert "Conversation summary (older context):" in stored[1]["content"]
+    assert stored[-2] == {"role": "user", "content": "latest question"}
+    assert stored[-1] == {"role": "assistant", "content": "latest answer"}

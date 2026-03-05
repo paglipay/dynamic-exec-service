@@ -16,6 +16,7 @@ except ImportError:  # pragma: no cover - optional dependency in some local envi
 from config import ALLOWED_MODULES
 from executor.engine import JSONExecutor
 from executor.permissions import validate_request
+from plugins.integrations.conversation_history_manager import ConversationHistoryManager
 
 
 class OpenAIFunctionCallingPlugin:
@@ -34,6 +35,7 @@ class OpenAIFunctionCallingPlugin:
         self.executor = JSONExecutor()
         self._history_ttl_seconds = self._resolve_history_ttl_seconds()
         self._redis_client = self._build_redis_client()
+        self._history_manager = ConversationHistoryManager.from_env()
         self._tool_name_to_target = self._build_tool_mapping()
 
     def _resolve_history_ttl_seconds(self) -> int:
@@ -94,19 +96,22 @@ class OpenAIFunctionCallingPlugin:
 
     def _save_conversation_history(self, conversation_id: str, messages: list[dict[str, Any]]) -> None:
         """Save conversation history to Redis or in-memory fallback."""
+        history_manager = getattr(self, "_history_manager", ConversationHistoryManager())
+        compacted_messages, _meta = history_manager.compact(messages)
+
         redis_client = getattr(self, "_redis_client", None)
         if redis_client is None:
-            self._conversation_store[conversation_id] = list(messages)
+            self._conversation_store[conversation_id] = list(compacted_messages)
             return
 
         redis_key = self._conversation_history_key(conversation_id)
         ttl_seconds = getattr(self, "_history_ttl_seconds", 604800)
-        serialized = json.dumps(messages, ensure_ascii=False)
+        serialized = json.dumps(compacted_messages, ensure_ascii=False)
         try:
             redis_client.setex(redis_key, ttl_seconds, serialized)
         except Exception:
             # Last-resort fallback keeps behavior functional if Redis is temporarily unavailable.
-            self._conversation_store[conversation_id] = list(messages)
+            self._conversation_store[conversation_id] = list(compacted_messages)
 
     def redis_health_check(self, conversation_id: str | None = None) -> dict[str, Any]:
         """Return Redis diagnostics to verify shared history wiring in production."""
@@ -117,6 +122,13 @@ class OpenAIFunctionCallingPlugin:
             "redis_url_configured": bool(os.getenv("REDIS_URL", "").strip()),
             "redis_package_installed": redis is not None,
             "history_ttl_seconds": getattr(self, "_history_ttl_seconds", 604800),
+            "history_max_messages": getattr(getattr(self, "_history_manager", None), "max_messages", None),
+            "history_keep_last_messages": getattr(getattr(self, "_history_manager", None), "keep_last_messages", None),
+            "history_max_estimated_tokens": getattr(
+                getattr(self, "_history_manager", None),
+                "max_estimated_tokens",
+                None,
+            ),
             "dyno": os.getenv("DYNO", "local"),
             "redis_ping": None,
             "round_trip_ok": None,
@@ -485,6 +497,8 @@ class OpenAIFunctionCallingPlugin:
 
         key = conversation_id.strip()
         messages = self._load_conversation_history(key)
+        history_manager = getattr(self, "_history_manager", ConversationHistoryManager())
+        messages, compaction_meta_before_turn = history_manager.compact(messages)
         if not any(
             isinstance(message, dict)
             and message.get("role") == "system"
@@ -502,12 +516,19 @@ class OpenAIFunctionCallingPlugin:
         )
 
         self._save_conversation_history(key, messages)
+        stored_messages = self._load_conversation_history(key)
+        _, compaction_meta_after_turn = history_manager.compact(stored_messages)
 
         return {
             "status": "success",
             "conversation_id": key,
             "model": model.strip(),
             "text": final_text,
-            "history_messages": len(messages),
+            "history_messages": len(stored_messages),
             "tool_calls_executed": executed_tool_calls,
+            "history_compacted": bool(
+                compaction_meta_before_turn.get("compacted")
+                or compaction_meta_after_turn.get("compacted")
+            ),
+            "history_estimated_tokens": compaction_meta_after_turn.get("after_estimated_tokens"),
         }
