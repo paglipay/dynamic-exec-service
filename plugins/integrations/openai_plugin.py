@@ -7,6 +7,10 @@ import os
 from typing import Any
 
 from openai import OpenAI
+try:
+    import redis  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - optional dependency in some local environments
+    redis = None
 
 from config import ALLOWED_MODULES
 from executor.engine import JSONExecutor
@@ -17,6 +21,7 @@ class OpenAIFunctionCallingPlugin:
     """Use OpenAI function calling with allowlisted plugin methods as tools."""
 
     _conversation_store: dict[str, list[dict[str, Any]]] = {}
+    _conversation_redis_prefix = "openai_function_calling:conversation"
     _slack_images_root = "generated_data/slack_downloads"
 
     def __init__(self, api_key: str | None = None) -> None:
@@ -26,7 +31,81 @@ class OpenAIFunctionCallingPlugin:
 
         self.client = OpenAI(api_key=resolved_api_key.strip())
         self.executor = JSONExecutor()
+        self._history_ttl_seconds = self._resolve_history_ttl_seconds()
+        self._redis_client = self._build_redis_client()
         self._tool_name_to_target = self._build_tool_mapping()
+
+    def _resolve_history_ttl_seconds(self) -> int:
+        """Resolve conversation history TTL from environment with a safe default."""
+        raw_ttl = os.getenv("OPENAI_CONVERSATION_TTL_SECONDS", "604800")
+        try:
+            ttl_seconds = int(raw_ttl)
+        except (TypeError, ValueError):
+            ttl_seconds = 604800
+
+        if ttl_seconds <= 0:
+            ttl_seconds = 604800
+
+        return ttl_seconds
+
+    def _build_redis_client(self) -> Any | None:
+        """Build Redis client from REDIS_URL when available."""
+        redis_url = os.getenv("REDIS_URL", "").strip()
+        if not redis_url or redis is None:
+            return None
+
+        try:
+            return redis.from_url(redis_url, decode_responses=True)
+        except Exception:
+            return None
+
+    def _conversation_history_key(self, conversation_id: str) -> str:
+        """Build Redis key for one conversation history."""
+        return f"{self._conversation_redis_prefix}:{conversation_id}"
+
+    def _load_conversation_history(self, conversation_id: str) -> list[dict[str, Any]]:
+        """Load conversation history from Redis or in-memory fallback."""
+        redis_client = getattr(self, "_redis_client", None)
+        if redis_client is None:
+            store = getattr(self, "_conversation_store", {})
+            if not isinstance(store, dict):
+                return []
+            return list(store.get(conversation_id, []))
+
+        redis_key = self._conversation_history_key(conversation_id)
+        try:
+            serialized = redis_client.get(redis_key)
+        except Exception:
+            return []
+
+        if not serialized:
+            return []
+
+        try:
+            history = json.loads(serialized)
+        except (TypeError, ValueError):
+            return []
+
+        if not isinstance(history, list):
+            return []
+
+        return [message for message in history if isinstance(message, dict)]
+
+    def _save_conversation_history(self, conversation_id: str, messages: list[dict[str, Any]]) -> None:
+        """Save conversation history to Redis or in-memory fallback."""
+        redis_client = getattr(self, "_redis_client", None)
+        if redis_client is None:
+            self._conversation_store[conversation_id] = list(messages)
+            return
+
+        redis_key = self._conversation_history_key(conversation_id)
+        ttl_seconds = getattr(self, "_history_ttl_seconds", 604800)
+        serialized = json.dumps(messages, ensure_ascii=False)
+        try:
+            redis_client.setex(redis_key, ttl_seconds, serialized)
+        except Exception:
+            # Last-resort fallback keeps behavior functional if Redis is temporarily unavailable.
+            self._conversation_store[conversation_id] = list(messages)
 
     def _build_tool_mapping(self) -> dict[str, tuple[str, str, str]]:
         """Build a deterministic mapping from tool names to allowlisted targets."""
@@ -343,8 +422,7 @@ class OpenAIFunctionCallingPlugin:
                 raise ValueError("image_data_urls must contain non-empty strings")
 
         key = conversation_id.strip()
-        history = self._conversation_store.setdefault(key, [])
-        messages = [*history]
+        messages = self._load_conversation_history(key)
         if not any(
             isinstance(message, dict)
             and message.get("role") == "system"
@@ -361,14 +439,13 @@ class OpenAIFunctionCallingPlugin:
             max_tool_rounds,
         )
 
-        history.clear()
-        history.extend(messages)
+        self._save_conversation_history(key, messages)
 
         return {
             "status": "success",
             "conversation_id": key,
             "model": model.strip(),
             "text": final_text,
-            "history_messages": len(history),
+            "history_messages": len(messages),
             "tool_calls_executed": executed_tool_calls,
         }
