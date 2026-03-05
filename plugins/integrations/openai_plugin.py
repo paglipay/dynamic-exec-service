@@ -180,12 +180,20 @@ class OpenAIFunctionCallingPlugin:
         mapping: dict[str, tuple[str, str, str]] = {}
         counter = 1
         for module_name in sorted(ALLOWED_MODULES):
-            if module_name.startswith("plugins.integrations.openai"):
-                continue
-
             module_config = ALLOWED_MODULES[module_name]
             class_name = module_config["class"]
             for method_name in module_config["methods"]:
+                # Prevent recursive OpenAI->OpenAI tool loops, but allow image generation bridge.
+                if module_name == "plugins.integrations.openai_plugin":
+                    continue
+                if module_name == "plugins.integrations.openai_http_plugin":
+                    continue
+                if (
+                    module_name == "plugins.integrations.openai_sdk_plugin"
+                    and method_name != "generate_image"
+                ):
+                    continue
+
                 tool_name = f"plugin_tool_{counter:03d}"
                 mapping[tool_name] = (module_name, class_name, method_name)
                 counter += 1
@@ -260,6 +268,18 @@ class OpenAIFunctionCallingPlugin:
                 "List available columns in a sheet before building excel_to_json filters. "
                 "Use args as a single payload object in args[0], for example: "
                 "[{file_path, sheet}]."
+            )
+
+        if (
+            module_name == "plugins.integrations.openai_sdk_plugin"
+            and class_name == "OpenAISDKPlugin"
+            and method_name == "generate_image"
+        ):
+            return (
+                "Generate an image with OpenAI and save it locally. "
+                "Use args in this exact order: "
+                "[prompt, model, size, quality, background, output_format, file_name_or_null]. "
+                "Example: ['A friendly robot coding', 'gpt-image-1', '1024x1024', 'high', 'opaque', 'png', 'robot_coding']."
             )
 
         return (

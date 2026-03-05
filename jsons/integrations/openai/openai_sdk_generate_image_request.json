@@ -1,0 +1,17 @@
+{
+  "module": "plugins.integrations.openai_sdk_plugin",
+  "class": "OpenAISDKPlugin",
+  "method": "generate_image",
+  "constructor_args": {
+    "api_key": "sk-your-openai-api-key"
+  },
+  "args": [
+    "Create a clean vector-style illustration of a friendly robot coding at a desk.",
+    "gpt-image-1",
+    "1024x1024",
+    "high",
+    "opaque",
+    "png",
+    "robot_coding"
+  ]
+}

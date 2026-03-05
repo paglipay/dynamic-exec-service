@@ -26,6 +26,47 @@ def test_system_prompt_requires_attachment_count_verification() -> None:
     assert "attachment_count > 0" in prompt
 
 
+def test_tool_mapping_includes_openai_sdk_generate_image_only() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+
+    mapping = plugin._build_tool_mapping()
+    targets = set(mapping.values())
+
+    assert (
+        "plugins.integrations.openai_sdk_plugin",
+        "OpenAISDKPlugin",
+        "generate_image",
+    ) in targets
+    assert (
+        "plugins.integrations.openai_sdk_plugin",
+        "OpenAISDKPlugin",
+        "generate_text",
+    ) not in targets
+    assert (
+        "plugins.integrations.openai_sdk_plugin",
+        "OpenAISDKPlugin",
+        "generate_text_with_history",
+    ) not in targets
+    assert (
+        "plugins.integrations.openai_sdk_plugin",
+        "OpenAISDKPlugin",
+        "reply_with_plugins",
+    ) not in targets
+
+
+def test_generate_image_tool_description_mentions_arg_order() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+
+    description = plugin._build_tool_description(
+        "plugins.integrations.openai_sdk_plugin",
+        "OpenAISDKPlugin",
+        "generate_image",
+    )
+
+    assert "exact order" in description
+    assert "gpt-image-1" in description
+
+
 def test_history_storage_falls_back_to_memory_when_redis_unavailable() -> None:
     plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
     plugin._redis_client = None
