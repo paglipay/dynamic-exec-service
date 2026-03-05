@@ -237,3 +237,64 @@ def test_save_history_compacts_for_token_budget_even_if_message_count_small() ->
     assert "Conversation summary (older context):" in stored[1]["content"]
     assert stored[-2] == {"role": "user", "content": "latest question"}
     assert stored[-1] == {"role": "assistant", "content": "latest answer"}
+
+
+def test_compaction_drops_orphan_tool_message_from_tail() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+    plugin._redis_client = None
+    plugin._conversation_store = {}
+    plugin._history_manager = ConversationHistoryManager(
+        max_messages=4,
+        keep_last_messages=2,
+        max_estimated_tokens=100000,
+        summary_max_chars=600,
+    )
+
+    messages = [
+        {"role": "system", "content": "System prompt."},
+        {"role": "user", "content": "turn 1"},
+        {"role": "assistant", "content": "turn 1 response"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call-1", "function": {"name": "plugin_tool_001", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "{\"status\":\"success\"}"},
+    ]
+
+    # Simulate a bad persisted state where tool response survives but its assistant tool_calls turn is dropped.
+    bad_history = [messages[0], messages[1], messages[2], messages[4]]
+    plugin._save_conversation_history("conv-orphan-tool", bad_history)
+    stored = plugin._load_conversation_history("conv-orphan-tool")
+
+    assert not any(message.get("role") == "tool" for message in stored)
+
+
+def test_compaction_keeps_valid_assistant_tool_sequence() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+    plugin._redis_client = None
+    plugin._conversation_store = {}
+    plugin._history_manager = ConversationHistoryManager(
+        max_messages=5,
+        keep_last_messages=2,
+        max_estimated_tokens=100000,
+        summary_max_chars=600,
+    )
+
+    messages = [
+        {"role": "system", "content": "System prompt."},
+        {"role": "user", "content": "older"},
+        {"role": "assistant", "content": "older reply"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call-2", "function": {"name": "plugin_tool_002", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "call-2", "content": "{\"status\":\"success\"}"},
+    ]
+
+    plugin._save_conversation_history("conv-valid-tool-seq", messages)
+    stored = plugin._load_conversation_history("conv-valid-tool-seq")
+
+    assert any(message.get("role") == "assistant" and message.get("tool_calls") for message in stored)
+    assert any(message.get("role") == "tool" and message.get("tool_call_id") == "call-2" for message in stored)

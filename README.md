@@ -135,11 +135,33 @@ Only these module/class/method combinations are executable via API:
 - `plugins.integrations.openai_sdk_plugin` → `OpenAISDKPlugin`
   - methods: `generate_text`, `generate_text_with_history`, `reply_with_plugins`
   - style: official OpenAI SDK
-  - memory: `generate_text_with_history` keeps conversation history in process memory by `conversation_id`
+  - memory: `generate_text_with_history` keeps per-`conversation_id` history with automatic compaction (summary + recent tail)
 
 - `plugins.integrations.openai_plugin` → `OpenAIFunctionCallingPlugin`
   - methods: `generate_with_function_calls`, `generate_with_function_calls_and_history`
   - style: OpenAI function-calling (`tool_choice=auto`) that maps allowlisted plugin methods into callable tools
+  - memory: conversation history uses Redis when available (or in-memory fallback) with automatic compaction
+
+### OpenAI conversation history controls
+Both OpenAI history-enabled paths (`OpenAISDKPlugin` and `OpenAIFunctionCallingPlugin`) use bounded history to prevent unbounded context growth.
+
+Compaction strategy:
+- Keep the base system prompt.
+- Keep the most recent `N` non-system messages (`OPENAI_HISTORY_KEEP_LAST_MESSAGES`).
+- Replace older turns with a deterministic summary system message.
+- Trigger compaction when either message count or estimated token budget is exceeded.
+
+Environment variables (optional):
+- `OPENAI_CONVERSATION_TTL_SECONDS` (default `604800`): Redis TTL for persisted function-calling conversation history.
+- `OPENAI_HISTORY_MAX_MESSAGES` (default `60`): max stored messages before compaction.
+- `OPENAI_HISTORY_KEEP_LAST_MESSAGES` (default `24`): number of recent non-system messages preserved verbatim.
+- `OPENAI_HISTORY_MAX_ESTIMATED_TOKENS` (default `12000`): estimated token ceiling before compaction.
+- `OPENAI_HISTORY_SUMMARY_MAX_CHARS` (default `1800`): max length of generated summary text.
+
+Recommended production starting point:
+- Keep defaults for balanced latency/cost.
+- Increase `OPENAI_HISTORY_KEEP_LAST_MESSAGES` if your workflows depend on longer step-by-step continuity.
+- Decrease `OPENAI_HISTORY_MAX_ESTIMATED_TOKENS` if you need stricter token/cost control.
 
 - `plugins.integrations.pika_plugin` → `PikaPlugin`
   - methods: `connect`, `connection_status`, `disconnect`, `publish_message`, `publish_workflow`, `subscribe`, `consume`, `consume_and_execute_workflow`, `start_consuming_workflows`

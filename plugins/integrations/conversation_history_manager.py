@@ -96,6 +96,7 @@ class ConversationHistoryManager:
     def compact(self, messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """Compact history when message or token budget is exceeded."""
         valid_messages = [m for m in messages if isinstance(m, dict)]
+        valid_messages = self._sanitize_tool_message_sequence(valid_messages)
         before_count = len(valid_messages)
         before_tokens = self.estimated_tokens(valid_messages)
 
@@ -117,8 +118,11 @@ class ConversationHistoryManager:
             dropped = []
         else:
             split = len(non_system) - self.keep_last_messages
+            split = self._adjust_split_for_tool_sequence(non_system, split)
             dropped = non_system[:split]
             trimmed = non_system[split:]
+
+        trimmed = self._sanitize_tool_message_sequence(trimmed)
 
         base_system = self._pick_base_system_prompt(system_messages)
         existing_summary = self._extract_existing_summary(system_messages)
@@ -139,6 +143,83 @@ class ConversationHistoryManager:
             "before_estimated_tokens": before_tokens,
             "after_estimated_tokens": after_tokens,
         }
+
+    def _adjust_split_for_tool_sequence(self, messages: list[dict[str, Any]], split: int) -> int:
+        """Move split left when needed so the tail does not start with orphan tool responses."""
+        if split <= 0 or split >= len(messages):
+            return max(0, min(split, len(messages)))
+
+        adjusted = split
+        while adjusted < len(messages):
+            message = messages[adjusted]
+            if message.get("role") != "tool":
+                break
+
+            assistant_index = self._find_preceding_assistant_with_tool_calls(messages, adjusted)
+            if assistant_index is None:
+                adjusted += 1
+                continue
+
+            adjusted = assistant_index
+            break
+
+        return max(0, min(adjusted, len(messages)))
+
+    def _find_preceding_assistant_with_tool_calls(self, messages: list[dict[str, Any]], index: int) -> int | None:
+        """Find nearest prior assistant message that carries tool_calls metadata."""
+        for i in range(index - 1, -1, -1):
+            candidate = messages[i]
+            if candidate.get("role") != "assistant":
+                continue
+            tool_calls = candidate.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                return i
+        return None
+
+    def _sanitize_tool_message_sequence(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Remove tool messages that are not attached to a preceding assistant tool_calls turn."""
+        sanitized: list[dict[str, Any]] = []
+        active_tool_ids: set[str] = set()
+        has_open_tool_context = False
+
+        for message in messages:
+            role = message.get("role")
+
+            if role == "assistant":
+                tool_calls = message.get("tool_calls")
+                sanitized.append(message)
+                if isinstance(tool_calls, list) and tool_calls:
+                    extracted_ids: set[str] = set()
+                    for tool_call in tool_calls:
+                        if isinstance(tool_call, dict):
+                            tool_call_id = tool_call.get("id")
+                            if isinstance(tool_call_id, str) and tool_call_id.strip():
+                                extracted_ids.add(tool_call_id.strip())
+                    active_tool_ids = extracted_ids
+                    has_open_tool_context = True
+                else:
+                    active_tool_ids = set()
+                    has_open_tool_context = False
+                continue
+
+            if role == "tool":
+                tool_call_id = message.get("tool_call_id")
+                if not has_open_tool_context:
+                    continue
+
+                if not active_tool_ids:
+                    sanitized.append(message)
+                    continue
+
+                if isinstance(tool_call_id, str) and tool_call_id.strip() in active_tool_ids:
+                    sanitized.append(message)
+                continue
+
+            sanitized.append(message)
+            active_tool_ids = set()
+            has_open_tool_context = False
+
+        return sanitized
 
     def _pick_base_system_prompt(self, system_messages: list[dict[str, Any]]) -> dict[str, Any] | None:
         for message in system_messages:
