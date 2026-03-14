@@ -88,6 +88,12 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "pdf_to_images",
         ],
     },
+    "plugins.system_tools.word_template_plugin": {
+        "class": "WordTemplatePlugin",
+        "methods": [
+            "generate_documents",
+        ],
+    },
     "plugins.system_tools.apscheduler_plugin": {
         "class": "APSchedulerPlugin",
         "methods": [
