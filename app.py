@@ -27,6 +27,11 @@ except Exception:  # pragma: no cover - optional dependency
     PdfReader = None  # type: ignore[assignment]
 
 try:
+    from docx import Document as DocxDocument  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover - optional dependency
+    DocxDocument = None  # type: ignore[assignment]
+
+try:
     import fitz  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover - optional dependency
     fitz = None  # type: ignore[assignment]
@@ -55,6 +60,8 @@ SLACK_MAX_IMAGE_COUNT = 3
 SLACK_MAX_PDF_BYTES = 15 * 1024 * 1024
 SLACK_MAX_PDF_TEXT_CHARS = 20000
 SLACK_MAX_PDF_IMAGE_PAGES = 3
+SLACK_MAX_DOCX_BYTES = 15 * 1024 * 1024
+SLACK_MAX_DOCX_TEXT_CHARS = 20000
 SLACK_IMAGE_SAVE_BASE_DIR = os.getenv("SLACK_IMAGE_SAVE_BASE_DIR", "generated_data")
 _processed_slack_events: dict[str, float] = {}
 _processed_slack_events_lock = threading.Lock()
@@ -303,6 +310,27 @@ def _save_slack_pdf_copy(
     return str(target_path)
 
 
+def _save_slack_docx_copy(
+    binary_data: bytes,
+    original_name: str,
+    channel: str | None,
+) -> str | None:
+    """Save downloaded Slack DOCX bytes under a flat slack_downloads directory."""
+    if not isinstance(binary_data, bytes) or not binary_data:
+        return None
+
+    base_dir = Path(SLACK_IMAGE_SAVE_BASE_DIR).resolve()
+    target_dir = (base_dir / "slack_downloads").resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = _sanitize_slack_filename(original_name)
+    stem = Path(safe_name).stem or "document"
+    unique_suffix = str(int(time.time() * 1000))
+    target_path = target_dir / f"{stem}_{unique_suffix}.docx"
+    target_path.write_bytes(binary_data)
+    return str(target_path)
+
+
 def _extract_pdf_text(pdf_bytes: bytes, max_chars: int = SLACK_MAX_PDF_TEXT_CHARS) -> str:
     """Extract bounded text from a PDF payload."""
     if PdfReader is None:
@@ -334,6 +362,41 @@ def _extract_pdf_text(pdf_bytes: bytes, max_chars: int = SLACK_MAX_PDF_TEXT_CHAR
         current_size += len(trimmed)
 
     return "\n\n".join(chunks).strip()
+
+
+def _extract_docx_text(docx_bytes: bytes, max_chars: int = SLACK_MAX_DOCX_TEXT_CHARS) -> str:
+    """Extract bounded text from a DOCX payload."""
+    if DocxDocument is None:
+        return ""
+    if not isinstance(docx_bytes, bytes) or not docx_bytes:
+        return ""
+
+    try:
+        document = DocxDocument(io.BytesIO(docx_bytes))
+    except Exception as exc:
+        app.logger.warning("Failed to parse DOCX for text extraction: %s", exc)
+        return ""
+
+    chunks: list[str] = []
+    current_size = 0
+
+    for paragraph in getattr(document, "paragraphs", []):
+        try:
+            text = str(paragraph.text or "").strip()
+        except Exception:
+            text = ""
+        if not text:
+            continue
+
+        remaining = max_chars - current_size
+        if remaining <= 0:
+            break
+
+        trimmed = text[:remaining]
+        chunks.append(trimmed)
+        current_size += len(trimmed)
+
+    return "\n".join(chunks).strip()
 
 
 def _render_pdf_pages_to_image_data_urls(
@@ -420,6 +483,7 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
     image_data_urls: list[str] = []
     saved_image_paths: list[str] = []
     saved_pdf_paths: list[str] = []
+    saved_docx_paths: list[str] = []
     reply_items: list[str] = []
     channel = event.get("channel")
     for file_item in files:
@@ -518,6 +582,44 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
             else:
                 app.logger.info("Attached PDF could not be downloaded: %s", name)
 
+        is_docx_candidate = (
+            mimetype.lower() == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            or filetype.lower() in {"docx", "word"}
+            or name.lower().endswith(".docx")
+        )
+        if is_docx_candidate and url_private and isinstance(slack_bot_token, str) and slack_bot_token.strip():
+            docx_data, docx_content_type = _download_slack_binary_file(
+                url_private,
+                slack_bot_token,
+                max_bytes=SLACK_MAX_DOCX_BYTES,
+            )
+            if isinstance(docx_data, bytes) and docx_data:
+                try:
+                    saved_docx_path = _save_slack_docx_copy(
+                        docx_data,
+                        name,
+                        channel if isinstance(channel, str) else None,
+                    )
+                except Exception as exc:
+                    app.logger.warning("Failed to save Slack DOCX locally (%s): %s", name, exc)
+                    saved_docx_path = None
+                if isinstance(saved_docx_path, str) and saved_docx_path:
+                    saved_docx_paths.append(saved_docx_path)
+                    file_lines[-1] = f"{file_lines[-1]}; saved_docx_as={saved_docx_path}"
+
+                extracted_docx_text = _extract_docx_text(docx_data)
+                if extracted_docx_text:
+                    file_content_lines.append(f"DOCX '{name}' extracted text:\n{extracted_docx_text}")
+                    app.logger.info("Attached DOCX text extracted: %s chars=%s", name, len(extracted_docx_text))
+                    file_lines[-1] = f"{file_lines[-1]}; docx_text_chars={len(extracted_docx_text)}"
+                else:
+                    file_lines[-1] = f"{file_lines[-1]}; docx_processed=true"
+
+                if docx_content_type and docx_content_type != "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                    file_lines[-1] = f"{file_lines[-1]}; detected_content_type={docx_content_type}"
+            else:
+                app.logger.info("Attached DOCX could not be downloaded: %s", name)
+
         is_image_candidate = (
             mimetype.lower().startswith("image/")
             or name.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"))
@@ -571,6 +673,9 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
     if saved_pdf_paths:
         prompt_suffix += "\n\nSaved local PDF copies:\n" + "\n".join(f"- {path}" for path in saved_pdf_paths)
         app.logger.info("Saved %s Slack PDF file(s) under local generated_data path", len(saved_pdf_paths))
+    if saved_docx_paths:
+        prompt_suffix += "\n\nSaved local DOCX copies:\n" + "\n".join(f"- {path}" for path in saved_docx_paths)
+        app.logger.info("Saved %s Slack DOCX file(s) under local generated_data path", len(saved_docx_paths))
     reply_suffix = "\n\nAttachments in your message: " + ", ".join(reply_items)
     return prompt_suffix, reply_suffix, image_data_urls
 
