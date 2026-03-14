@@ -172,4 +172,11 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "send_email",
         ],
     },
+    "plugins.integrations.github_repo_sync_plugin": {
+        "class": "GitHubRepoSyncPlugin",
+        "methods": [
+            "upsert_text_file",
+            "commit_streamlit_app",
+        ],
+    },
 }

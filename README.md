@@ -17,6 +17,8 @@ This README is intended to help an AI agent use the current service safely and c
 ## Agent documentation index
 - Central nested docs index for AI agents:
   - `generated_data/docs/AI_AGENT_REFERENCE.md`
+- Heroku dual-app deployment guide (Flask API + Streamlit UI):
+  - `deploy/heroku/README.md`
 - This file maps and summarizes documentation under:
   - `generated_data/docs/api_reference/`
   - `generated_data/docs/integration_guides/`
@@ -172,6 +174,11 @@ Recommended production starting point:
   - purpose: Gmail API access for profile checks, message reads, and sending email
   - `send_email` supports optional local file attachments via an `attachments` list argument
 
+- `plugins.integrations.github_repo_sync_plugin` → `GitHubRepoSyncPlugin`
+  - methods: `upsert_text_file`, `commit_streamlit_app`
+  - purpose: commit Streamlit app updates to GitHub so Actions can deploy to Heroku
+  - expected env vars: `GITHUB_TOKEN`, `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME`
+
 ## Gmail plugin setup (make Gmail accessible)
 1. Create a Google Cloud project and enable **Gmail API**.
 2. Configure OAuth consent screen and create OAuth client credentials.
@@ -234,6 +241,10 @@ Recommended minimum OAuth scopes:
 - `jsons/integrations/gmail/gmail_get_profile_request.json`
 - `jsons/integrations/gmail/gmail_list_messages_request.json`
 - `jsons/integrations/gmail/gmail_send_email_request.json`
+
+### GitHub sync examples
+- `jsons/integrations/github/github_commit_streamlit_app_request.json`
+- `jsons/integrations/github/github_upsert_text_file_request.json`
 
 ### Workflow examples
 - `workflows/workflow_read_readme_openai_sdk_reply.json`
