@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import shutil
 import subprocess
@@ -394,6 +395,177 @@ class WordTemplatePlugin:
 
         return updated
 
+    def _normalize_row_token(self, key: str) -> str:
+        token = str(key).strip()
+        if token.startswith("<") and token.endswith(">") and len(token) >= 3:
+            return token
+        return f"<{token}>"
+
+    def _find_table_index(self, document: Any, selector: dict[str, Any], update_index: int) -> int:
+        table_count = len(document.tables)
+        if table_count <= 0:
+            raise ValueError("No tables found in document")
+
+        table_index_value = selector.get("table_index")
+        if table_index_value is not None:
+            if not isinstance(table_index_value, int):
+                raise ValueError(f"table_updates[{update_index}].table_selector.table_index must be an integer")
+            if table_index_value < 0 or table_index_value >= table_count:
+                raise ValueError(
+                    f"table_updates[{update_index}] table_index out of range: {table_index_value}; total_tables={table_count}"
+                )
+            return table_index_value
+
+        header_contains = selector.get("header_contains")
+        if not isinstance(header_contains, list) or not header_contains:
+            raise ValueError(
+                f"table_updates[{update_index}].table_selector must include table_index or non-empty header_contains"
+            )
+
+        normalized_terms = [str(term).strip().lower() for term in header_contains if str(term).strip()]
+        if not normalized_terms:
+            raise ValueError(
+                f"table_updates[{update_index}].table_selector.header_contains must have non-empty string items"
+            )
+
+        for idx, table in enumerate(document.tables):
+            if not table.rows:
+                continue
+            header_text = " | ".join(cell.text for cell in table.rows[0].cells).lower()
+            if all(term in header_text for term in normalized_terms):
+                return idx
+
+        raise ValueError(
+            f"table_updates[{update_index}] did not match any table using header_contains={normalized_terms}"
+        )
+
+    def _find_template_row_index(self, table: Any, marker: str | None, row_index: int | None, update_index: int) -> int:
+        if isinstance(row_index, int):
+            if row_index < 0 or row_index >= len(table.rows):
+                raise ValueError(
+                    f"table_updates[{update_index}].template_row_index out of range: {row_index}; total_rows={len(table.rows)}"
+                )
+            return row_index
+
+        if isinstance(marker, str) and marker.strip():
+            marker_value = marker.strip()
+            for idx, row in enumerate(table.rows):
+                row_text = "\n".join(cell.text for cell in row.cells)
+                if marker_value in row_text:
+                    return idx
+            raise ValueError(
+                f"table_updates[{update_index}] could not find template row marker: {marker_value}"
+            )
+
+        raise ValueError(
+            f"table_updates[{update_index}] requires template_row_marker or template_row_index"
+        )
+
+    def _clear_row_marker(self, row: Any, marker: str) -> None:
+        marker_value = marker.strip()
+        for cell in row.cells:
+            for paragraph in cell.paragraphs:
+                if marker_value in paragraph.text:
+                    self._replace_in_paragraph_preserve_format(paragraph, [(marker_value, "")])
+
+    def _replace_tokens_in_row(self, row: Any, replacements: list[tuple[str, str]]) -> int:
+        changed_count = 0
+        for cell in row.cells:
+            for paragraph in cell.paragraphs:
+                if self._replace_in_paragraph_preserve_format(paragraph, replacements):
+                    changed_count += 1
+        return changed_count
+
+    def _build_row_replacements(
+        self,
+        row_item: dict[str, Any],
+        school_replacements: list[tuple[str, str]],
+    ) -> list[tuple[str, str]]:
+        school_map = {find: replace for find, replace in school_replacements}
+        pairs: list[tuple[str, str]] = []
+
+        for key, value in row_item.items():
+            token = self._normalize_row_token(str(key))
+            rendered = str(value)
+            for school_token, school_value in school_map.items():
+                rendered = rendered.replace(school_token, school_value)
+            pairs.append((token, rendered))
+
+        return pairs
+
+    def _remove_row(self, table: Any, row_index: int) -> None:
+        row = table.rows[row_index]
+        row_element = row._tr
+        parent = row_element.getparent()
+        parent.remove(row_element)
+
+    def _apply_table_updates(
+        self,
+        document: Any,
+        table_updates: list[Any],
+        school_replacements: list[tuple[str, str]],
+    ) -> tuple[int, int, int]:
+        tables_updated = 0
+        rows_created = 0
+        changed_blocks = 0
+
+        for update_index, update in enumerate(table_updates):
+            if not isinstance(update, dict):
+                raise ValueError(f"table_updates[{update_index}] must be an object")
+
+            selector = update.get("table_selector")
+            if not isinstance(selector, dict):
+                raise ValueError(f"table_updates[{update_index}].table_selector must be an object")
+
+            rows_data = update.get("rows")
+            if not isinstance(rows_data, list):
+                raise ValueError(f"table_updates[{update_index}].rows must be an array")
+
+            table_index = self._find_table_index(document, selector, update_index)
+            table = document.tables[table_index]
+
+            template_row_marker = update.get("template_row_marker")
+            template_row_index = update.get("template_row_index")
+            resolved_template_row_index = self._find_template_row_index(
+                table,
+                template_row_marker if isinstance(template_row_marker, str) else None,
+                template_row_index if isinstance(template_row_index, int) else None,
+                update_index,
+            )
+
+            remove_template_row = update.get("remove_template_row", True)
+            if not isinstance(remove_template_row, bool):
+                raise ValueError(f"table_updates[{update_index}].remove_template_row must be a boolean")
+
+            template_row = table.rows[resolved_template_row_index]
+            if isinstance(template_row_marker, str) and template_row_marker.strip():
+                self._clear_row_marker(template_row, template_row_marker)
+
+            insert_after = template_row._tr
+            created_for_update = 0
+            for row_item_index, row_item in enumerate(rows_data):
+                if not isinstance(row_item, dict):
+                    raise ValueError(
+                        f"table_updates[{update_index}].rows[{row_item_index}] must be an object of token/value pairs"
+                    )
+
+                new_tr = deepcopy(template_row._tr)
+                insert_after.addnext(new_tr)
+                insert_after = new_tr
+
+                created_row = table.rows[resolved_template_row_index + created_for_update + 1]
+                row_replacements = self._build_row_replacements(row_item, school_replacements)
+                changed_blocks += self._replace_tokens_in_row(created_row, row_replacements)
+                created_for_update += 1
+                rows_created += 1
+
+            if remove_template_row:
+                self._remove_row(table, resolved_template_row_index)
+
+            tables_updated += 1
+
+        return tables_updated, rows_created, changed_blocks
+
     def generate_documents(
         self,
         schools_json: str | dict[str, Any],
@@ -403,6 +575,7 @@ class WordTemplatePlugin:
         filename_template: str | None = None,
         replacements_json: str | None = None,
         append_lines: list[str] | None = None,
+        table_updates: list[Any] | None = None,
         export_pdf: bool = True,
         active_flag_field: str = "activate",
         active_flag_value: str = "x",
@@ -417,6 +590,7 @@ class WordTemplatePlugin:
             resolved_filename_template = payload.get("filename_template", filename_template)
             resolved_replacements_json = payload.get("replacements_json", replacements_json)
             resolved_append_lines = payload.get("append_lines", append_lines)
+            resolved_table_updates = payload.get("table_updates", table_updates)
             resolved_export_pdf = payload.get("export_pdf", export_pdf)
             resolved_active_flag_field = payload.get("active_flag_field", active_flag_field)
             resolved_active_flag_value = payload.get("active_flag_value", active_flag_value)
@@ -428,6 +602,7 @@ class WordTemplatePlugin:
             resolved_filename_template = filename_template
             resolved_replacements_json = replacements_json
             resolved_append_lines = append_lines
+            resolved_table_updates = table_updates
             resolved_export_pdf = export_pdf
             resolved_active_flag_field = active_flag_field
             resolved_active_flag_value = active_flag_value
@@ -445,6 +620,8 @@ class WordTemplatePlugin:
             raise ValueError("active_flag_value must be a non-empty string")
         if resolved_append_lines is not None and not isinstance(resolved_append_lines, list):
             raise ValueError("append_lines must be an array of strings when provided")
+        if resolved_table_updates is not None and not isinstance(resolved_table_updates, list):
+            raise ValueError("table_updates must be an array when provided")
 
         schools_data = self._ensure_array(resolved_schools_json, "schools_json")
 
@@ -524,7 +701,17 @@ class WordTemplatePlugin:
                     address=address,
                     contractor=contractor,
                 )
+                table_count_updated = 0
+                rows_generated = 0
+                table_changed_blocks = 0
+                if isinstance(resolved_table_updates, list) and resolved_table_updates:
+                    table_count_updated, rows_generated, table_changed_blocks = self._apply_table_updates(
+                        document=document,
+                        table_updates=resolved_table_updates,
+                        school_replacements=replacements,
+                    )
                 changed_count = self._replace_in_document(document, replacements)
+                changed_count += table_changed_blocks
                 self._append_paragraphs(document, safe_append_lines)
                 document.save(output_docx_path)
 
@@ -541,6 +728,8 @@ class WordTemplatePlugin:
                         "output_docx": str(output_docx_path),
                         "output_pdf": output_pdf_path,
                         "changed_blocks": changed_count,
+                        "tables_updated": table_count_updated,
+                        "table_rows_generated": rows_generated,
                     }
                 )
 
