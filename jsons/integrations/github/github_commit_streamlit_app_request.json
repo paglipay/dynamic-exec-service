@@ -12,7 +12,8 @@
     {
       "app_content": "import streamlit as st\n\nst.set_page_config(page_title='Dynamic Streamlit UI')\nst.title('Dynamic Streamlit UI')\nst.write('Updated from Flask via GitHub API commit.')\n\nwith st.form(key='dynamic_form'):\n    name = st.text_input('Name')\n    email = st.text_input('Email')\n    submitted = st.form_submit_button('Submit')\n\nif submitted:\n    st.success('Submitted')\n    st.json({'name': name, 'email': email})\n",
       "file_path": "deploy/heroku/streamlit_app.py",
-      "commit_message": "Update Streamlit app from dynamic-exec-service"
+      "commit_message": "Update Streamlit app from dynamic-exec-service",
+      "include_heroku_files": true
     }
   ]
 }
