@@ -12,3 +12,4 @@ pypdf
 pymupdf
 pika
 python-docx
+streamlit

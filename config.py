@@ -109,6 +109,15 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "add_cron_workflow_job",
         ],
     },
+    "plugins.system_tools.streamlit_plugin": {
+        "class": "StreamlitPlugin",
+        "methods": [
+            "create_app_file",
+            "start_app",
+            "status",
+            "stop_app",
+        ],
+    },
     "plugins.integrations.slack_plugin": {
         "class": "SlackPlugin",
         "methods": [
