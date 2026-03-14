@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+import csv
 import io
+import json
 import os
 import re
 import threading
@@ -399,6 +401,50 @@ def _extract_docx_text(docx_bytes: bytes, max_chars: int = SLACK_MAX_DOCX_TEXT_C
     return "\n".join(chunks).strip()
 
 
+def _parse_tsv_rows(tsv_text: str, max_rows: int = 25) -> list[dict[str, str]]:
+    """Parse TSV text into row dicts using the first row as headers."""
+    if not isinstance(tsv_text, str) or not tsv_text.strip():
+        return []
+
+    lines = [line for line in tsv_text.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return []
+
+    reader = csv.reader(lines, delimiter="\t")
+    try:
+        raw_headers = next(reader)
+    except StopIteration:
+        return []
+
+    headers = [str(item).strip() for item in raw_headers]
+    if not headers or not any(headers):
+        return []
+
+    rows: list[dict[str, str]] = []
+    for row in reader:
+        if len(rows) >= max_rows:
+            break
+
+        values = [str(item).strip() for item in row]
+        if not any(values):
+            continue
+
+        normalized_values = values[: len(headers)]
+        if len(normalized_values) < len(headers):
+            normalized_values.extend([""] * (len(headers) - len(normalized_values)))
+
+        row_data: dict[str, str] = {}
+        for index, header in enumerate(headers):
+            if not header:
+                continue
+            row_data[header] = normalized_values[index]
+
+        if row_data:
+            rows.append(row_data)
+
+    return rows
+
+
 def _render_pdf_pages_to_image_data_urls(
     pdf_bytes: bytes,
     pdf_name: str,
@@ -510,11 +556,31 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
             or filetype.lower() in {"text", "txt", "markdown", "md"}
             or mimetype.startswith("text/")
         )
+        is_tsv_candidate = (
+            name.lower().endswith(".tsv")
+            or filetype.lower() in {"tsv"}
+            or mimetype.lower() in {
+                "text/tab-separated-values",
+                "application/tab-separated-values",
+                "text/tsv",
+            }
+        )
         if is_text_candidate and url_private and isinstance(slack_bot_token, str) and slack_bot_token.strip():
             file_text = _download_slack_text_file(url_private, slack_bot_token)
             if isinstance(file_text, str) and file_text.strip():
                 app.logger.info("Attached text file content captured: %s", name)
-                file_content_lines.append(f"File '{name}' content:\n{file_text.strip()}")
+                if is_tsv_candidate:
+                    parsed_rows = _parse_tsv_rows(file_text)
+                    if parsed_rows:
+                        parsed_json = json.dumps(parsed_rows, ensure_ascii=True)
+                        file_content_lines.append(
+                            f"TSV '{name}' parsed rows (up to 25):\n{parsed_json}"
+                        )
+                        file_lines[-1] = f"{file_lines[-1]}; tsv_rows={len(parsed_rows)}"
+                    else:
+                        file_content_lines.append(f"TSV '{name}' raw content:\n{file_text.strip()}")
+                else:
+                    file_content_lines.append(f"File '{name}' content:\n{file_text.strip()}")
             else:
                 app.logger.info("Attached text file could not be read: %s", name)
         else:
