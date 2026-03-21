@@ -188,6 +188,15 @@ class _FakeCollection:
         )
         return created_name
 
+    def drop_index(self, index_name: str) -> None:
+        for index, spec in enumerate(self.indexes):
+            if spec["name"] == index_name:
+                removed = self.indexes.pop(index)
+                if any(value == "text" for _field_name, value in removed["fields"]):
+                    self.text_index_fields = []
+                return
+        raise ValueError("index not found")
+
     def _update(
         self,
         filter_query: dict[str, Any],
@@ -436,6 +445,29 @@ def test_create_index_wraps_duplicate_key_errors(plugin: MongoDBPlugin) -> None:
 
     with pytest.raises(ValueError, match="Failed to create index"):
         plugin.create_index("users", {"username": 1}, {"unique": True})
+
+
+def test_drop_index_succeeds_for_existing_index(plugin: MongoDBPlugin) -> None:
+    plugin.create_documents(
+        "users",
+        [
+            {"username": "alice"},
+            {"username": "bob"},
+        ],
+    )
+    plugin.create_index("users", {"username": 1}, {"name": "username_unique_index", "unique": True})
+
+    result = plugin.drop_index("users", "username_unique_index")
+
+    assert result["status"] == "success"
+    assert result["action"] == "drop_index"
+    assert result["index_name"] == "username_unique_index"
+    assert "dropped" in result["message"]
+
+
+def test_drop_index_wraps_errors_when_index_missing(plugin: MongoDBPlugin) -> None:
+    with pytest.raises(ValueError, match="Failed to drop index"):
+        plugin.drop_index("users", "missing_index")
 
 
 def test_dangerous_bulk_mutations_require_explicit_opt_in(plugin: MongoDBPlugin) -> None:
