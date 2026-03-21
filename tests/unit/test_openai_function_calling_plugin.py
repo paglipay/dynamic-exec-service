@@ -67,6 +67,32 @@ def test_generate_image_tool_description_mentions_arg_order() -> None:
     assert "gpt-image-1" in description
 
 
+def test_mongodb_find_documents_tool_description_mentions_arg_order() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+
+    description = plugin._build_tool_description(
+        "plugins.mongodb_plugin",
+        "MongoDBPlugin",
+        "find_documents",
+    )
+
+    assert "exact order" in description
+    assert "sort_or_null" in description
+
+
+def test_mongodb_text_search_tool_description_mentions_index_requirement() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+
+    description = plugin._build_tool_description(
+        "plugins.mongodb_plugin",
+        "MongoDBPlugin",
+        "text_search",
+    )
+
+    assert "text index" in description
+    assert "create_text_index" in description
+
+
 def test_history_storage_falls_back_to_memory_when_redis_unavailable() -> None:
     plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
     plugin._redis_client = None
