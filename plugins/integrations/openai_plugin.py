@@ -286,6 +286,41 @@ class OpenAIFunctionCallingPlugin:
         if (
             module_name == "plugins.mongodb_plugin"
             and class_name == "MongoDBPlugin"
+            and method_name == "create_document"
+        ):
+            return (
+                "Create one MongoDB document. "
+                "Use args in this exact order: [collection, document]. "
+                "Only claim creation succeeded after tool result shows inserted_id and action=create_document."
+            )
+
+        if (
+            module_name == "plugins.mongodb_plugin"
+            and class_name == "MongoDBPlugin"
+            and method_name == "update_documents"
+        ):
+            return (
+                "Update MongoDB documents with update operators. "
+                "Use args in this exact order: "
+                "[collection, filter_query, update_operations, upsert, many, allow_empty_filter, fail_on_no_match]. "
+                "Check matched_count, modified_count, upserted_id, and operation_result before confirming success. "
+                "If operation_result is no_match, do not claim data was updated."
+            )
+
+        if (
+            module_name == "plugins.mongodb_plugin"
+            and class_name == "MongoDBPlugin"
+            and method_name == "replace_document"
+        ):
+            return (
+                "Replace one MongoDB document by filter. "
+                "Use args in this exact order: [collection, filter_query, replacement, upsert, fail_on_no_match]. "
+                "Check matched_count, modified_count, upserted_id, and operation_result before confirming success."
+            )
+
+        if (
+            module_name == "plugins.mongodb_plugin"
+            and class_name == "MongoDBPlugin"
             and method_name == "find_documents"
         ):
             return (

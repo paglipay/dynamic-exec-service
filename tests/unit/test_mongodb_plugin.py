@@ -398,6 +398,44 @@ def test_dangerous_bulk_mutations_require_explicit_opt_in(plugin: MongoDBPlugin)
         plugin.delete_documents("tickets", {})
 
 
+def test_update_documents_reports_no_match_operation_result(plugin: MongoDBPlugin) -> None:
+    result = plugin.update_documents(
+        "tickets",
+        {"status": "missing"},
+        {"$set": {"status": "closed"}},
+    )
+
+    assert result["matched_count"] == 0
+    assert result["modified_count"] == 0
+    assert result["operation_result"] == "no_match"
+
+
+def test_update_documents_can_fail_when_no_match_is_disallowed(plugin: MongoDBPlugin) -> None:
+    with pytest.raises(ValueError, match="No documents matched filter_query"):
+        plugin.update_documents(
+            "tickets",
+            {"status": "missing"},
+            {"$set": {"status": "closed"}},
+            False,
+            True,
+            False,
+            True,
+        )
+
+
+def test_replace_document_reports_no_match_operation_result(plugin: MongoDBPlugin) -> None:
+    result = plugin.replace_document(
+        "tickets",
+        {"title": "does-not-exist"},
+        {"title": "replacement"},
+        False,
+    )
+
+    assert result["matched_count"] == 0
+    assert result["modified_count"] == 0
+    assert result["operation_result"] == "no_match"
+
+
 def test_list_collections_can_filter_by_name(plugin: MongoDBPlugin) -> None:
     plugin.create_document("tickets", {"title": "one"})
     plugin.create_document("ticket_archive", {"title": "two"})

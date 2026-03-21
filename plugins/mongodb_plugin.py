@@ -374,6 +374,7 @@ class MongoDBPlugin:
         upsert: bool = False,
         many: bool = True,
         allow_empty_filter: bool = False,
+        fail_on_no_match: bool = False,
     ) -> dict[str, Any]:
         if not isinstance(upsert, bool):
             raise ValueError("upsert must be a boolean")
@@ -381,6 +382,8 @@ class MongoDBPlugin:
             raise ValueError("many must be a boolean")
         if not isinstance(allow_empty_filter, bool):
             raise ValueError("allow_empty_filter must be a boolean")
+        if not isinstance(fail_on_no_match, bool):
+            raise ValueError("fail_on_no_match must be a boolean")
 
         target = self._get_collection(collection)
         normalized_filter = self._normalize_filter(filter_query)
@@ -394,13 +397,27 @@ class MongoDBPlugin:
             else target.update_one(normalized_filter, normalized_update, upsert=upsert)
         )
 
+        upserted_id = self._serialize_value(getattr(result, "upserted_id", None))
+        if upserted_id is not None:
+            operation_result = "upserted"
+        elif result.matched_count > 0 and result.modified_count > 0:
+            operation_result = "updated"
+        elif result.matched_count > 0:
+            operation_result = "matched_no_change"
+        else:
+            operation_result = "no_match"
+
+        if fail_on_no_match and operation_result == "no_match":
+            raise ValueError("No documents matched filter_query")
+
         return {
             "status": "success",
             "action": "update_documents",
             "collection": self._validate_collection_name(collection),
             "matched_count": result.matched_count,
             "modified_count": result.modified_count,
-            "upserted_id": self._serialize_value(getattr(result, "upserted_id", None)),
+            "upserted_id": upserted_id,
+            "operation_result": operation_result,
             "many": many,
             "upsert": upsert,
         }
@@ -411,9 +428,12 @@ class MongoDBPlugin:
         filter_query: dict[str, Any],
         replacement: dict[str, Any],
         upsert: bool = False,
+        fail_on_no_match: bool = False,
     ) -> dict[str, Any]:
         if not isinstance(upsert, bool):
             raise ValueError("upsert must be a boolean")
+        if not isinstance(fail_on_no_match, bool):
+            raise ValueError("fail_on_no_match must be a boolean")
 
         target = self._get_collection(collection)
         normalized_filter = self._normalize_filter(filter_query)
@@ -423,13 +443,27 @@ class MongoDBPlugin:
         normalized_replacement = self._normalize_document(replacement, allow_operators=False)
         result = target.replace_one(normalized_filter, normalized_replacement, upsert=upsert)
 
+        upserted_id = self._serialize_value(getattr(result, "upserted_id", None))
+        if upserted_id is not None:
+            operation_result = "upserted"
+        elif result.matched_count > 0 and result.modified_count > 0:
+            operation_result = "replaced"
+        elif result.matched_count > 0:
+            operation_result = "matched_no_change"
+        else:
+            operation_result = "no_match"
+
+        if fail_on_no_match and operation_result == "no_match":
+            raise ValueError("No documents matched filter_query")
+
         return {
             "status": "success",
             "action": "replace_document",
             "collection": self._validate_collection_name(collection),
             "matched_count": result.matched_count,
             "modified_count": result.modified_count,
-            "upserted_id": self._serialize_value(getattr(result, "upserted_id", None)),
+            "upserted_id": upserted_id,
+            "operation_result": operation_result,
             "upsert": upsert,
         }
 
