@@ -217,6 +217,31 @@ class MongoDBPlugin:
             raise ValueError("options must be an object when provided")
         return options
 
+    def _normalize_index_name(self, index_name: str, *, field_name: str = "index_name") -> str:
+        if not isinstance(index_name, str) or not index_name.strip():
+            raise ValueError(f"{field_name} must be a non-empty string")
+        return index_name.strip()
+
+    def _normalize_unique_flag(self, unique: bool) -> bool:
+        if not isinstance(unique, bool):
+            raise ValueError("unique must be a boolean")
+        return unique
+
+    def _canonicalize_index_key(self, key: Any) -> dict[str, Any]:
+        if isinstance(key, dict):
+            return {str(field): direction for field, direction in key.items()}
+
+        if isinstance(key, list):
+            normalized: dict[str, Any] = {}
+            for item in key:
+                if isinstance(item, (list, tuple)) and len(item) == 2:
+                    field_name, direction = item
+                    normalized[str(field_name)] = direction
+            if normalized:
+                return normalized
+
+        return {}
+
     def _normalize_bson_value(self, value: Any, field_name: str | None = None) -> Any:
         if isinstance(value, dict):
             if set(value.keys()) == {"$oid"} and isinstance(value.get("$oid"), str):
@@ -603,6 +628,124 @@ class MongoDBPlugin:
             "index_spec": self._serialize_value(dict(normalized_index_spec)),
             "options": self._serialize_value(normalized_options),
             "index_name": created_index_name,
+        }
+
+    def list_indexes(self, collection: str) -> dict[str, Any]:
+        target = self._get_collection(collection)
+
+        try:
+            indexes = list(target.list_indexes())
+        except Exception as exc:
+            raise ValueError(f"Failed to list indexes: {exc}") from exc
+
+        normalized_indexes: list[dict[str, Any]] = []
+        for index in indexes:
+            if not isinstance(index, dict):
+                continue
+
+            key_spec = self._canonicalize_index_key(index.get("key"))
+            normalized_index: dict[str, Any] = self._serialize_value(dict(index))
+            normalized_index["key"] = self._serialize_value(key_spec)
+            normalized_index["name"] = index.get("name")
+            normalized_index["unique"] = bool(index.get("unique", False))
+            normalized_indexes.append(normalized_index)
+
+        return {
+            "status": "success",
+            "action": "list_indexes",
+            "collection": self._validate_collection_name(collection),
+            "indexes": normalized_indexes,
+            "count": len(normalized_indexes),
+        }
+
+    def find_index(
+        self,
+        collection: str,
+        key: dict[str, Any],
+        unique: bool,
+    ) -> dict[str, Any] | None:
+        normalized_key = self._canonicalize_index_key(self._normalize_index_spec(key))
+        normalized_unique = self._normalize_unique_flag(unique)
+
+        index_response = self.list_indexes(collection)
+        for index in index_response["indexes"]:
+            if self._canonicalize_index_key(index.get("key")) == normalized_key and bool(index.get("unique", False)) == normalized_unique:
+                return index
+
+        return None
+
+    def create_or_replace_index(
+        self,
+        collection: str,
+        key: dict[str, Any],
+        unique: bool,
+        name: str,
+    ) -> dict[str, Any]:
+        target = self._get_collection(collection)
+        normalized_name = self._normalize_index_name(name, field_name="name")
+        normalized_key_list = self._normalize_index_spec(key)
+        normalized_key = self._canonicalize_index_key(normalized_key_list)
+        normalized_unique = self._normalize_unique_flag(unique)
+
+        existing = self.find_index(collection, key, normalized_unique)
+        if existing is not None and existing.get("name") == normalized_name:
+            return {
+                "status": "success",
+                "action": "create_or_replace_index",
+                "collection": self._validate_collection_name(collection),
+                "index_name": normalized_name,
+                "key": self._serialize_value(normalized_key),
+                "unique": normalized_unique,
+                "dropped_indexes": [],
+                "created": False,
+                "message": f"Index '{normalized_name}' already exists with the desired specification.",
+            }
+
+        dropped_indexes: list[str] = []
+        index_response = self.list_indexes(collection)
+        for index in index_response["indexes"]:
+            index_name = index.get("name")
+            index_key = self._canonicalize_index_key(index.get("key"))
+            index_unique = bool(index.get("unique", False))
+
+            if not isinstance(index_name, str):
+                continue
+            if index_name == "_id_":
+                continue
+
+            same_key_conflict = index_key == normalized_key and (
+                index_name != normalized_name or index_unique != normalized_unique
+            )
+            same_name_conflict = index_name == normalized_name and (
+                index_key != normalized_key or index_unique != normalized_unique
+            )
+
+            if same_key_conflict or same_name_conflict:
+                try:
+                    target.drop_index(index_name)
+                except Exception as exc:
+                    raise ValueError(f"Failed to drop conflicting index '{index_name}': {exc}") from exc
+                dropped_indexes.append(index_name)
+
+        try:
+            created_index_name = target.create_index(
+                normalized_key_list,
+                name=normalized_name,
+                unique=normalized_unique,
+            )
+        except Exception as exc:
+            raise ValueError(f"Failed to create index '{normalized_name}': {exc}") from exc
+
+        return {
+            "status": "success",
+            "action": "create_or_replace_index",
+            "collection": self._validate_collection_name(collection),
+            "index_name": created_index_name,
+            "key": self._serialize_value(normalized_key),
+            "unique": normalized_unique,
+            "dropped_indexes": dropped_indexes,
+            "created": True,
+            "message": f"Index '{created_index_name}' created/replaced successfully.",
         }
 
     def drop_index(self, collection: str, index_name: str) -> dict[str, Any]:
