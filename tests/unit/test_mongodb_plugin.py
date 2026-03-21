@@ -56,7 +56,13 @@ class _FakeCollection:
     def __init__(self) -> None:
         self.documents: list[dict[str, Any]] = []
         self.text_index_fields: list[str] = []
-        self.indexes: list[dict[str, Any]] = []
+        self.indexes: list[dict[str, Any]] = [
+            {
+                "fields": [("_id", 1)],
+                "name": "_id_",
+                "options": {"unique": True},
+            }
+        ]
         self._next_id = 1
 
     def insert_one(self, document: dict[str, Any]) -> _InsertOneResult:
@@ -187,6 +193,18 @@ class _FakeCollection:
             }
         )
         return created_name
+
+    def list_indexes(self) -> list[dict[str, Any]]:
+        listed: list[dict[str, Any]] = []
+        for spec in self.indexes:
+            listed.append(
+                {
+                    "name": spec["name"],
+                    "key": dict(spec["fields"]),
+                    "unique": bool(spec["options"].get("unique", False)),
+                }
+            )
+        return listed
 
     def drop_index(self, index_name: str) -> None:
         for index, spec in enumerate(self.indexes):
@@ -476,6 +494,64 @@ def test_drop_index_succeeds_for_existing_index(plugin: MongoDBPlugin) -> None:
 def test_drop_index_wraps_errors_when_index_missing(plugin: MongoDBPlugin) -> None:
     with pytest.raises(ValueError, match="Failed to drop index"):
         plugin.drop_index("users", "missing_index")
+
+
+def test_list_indexes_returns_index_metadata(plugin: MongoDBPlugin) -> None:
+    plugin.create_index("users", {"username": 1}, {"name": "username_unique", "unique": True})
+
+    result = plugin.list_indexes("users")
+
+    assert result["status"] == "success"
+    assert result["action"] == "list_indexes"
+    assert result["count"] >= 2
+    assert any(index["name"] == "username_unique" for index in result["indexes"])
+
+
+def test_find_index_returns_matching_index(plugin: MongoDBPlugin) -> None:
+    plugin.create_index("users", {"username": 1}, {"name": "username_unique", "unique": True})
+
+    found = plugin.find_index("users", {"username": 1}, True)
+
+    assert found is not None
+    assert found["name"] == "username_unique"
+    assert found["key"] == {"username": 1}
+    assert found["unique"] is True
+
+
+def test_create_or_replace_index_noops_when_exact_match_exists(plugin: MongoDBPlugin) -> None:
+    plugin.create_index("users", {"username": 1}, {"name": "username_unique", "unique": True})
+
+    result = plugin.create_or_replace_index("users", {"username": 1}, True, "username_unique")
+
+    assert result["status"] == "success"
+    assert result["created"] is False
+    assert result["dropped_indexes"] == []
+
+
+def test_create_or_replace_index_replaces_conflicting_key(plugin: MongoDBPlugin) -> None:
+    plugin.create_index("users", {"username": 1}, {"name": "username_text", "unique": False})
+
+    result = plugin.create_or_replace_index("users", {"username": 1}, True, "username_unique")
+
+    assert result["status"] == "success"
+    assert result["created"] is True
+    assert "username_text" in result["dropped_indexes"]
+    found = plugin.find_index("users", {"username": 1}, True)
+    assert found is not None
+    assert found["name"] == "username_unique"
+
+
+def test_create_or_replace_index_replaces_conflicting_name(plugin: MongoDBPlugin) -> None:
+    plugin.create_index("users", {"email": 1}, {"name": "username_unique", "unique": False})
+
+    result = plugin.create_or_replace_index("users", {"username": 1}, True, "username_unique")
+
+    assert result["status"] == "success"
+    assert result["created"] is True
+    assert "username_unique" in result["dropped_indexes"]
+    found = plugin.find_index("users", {"username": 1}, True)
+    assert found is not None
+    assert found["name"] == "username_unique"
 
 
 def test_dangerous_bulk_mutations_require_explicit_opt_in(plugin: MongoDBPlugin) -> None:
