@@ -48,6 +48,7 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "distinct_values",
             "aggregate_documents",
             "create_index",
+            "drop_index",
             "create_text_index",
             "text_search",
         ],

@@ -605,6 +605,26 @@ class MongoDBPlugin:
             "index_name": created_index_name,
         }
 
+    def drop_index(self, collection: str, index_name: str) -> dict[str, Any]:
+        if not isinstance(index_name, str) or not index_name.strip():
+            raise ValueError("index_name must be a non-empty string")
+
+        target = self._get_collection(collection)
+        normalized_index_name = index_name.strip()
+
+        try:
+            target.drop_index(normalized_index_name)
+        except Exception as exc:
+            raise ValueError(f"Failed to drop index '{normalized_index_name}': {exc}") from exc
+
+        return {
+            "status": "success",
+            "action": "drop_index",
+            "collection": self._validate_collection_name(collection),
+            "index_name": normalized_index_name,
+            "message": f"Index '{normalized_index_name}' dropped from collection '{self._validate_collection_name(collection)}'.",
+        }
+
     def text_search(
         self,
         collection: str,
