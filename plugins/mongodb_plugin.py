@@ -198,6 +198,25 @@ class MongoDBPlugin:
             normalized_pipeline.append(self._normalize_bson_value(stage))
         return normalized_pipeline
 
+    def _normalize_index_spec(self, index_spec: dict[str, Any]) -> list[tuple[str, Any]]:
+        if not isinstance(index_spec, dict) or not index_spec:
+            raise ValueError("index_spec must be a non-empty object")
+
+        normalized_fields: list[tuple[str, Any]] = []
+        for field_name, direction in index_spec.items():
+            if not isinstance(field_name, str) or not field_name.strip():
+                raise ValueError("index_spec field names must be non-empty strings")
+            normalized_fields.append((field_name.strip(), direction))
+
+        return normalized_fields
+
+    def _normalize_index_options(self, options: dict[str, Any] | None) -> dict[str, Any]:
+        if options is None:
+            return {}
+        if not isinstance(options, dict):
+            raise ValueError("options must be an object when provided")
+        return options
+
     def _normalize_bson_value(self, value: Any, field_name: str | None = None) -> Any:
         if isinstance(value, dict):
             if set(value.keys()) == {"$oid"} and isinstance(value.get("$oid"), str):
@@ -559,6 +578,30 @@ class MongoDBPlugin:
             "action": "create_text_index",
             "collection": self._validate_collection_name(collection),
             "fields": [field.strip() for field in fields],
+            "index_name": created_index_name,
+        }
+
+    def create_index(
+        self,
+        collection: str,
+        index_spec: dict[str, Any],
+        options: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        target = self._get_collection(collection)
+        normalized_index_spec = self._normalize_index_spec(index_spec)
+        normalized_options = self._normalize_index_options(options)
+
+        try:
+            created_index_name = target.create_index(normalized_index_spec, **normalized_options)
+        except Exception as exc:
+            raise ValueError(f"Failed to create index: {exc}") from exc
+
+        return {
+            "status": "success",
+            "action": "create_index",
+            "collection": self._validate_collection_name(collection),
+            "index_spec": self._serialize_value(dict(normalized_index_spec)),
+            "options": self._serialize_value(normalized_options),
             "index_name": created_index_name,
         }
 

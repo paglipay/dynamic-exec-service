@@ -56,6 +56,7 @@ class _FakeCollection:
     def __init__(self) -> None:
         self.documents: list[dict[str, Any]] = []
         self.text_index_fields: list[str] = []
+        self.indexes: list[dict[str, Any]] = []
         self._next_id = 1
 
     def insert_one(self, document: dict[str, Any]) -> _InsertOneResult:
@@ -163,9 +164,29 @@ class _FakeCollection:
                 raise ValueError("Unsupported fake aggregation stage")
         return documents
 
-    def create_index(self, fields: list[tuple[str, Any]], name: str | None = None) -> str:
-        self.text_index_fields = [field_name for field_name, _value in fields]
-        return name or "_".join(f"{field_name}_text" for field_name in self.text_index_fields)
+    def create_index(self, fields: list[tuple[str, Any]], name: str | None = None, **options: Any) -> str:
+        field_names = [field_name for field_name, _value in fields]
+
+        if any(value == "text" for _field_name, value in fields):
+            self.text_index_fields = field_names
+
+        if options.get("unique"):
+            seen: set[tuple[Any, ...]] = set()
+            for document in self.documents:
+                key = tuple(document.get(field_name) for field_name in field_names)
+                if key in seen:
+                    raise ValueError("duplicate key error")
+                seen.add(key)
+
+        created_name = name or "_".join(f"{field_name}_{direction}" for field_name, direction in fields)
+        self.indexes.append(
+            {
+                "fields": fields,
+                "name": created_name,
+                "options": dict(options),
+            }
+        )
+        return created_name
 
     def _update(
         self,
@@ -388,6 +409,41 @@ def test_text_search_requires_index_and_returns_ranked_documents(plugin: MongoDB
     assert search["count"] == 1
     assert search["documents"][0]["title"] == "Firewall runbook"
     assert search["documents"][0]["score"] == 1.0
+
+
+def test_create_index_supports_unique_option(plugin: MongoDBPlugin) -> None:
+    plugin.create_documents(
+        "users",
+        [
+            {"username": "alice", "email": "alice@example.com"},
+            {"username": "bob", "email": "bob@example.com"},
+        ],
+    )
+
+    result = plugin.create_index(
+        "users",
+        {"username": 1},
+        {"unique": True, "name": "users_username_unique"},
+    )
+
+    assert result["status"] == "success"
+    assert result["action"] == "create_index"
+    assert result["index_name"] == "users_username_unique"
+    assert result["index_spec"] == {"username": 1}
+    assert result["options"]["unique"] is True
+
+
+def test_create_index_wraps_duplicate_key_errors(plugin: MongoDBPlugin) -> None:
+    plugin.create_documents(
+        "users",
+        [
+            {"username": "alice"},
+            {"username": "alice"},
+        ],
+    )
+
+    with pytest.raises(ValueError, match="Failed to create index"):
+        plugin.create_index("users", {"username": 1}, {"unique": True})
 
 
 def test_dangerous_bulk_mutations_require_explicit_opt_in(plugin: MongoDBPlugin) -> None:
