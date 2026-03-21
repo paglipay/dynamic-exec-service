@@ -271,6 +271,50 @@ class OpenAIFunctionCallingPlugin:
             )
 
         if (
+            module_name == "plugins.mongodb_plugin"
+            and class_name == "MongoDBPlugin"
+            and method_name == "find_documents"
+        ):
+            return (
+                "Find MongoDB documents with filtering, projection, sorting, and pagination. "
+                "Use args in this exact order: "
+                "[collection, filter_query_or_null, projection_or_null, sort_or_null, limit, skip]. "
+                "sort_or_null should be an array like [{field: 'created_at', direction: 'desc'}]."
+            )
+
+        if (
+            module_name == "plugins.mongodb_plugin"
+            and class_name == "MongoDBPlugin"
+            and method_name == "text_search"
+        ):
+            return (
+                "Run a MongoDB text search against a collection that already has a text index. "
+                "Use args in this exact order: "
+                "[collection, search_text, filter_query_or_null, projection_or_null, limit]. "
+                "If search fails because no text index exists, call create_text_index first."
+            )
+
+        if (
+            module_name == "plugins.mongodb_plugin"
+            and class_name == "MongoDBPlugin"
+            and method_name == "aggregate_documents"
+        ):
+            return (
+                "Run a MongoDB aggregation pipeline and return JSON-serializable documents. "
+                "Use args in this exact order: [collection, pipeline, limit]."
+            )
+
+        if (
+            module_name == "plugins.mongodb_plugin"
+            and class_name == "MongoDBPlugin"
+            and method_name == "create_text_index"
+        ):
+            return (
+                "Create a MongoDB text index before using text_search. "
+                "Use args in this exact order: [collection, fields, index_name_or_null]."
+            )
+
+        if (
             module_name == "plugins.integrations.openai_sdk_plugin"
             and class_name == "OpenAISDKPlugin"
             and method_name == "generate_image"

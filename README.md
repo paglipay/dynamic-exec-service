@@ -101,6 +101,12 @@ Only these module/class/method combinations are executable via API:
   - supports nested relative paths under `base_dir` (for example `documents/notes/today.txt`)
   - blocks absolute paths and traversal outside `base_dir`
 
+- `plugins.mongodb_plugin` → `MongoDBPlugin`
+  - methods: `ping`, `list_collections`, `create_document`, `create_documents`, `get_document_by_id`, `find_documents`, `count_documents`, `update_documents`, `replace_document`, `delete_documents`, `distinct_values`, `aggregate_documents`, `create_text_index`, `text_search`
+  - purpose: CRUD plus query/search helpers against a single MongoDB database resolved from constructor args or environment
+  - environment: supports `MONGODB_URI` and optional `MONGODB_DATABASE`
+  - notes: blocks system collections, keeps responses JSON-serializable, and requires `create_text_index` before `text_search`
+
 - `plugins.ssh_module` → `SSHModule`
   - methods: `run_command`, `list_directory`
 
