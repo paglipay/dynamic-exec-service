@@ -1,0 +1,32 @@
+{
+  "module": "plugins.system_tools.word_plugin",
+  "class": "WordPlugin",
+  "method": "add_table",
+  "constructor_args": {
+    "base_dir": "generated_data",
+    "allow_outside_base_dir": true
+  },
+  "args": [
+    {
+      "file_path": "docs/project_kickoff.docx",
+      "headers": [
+        "Task",
+        "Owner",
+        "Status"
+      ],
+      "rows": [
+        [
+          "Gather requirements",
+          "Alice",
+          "Done"
+        ],
+        [
+          "Draft architecture",
+          "Bob",
+          "In Progress"
+        ]
+      ],
+      "output_path": "docs/project_kickoff_with_table.docx"
+    }
+  ]
+}
