@@ -249,11 +249,16 @@ class SlackPlugin:
 
     def post_form_message(
         self,
-        channel: str,
-        text: str,
-        blocks: list[dict[str, Any]],
+        form: dict[str, Any],
     ) -> dict[str, Any]:
         """Send a Slack message with Block Kit content that can act as a lightweight form."""
+        if not isinstance(form, dict):
+            raise ValueError("form must be an object")
+
+        channel = form.get("channel", self.default_channel)
+        text = form.get("text", "Please complete this form.")
+        blocks = form.get("blocks")
+
         if not isinstance(channel, str) or not channel.strip():
             raise ValueError("channel must be a non-empty string")
         if not isinstance(text, str) or not text.strip():
@@ -276,15 +281,20 @@ class SlackPlugin:
 
     def open_modal_form(
         self,
-        trigger_id: str,
-        title: str,
-        submit_label: str,
-        blocks: list[dict[str, Any]],
-        callback_id: str | None = None,
-        close_label: str = "Cancel",
-        private_metadata: str | None = None,
+        form: dict[str, Any],
     ) -> dict[str, Any]:
         """Open a Slack modal with input blocks."""
+        if not isinstance(form, dict):
+            raise ValueError("form must be an object")
+
+        trigger_id = form.get("trigger_id")
+        title = form.get("title")
+        submit_label = form.get("submit_label", "Submit")
+        blocks = form.get("blocks")
+        callback_id = form.get("callback_id")
+        close_label = form.get("close_label", "Cancel")
+        private_metadata = form.get("private_metadata")
+
         if not isinstance(trigger_id, str) or not trigger_id.strip():
             raise ValueError("trigger_id must be a non-empty string")
         if not isinstance(title, str) or not title.strip():

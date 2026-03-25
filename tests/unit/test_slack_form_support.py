@@ -4,13 +4,15 @@ import hashlib
 import hmac
 import json
 import time
+from urllib.parse import urlencode
 
 import app as app_module
 from plugins.integrations.slack_plugin import SlackPlugin
 
 
 def _signed_form_payload(payload: dict[str, object], secret: str) -> tuple[dict[str, str], dict[str, str]]:
-    raw_body = f"payload={json.dumps(payload, separators=(',', ':'))}"
+    form_data = {"payload": json.dumps(payload, separators=(",", ":"))}
+    raw_body = urlencode(form_data)
     timestamp = str(int(time.time()))
     basestring = f"v0:{timestamp}:{raw_body}".encode("utf-8")
     signature = "v0=" + hmac.new(secret.encode("utf-8"), basestring, hashlib.sha256).hexdigest()
@@ -19,7 +21,6 @@ def _signed_form_payload(payload: dict[str, object], secret: str) -> tuple[dict[
         "X-Slack-Signature": signature,
         "Content-Type": "application/x-www-form-urlencoded",
     }
-    form_data = {"payload": json.dumps(payload, separators=(",", ":"))}
     return headers, form_data
 
 

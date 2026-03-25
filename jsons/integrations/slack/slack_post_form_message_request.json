@@ -1,0 +1,93 @@
+{
+  "module": "plugins.integrations.slack_plugin",
+  "class": "SlackPlugin",
+  "method": "post_form_message",
+  "constructor_args": {
+    "default_channel": "#general"
+  },
+  "args": [
+    {
+      "channel": "#general",
+      "text": "Please complete this request form.",
+      "blocks": [
+        {
+          "type": "section",
+          "text": {
+            "type": "mrkdwn",
+            "text": "*Equipment Request Form*"
+          }
+        },
+        {
+          "type": "input",
+          "block_id": "requester_block",
+          "label": {
+            "type": "plain_text",
+            "text": "Requester Name"
+          },
+          "element": {
+            "type": "plain_text_input",
+            "action_id": "requester_name",
+            "placeholder": {
+              "type": "plain_text",
+              "text": "Enter full name"
+            }
+          }
+        },
+        {
+          "type": "input",
+          "block_id": "device_block",
+          "label": {
+            "type": "plain_text",
+            "text": "Device Type"
+          },
+          "element": {
+            "type": "static_select",
+            "action_id": "device_type",
+            "placeholder": {
+              "type": "plain_text",
+              "text": "Choose a device"
+            },
+            "options": [
+              {
+                "text": {
+                  "type": "plain_text",
+                  "text": "Laptop"
+                },
+                "value": "laptop"
+              },
+              {
+                "text": {
+                  "type": "plain_text",
+                  "text": "Monitor"
+                },
+                "value": "monitor"
+              },
+              {
+                "text": {
+                  "type": "plain_text",
+                  "text": "Docking Station"
+                },
+                "value": "dock"
+              }
+            ]
+          }
+        },
+        {
+          "type": "actions",
+          "elements": [
+            {
+              "type": "button",
+              "text": {
+                "type": "plain_text",
+                "text": "Submit"
+              },
+              "style": "primary",
+              "action_id": "submit_equipment_request",
+              "value": "equipment_request"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
