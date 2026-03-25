@@ -34,6 +34,80 @@ class SlackPlugin:
         self.default_channel = default_channel.strip()
         self.api_url = api_url
 
+    @staticmethod
+    def _validate_blocks(blocks: Any) -> list[dict[str, Any]]:
+        if not isinstance(blocks, list) or not blocks:
+            raise ValueError("blocks must be a non-empty list")
+
+        validated_blocks: list[dict[str, Any]] = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                raise ValueError("each block must be an object")
+            validated_blocks.append(block)
+        return validated_blocks
+
+    @staticmethod
+    def extract_view_submission_values(view_state_values: Any) -> dict[str, Any]:
+        """Flatten Slack modal submission state into a JSON-serializable dict."""
+        if not isinstance(view_state_values, dict):
+            return {}
+
+        extracted: dict[str, Any] = {}
+        for block_id, actions in view_state_values.items():
+            if not isinstance(block_id, str) or not isinstance(actions, dict):
+                continue
+
+            for action_id, action_payload in actions.items():
+                if not isinstance(action_id, str) or not isinstance(action_payload, dict):
+                    continue
+
+                field_key = f"{block_id}.{action_id}"
+                if "value" in action_payload:
+                    extracted[field_key] = action_payload.get("value")
+                    continue
+                if "selected_option" in action_payload:
+                    selected_option = action_payload.get("selected_option")
+                    if isinstance(selected_option, dict):
+                        extracted[field_key] = selected_option.get("value")
+                    continue
+                if "selected_options" in action_payload:
+                    selected_options = action_payload.get("selected_options")
+                    if isinstance(selected_options, list):
+                        extracted[field_key] = [
+                            item.get("value")
+                            for item in selected_options
+                            if isinstance(item, dict) and isinstance(item.get("value"), str)
+                        ]
+                    continue
+                if "selected_date" in action_payload:
+                    extracted[field_key] = action_payload.get("selected_date")
+                    continue
+                if "selected_time" in action_payload:
+                    extracted[field_key] = action_payload.get("selected_time")
+                    continue
+                if "selected_conversation" in action_payload:
+                    extracted[field_key] = action_payload.get("selected_conversation")
+                    continue
+                if "selected_channel" in action_payload:
+                    extracted[field_key] = action_payload.get("selected_channel")
+                    continue
+                if "selected_user" in action_payload:
+                    extracted[field_key] = action_payload.get("selected_user")
+                    continue
+                if "selected_users" in action_payload:
+                    extracted[field_key] = action_payload.get("selected_users")
+                    continue
+                if "selected_channels" in action_payload:
+                    extracted[field_key] = action_payload.get("selected_channels")
+                    continue
+                if "selected_conversations" in action_payload:
+                    extracted[field_key] = action_payload.get("selected_conversations")
+                    continue
+                if "type" in action_payload:
+                    extracted[field_key] = action_payload.get("type")
+
+        return extracted
+
     def _resolve_channel_id(self, channel: str) -> str:
         channel_value = channel.strip()
         if re.fullmatch(r"[CGD][A-Z0-9]+", channel_value):
@@ -171,6 +245,92 @@ class SlackPlugin:
             "channel": parsed.get("channel", channel.strip()),
             "ts": parsed.get("ts"),
             "message": "Message sent to Slack",
+        }
+
+    def post_form_message(
+        self,
+        channel: str,
+        text: str,
+        blocks: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Send a Slack message with Block Kit content that can act as a lightweight form."""
+        if not isinstance(channel, str) or not channel.strip():
+            raise ValueError("channel must be a non-empty string")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("text must be a non-empty string")
+
+        payload = {
+            "channel": channel.strip(),
+            "text": text.strip(),
+            "blocks": self._validate_blocks(blocks),
+        }
+        parsed = self._post_json(self.api_url, payload)
+
+        return {
+            "status": "success",
+            "action": "post_form_message",
+            "channel": parsed.get("channel", channel.strip()),
+            "ts": parsed.get("ts"),
+            "message": "Slack form message posted",
+        }
+
+    def open_modal_form(
+        self,
+        trigger_id: str,
+        title: str,
+        submit_label: str,
+        blocks: list[dict[str, Any]],
+        callback_id: str | None = None,
+        close_label: str = "Cancel",
+        private_metadata: str | None = None,
+    ) -> dict[str, Any]:
+        """Open a Slack modal with input blocks."""
+        if not isinstance(trigger_id, str) or not trigger_id.strip():
+            raise ValueError("trigger_id must be a non-empty string")
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError("title must be a non-empty string")
+        if len(title.strip()) > 24:
+            raise ValueError("title must be 24 characters or fewer for Slack modals")
+        if not isinstance(submit_label, str) or not submit_label.strip():
+            raise ValueError("submit_label must be a non-empty string")
+        if len(submit_label.strip()) > 24:
+            raise ValueError("submit_label must be 24 characters or fewer for Slack modals")
+        if not isinstance(close_label, str) or not close_label.strip():
+            raise ValueError("close_label must be a non-empty string")
+        if len(close_label.strip()) > 24:
+            raise ValueError("close_label must be 24 characters or fewer for Slack modals")
+        if callback_id is not None and (not isinstance(callback_id, str) or not callback_id.strip()):
+            raise ValueError("callback_id must be a non-empty string when provided")
+        if private_metadata is not None and not isinstance(private_metadata, str):
+            raise ValueError("private_metadata must be a string when provided")
+
+        view: dict[str, Any] = {
+            "type": "modal",
+            "title": {"type": "plain_text", "text": title.strip()},
+            "submit": {"type": "plain_text", "text": submit_label.strip()},
+            "close": {"type": "plain_text", "text": close_label.strip()},
+            "blocks": self._validate_blocks(blocks),
+        }
+        if isinstance(callback_id, str) and callback_id.strip():
+            view["callback_id"] = callback_id.strip()
+        if isinstance(private_metadata, str):
+            view["private_metadata"] = private_metadata
+
+        parsed = self._post_json(
+            "https://slack.com/api/views.open",
+            {
+                "trigger_id": trigger_id.strip(),
+                "view": view,
+            },
+        )
+        view_payload = parsed.get("view") if isinstance(parsed.get("view"), dict) else {}
+        return {
+            "status": "success",
+            "action": "open_modal_form",
+            "view_id": view_payload.get("id"),
+            "external_id": view_payload.get("external_id"),
+            "callback_id": view_payload.get("callback_id", callback_id.strip() if isinstance(callback_id, str) else None),
+            "message": "Slack modal form opened",
         }
 
     def _upload_file_bytes(

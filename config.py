@@ -158,6 +158,8 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
         "class": "SlackPlugin",
         "methods": [
             "post_message",
+            "post_form_message",
+            "open_modal_form",
             "upload_text_file",
             "upload_local_file",
         ],
