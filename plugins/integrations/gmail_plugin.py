@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 from email.message import EmailMessage
+import json
 import mimetypes
 import os
 from pathlib import Path
@@ -24,6 +25,8 @@ class GmailPlugin:
         self,
         credentials_path: str | None = None,
         token_path: str | None = None,
+        credentials_json: str | dict[str, Any] | None = None,
+        token_json: str | dict[str, Any] | None = None,
         user_id: str = "me",
         scopes: list[str] | None = None,
         service: Any | None = None,
@@ -33,6 +36,14 @@ class GmailPlugin:
 
         self.user_id = user_id.strip()
         self.scopes = self._resolve_scopes(scopes)
+        self.credentials_json = self._resolve_oauth_json(
+            credentials_json,
+            env_var_name="GMAIL_OAUTH_CREDENTIALS_JSON",
+        )
+        self.token_json = self._resolve_oauth_json(
+            token_json,
+            env_var_name="GMAIL_OAUTH_TOKEN_JSON",
+        )
 
         if service is not None:
             self.service = service
@@ -43,6 +54,35 @@ class GmailPlugin:
         self.credentials_path = self._resolve_credentials_path(credentials_path)
         self.token_path = self._resolve_token_path(token_path)
         self.service = self._build_service()
+
+    def _resolve_oauth_json(
+        self,
+        provided_value: str | dict[str, Any] | None,
+        env_var_name: str,
+    ) -> dict[str, Any] | None:
+        raw_value: str | dict[str, Any] | None = provided_value
+        if raw_value is None:
+            env_value = os.getenv(env_var_name)
+            if env_value is None or not env_value.strip():
+                return None
+            raw_value = env_value
+
+        if isinstance(raw_value, dict):
+            parsed = raw_value
+        elif isinstance(raw_value, str):
+            if not raw_value.strip():
+                raise ValueError(f"{env_var_name} must be non-empty when provided")
+            try:
+                loaded = json.loads(raw_value)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{env_var_name} must contain valid JSON") from exc
+            if not isinstance(loaded, dict):
+                raise ValueError(f"{env_var_name} must contain a JSON object")
+            parsed = loaded
+        else:
+            raise ValueError(f"{env_var_name} must be a JSON string or object")
+
+        return parsed
 
     def _resolve_scopes(self, scopes: list[str] | None) -> list[str]:
         if scopes is None:
@@ -88,7 +128,14 @@ class GmailPlugin:
 
         creds = None
         token_file = Path(self.token_path)
-        if token_file.exists():
+        if self.token_json is not None:
+            try:
+                creds = Credentials.from_authorized_user_info(self.token_json, self.scopes)
+            except Exception as exc:
+                raise ValueError(
+                    "GMAIL_OAUTH_TOKEN_JSON is present but is not a valid Gmail OAuth token JSON"
+                ) from exc
+        elif token_file.exists():
             try:
                 creds = Credentials.from_authorized_user_file(str(token_file), self.scopes)
             except Exception as exc:
@@ -103,20 +150,32 @@ class GmailPlugin:
             except Exception as exc:
                 raise ValueError("Failed to refresh Gmail OAuth token") from exc
         else:
-            credentials_file = Path(self.credentials_path)
-            if not credentials_file.exists() or not credentials_file.is_file():
-                raise ValueError(
-                    "No valid Gmail token found. Provide credentials_path (or GMAIL_CREDENTIALS_PATH) "
-                    "to run OAuth consent and generate a token."
-                )
-            try:
-                flow = InstalledAppFlow.from_client_secrets_file(str(credentials_file), self.scopes)
-                creds = flow.run_local_server(port=0)
-            except Exception as exc:
-                raise ValueError("Failed to complete Gmail OAuth flow") from exc
+            if self.credentials_json is not None:
+                try:
+                    flow = InstalledAppFlow.from_client_config(self.credentials_json, self.scopes)
+                    creds = flow.run_local_server(port=0)
+                except Exception as exc:
+                    raise ValueError(
+                        "Failed to complete Gmail OAuth flow with GMAIL_OAUTH_CREDENTIALS_JSON"
+                    ) from exc
+            else:
+                credentials_file = Path(self.credentials_path)
+                if not credentials_file.exists() or not credentials_file.is_file():
+                    raise ValueError(
+                        "No valid Gmail token found. Provide GMAIL_OAUTH_TOKEN_JSON, or provide "
+                        "credentials_path/GMAIL_CREDENTIALS_PATH (or GMAIL_OAUTH_CREDENTIALS_JSON) "
+                        "to run OAuth consent and generate a token."
+                    )
+                try:
+                    flow = InstalledAppFlow.from_client_secrets_file(str(credentials_file), self.scopes)
+                    creds = flow.run_local_server(port=0)
+                except Exception as exc:
+                    raise ValueError("Failed to complete Gmail OAuth flow") from exc
 
-        token_file.parent.mkdir(parents=True, exist_ok=True)
-        token_file.write_text(creds.to_json(), encoding="utf-8")
+        # Persist refreshed/new tokens only when token JSON was not supplied from env/constructor.
+        if self.token_json is None:
+            token_file.parent.mkdir(parents=True, exist_ok=True)
+            token_file.write_text(creds.to_json(), encoding="utf-8")
         return creds
 
     def _build_service(self) -> Any:

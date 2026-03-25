@@ -65,6 +65,10 @@ SLACK_MAX_PDF_IMAGE_PAGES = 3
 SLACK_MAX_DOCX_BYTES = 15 * 1024 * 1024
 SLACK_MAX_DOCX_TEXT_CHARS = 20000
 SLACK_IMAGE_SAVE_BASE_DIR = os.getenv("SLACK_IMAGE_SAVE_BASE_DIR", "generated_data")
+SLACK_UNREADABLE_PREVIEW_TEXTS = {
+    "[no preview available]",
+    "no preview available",
+}
 _processed_slack_events: dict[str, float] = {}
 _processed_slack_events_lock = threading.Lock()
 SLACK_EVENT_REDIS_PREFIX = "slack:event:dedupe"
@@ -367,7 +371,7 @@ def _extract_pdf_text(pdf_bytes: bytes, max_chars: int = SLACK_MAX_PDF_TEXT_CHAR
 
 
 def _extract_docx_text(docx_bytes: bytes, max_chars: int = SLACK_MAX_DOCX_TEXT_CHARS) -> str:
-    """Extract bounded text from a DOCX payload."""
+    """Extract bounded text from a DOCX payload, including table cell content."""
     if DocxDocument is None:
         return ""
     if not isinstance(docx_bytes, bytes) or not docx_bytes:
@@ -382,23 +386,108 @@ def _extract_docx_text(docx_bytes: bytes, max_chars: int = SLACK_MAX_DOCX_TEXT_C
     chunks: list[str] = []
     current_size = 0
 
-    for paragraph in getattr(document, "paragraphs", []):
-        try:
-            text = str(paragraph.text or "").strip()
-        except Exception:
-            text = ""
+    def _add_chunk(text: str) -> bool:
+        nonlocal current_size
+        text = text.strip()
         if not text:
-            continue
-
+            return True
         remaining = max_chars - current_size
         if remaining <= 0:
-            break
-
+            return False
         trimmed = text[:remaining]
         chunks.append(trimmed)
         current_size += len(trimmed)
+        return current_size < max_chars
+
+    for paragraph in getattr(document, "paragraphs", []):
+        try:
+            text = str(paragraph.text or "")
+        except Exception:
+            text = ""
+        if not _add_chunk(text):
+            break
+
+    for table in getattr(document, "tables", []):
+        try:
+            rows = getattr(table, "rows", [])
+        except Exception:
+            continue
+        for row in rows:
+            try:
+                cells = getattr(row, "cells", [])
+                cell_texts = []
+                for cell in cells:
+                    try:
+                        cell_texts.append(str(cell.text or "").strip())
+                    except Exception:
+                        cell_texts.append("")
+                row_text = "\t".join(cell_texts)
+            except Exception:
+                row_text = ""
+            if not _add_chunk(row_text):
+                break
 
     return "\n".join(chunks).strip()
+
+
+def _collect_slack_block_text(node: Any, chunks: list[str]) -> None:
+    """Recursively collect textual snippets from Slack block structures."""
+    if isinstance(node, str):
+        text = node.strip()
+        if text:
+            chunks.append(text)
+        return
+
+    if isinstance(node, dict):
+        for key in ("text", "fallback", "pretext", "title", "value"):
+            text_value = node.get(key)
+            if isinstance(text_value, str):
+                text = text_value.strip()
+                if text:
+                    chunks.append(text)
+
+        for key in ("elements", "fields", "blocks", "attachments"):
+            child = node.get(key)
+            if isinstance(child, list):
+                _collect_slack_block_text(child, chunks)
+        return
+
+    if isinstance(node, list):
+        for item in node:
+            _collect_slack_block_text(item, chunks)
+
+
+def _extract_slack_message_text(event: dict[str, Any], max_chars: int = 12000) -> str:
+    """Extract message text from a Slack event, with rich-block fallback when text is empty."""
+    message_obj = event.get("message")
+    message_payload = message_obj if isinstance(message_obj, dict) else {}
+
+    raw_text = event.get("text")
+    if isinstance(raw_text, str) and raw_text.strip():
+        return raw_text.strip()[:max_chars]
+
+    nested_text = message_payload.get("text")
+    if isinstance(nested_text, str) and nested_text.strip():
+        return nested_text.strip()[:max_chars]
+
+    chunks: list[str] = []
+    _collect_slack_block_text(event.get("blocks", []), chunks)
+    _collect_slack_block_text(message_payload.get("blocks", []), chunks)
+    _collect_slack_block_text(event.get("attachments", []), chunks)
+    _collect_slack_block_text(message_payload.get("attachments", []), chunks)
+    if not chunks:
+        return ""
+
+    merged_text = "\n".join(chunks).strip()
+    if not merged_text:
+        return ""
+    return merged_text[:max_chars]
+
+
+def _is_unreadable_slack_preview_text(text: str) -> bool:
+    """Return True when Slack only provides placeholder preview text."""
+    normalized = text.strip().lower()
+    return normalized in SLACK_UNREADABLE_PREVIEW_TEXTS
 
 
 def _parse_tsv_rows(tsv_text: str, max_rows: int = 25) -> list[dict[str, str]]:
@@ -518,6 +607,10 @@ def _render_pdf_pages_to_image_data_urls(
 def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | None) -> tuple[str, str, list[str]]:
     """Build prompt/reply snippets and image data URLs from Slack files when available."""
     files = event.get("files")
+    if not isinstance(files, list) or not files:
+        nested_message = event.get("message")
+        if isinstance(nested_message, dict):
+            files = nested_message.get("files")
     if not isinstance(files, list) or not files:
         app.logger.info("No Slack files attached on this event")
         return "", "", []
@@ -768,14 +861,43 @@ if slack_event_adapter is not None:
             return
 
         channel = event.get("channel")
-        text = event.get("text", "")
+        if not isinstance(channel, str) or not channel:
+            nested_message = event.get("message")
+            if isinstance(nested_message, dict):
+                channel = nested_message.get("channel")
+        text = _extract_slack_message_text(event)
         slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
         file_prompt_suffix, file_reply_suffix, image_data_urls = _extract_slack_file_context(event, slack_bot_token)
         if not isinstance(channel, str) or not channel:
             return
         if not isinstance(text, str):
             return
+
+        if _is_unreadable_slack_preview_text(text) and not file_prompt_suffix and not image_data_urls:
+            app.logger.info("Slack message contains unreadable preview placeholder text")
+            text = (
+                "The user pasted spreadsheet content, but Slack only provided an unreadable preview placeholder. "
+                "Ask the user to upload as .tsv or paste tab-separated lines so the table can be parsed."
+            )
+
         if not text.strip() and not file_prompt_suffix and not image_data_urls:
+            block_count = len(event.get("blocks", [])) if isinstance(event.get("blocks"), list) else 0
+            attachment_count = len(event.get("attachments", [])) if isinstance(event.get("attachments"), list) else 0
+            nested_message = event.get("message")
+            if isinstance(nested_message, dict):
+                nested_block_count = len(nested_message.get("blocks", [])) if isinstance(nested_message.get("blocks"), list) else 0
+                nested_attachment_count = len(nested_message.get("attachments", [])) if isinstance(nested_message.get("attachments"), list) else 0
+            else:
+                nested_block_count = 0
+                nested_attachment_count = 0
+
+            app.logger.info(
+                "Skipping Slack message: no text/files after extraction; blocks=%s attachments=%s nested_blocks=%s nested_attachments=%s",
+                block_count,
+                attachment_count,
+                nested_block_count,
+                nested_attachment_count,
+            )
             return
 
         app.logger.info(
@@ -822,6 +944,7 @@ if slack_event_adapter is not None:
                     image_data_urls,
                 ],
             )
+            app.logger.info("Slack AI generation completed; result_type=%s", type(ai_result).__name__)
             if isinstance(ai_result, dict):
                 reply_text = str(ai_result.get("text", "")).strip()
             else:
@@ -834,6 +957,7 @@ if slack_event_adapter is not None:
             reply_text = f"{reply_text}{file_reply_suffix}"
 
         if not reply_text:
+            app.logger.info("Skipping Slack reply post because generated reply text is empty")
             return
 
         if not isinstance(slack_bot_token, str) or not slack_bot_token.strip():
@@ -856,6 +980,7 @@ if slack_event_adapter is not None:
                 "post_message",
                 [channel, reply_text],
             )
+            app.logger.info("Slack reply posted successfully to channel=%s", channel)
         except Exception:
             app.logger.exception("Failed to post Slack AI reply")
 

@@ -1,0 +1,18 @@
+{
+  "module": "plugins.integrations.github_repo_sync_plugin",
+  "class": "GitHubRepoSyncPlugin",
+  "method": "upsert_text_file",
+  "constructor_args": {
+    "repo_owner": "paglipay",
+    "repo_name": "dynamic-exec-service-streamlit-app",
+    "branch": "main",
+    "allowed_path_prefix": "deploy/heroku"
+  },
+  "args": [
+    {
+      "file_path": "deploy/heroku/streamlit_app.py",
+      "content": "import streamlit as st\n\nst.title('Hello from upsert_text_file')\n",
+      "commit_message": "Upsert Streamlit file from dynamic-exec-service"
+    }
+  ]
+}
