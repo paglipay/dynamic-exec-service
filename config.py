@@ -109,6 +109,15 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "add_cron_workflow_job",
         ],
     },
+    "plugins.system_tools.streamlit_plugin": {
+        "class": "StreamlitPlugin",
+        "methods": [
+            "create_app_file",
+            "start_app",
+            "status",
+            "stop_app",
+        ],
+    },
     "plugins.integrations.slack_plugin": {
         "class": "SlackPlugin",
         "methods": [
@@ -161,6 +170,13 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "list_messages",
             "get_message",
             "send_email",
+        ],
+    },
+    "plugins.integrations.github_repo_sync_plugin": {
+        "class": "GitHubRepoSyncPlugin",
+        "methods": [
+            "upsert_text_file",
+            "commit_streamlit_app",
         ],
     },
 }

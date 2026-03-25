@@ -63,25 +63,8 @@ Thumbs.db
 # pdf files
 *.pdf
 
-# Microsoft Office files
-*.doc
+# docx files
 *.docx
-*.docm
-*.dot
-*.dotx
-*.dotm
-*.xls
-*.xlsx
-*.xlsm
-*.xlt
-*.xltx
-*.xltm
-*.ppt
-*.pptx
-*.pptm
-*.pot
-*.potx
-*.potm
 
 # image files
 *.png

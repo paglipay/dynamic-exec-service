@@ -1,0 +1,29 @@
+name: Deploy Streamlit To Heroku
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - deploy/heroku/streamlit_app.py
+      - deploy/heroku/Procfile.streamlit
+      - requirements.txt
+      - runtime.txt
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare Streamlit Procfile
+        run: cp deploy/heroku/Procfile.streamlit Procfile
+
+      - name: Deploy To Heroku
+        uses: akhileshns/heroku-deploy@v3.14.15
+        with:
+          heroku_api_key: ${{ secrets.HEROKU_API_KEY }}
+          heroku_app_name: ${{ secrets.HEROKU_STREAMLIT_APP_NAME }}
+          heroku_email: ${{ secrets.HEROKU_EMAIL }}

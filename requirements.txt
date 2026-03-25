@@ -12,3 +12,7 @@ pypdf
 pymupdf
 pika
 python-docx
+streamlit
+google-api-python-client
+google-auth
+google-auth-oauthlib

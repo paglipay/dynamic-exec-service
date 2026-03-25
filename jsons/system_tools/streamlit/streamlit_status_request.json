@@ -1,0 +1,26 @@
+{
+  "module": "plugins.system_tools.streamlit_plugin",
+  "class": "StreamlitPlugin",
+  "method": "create_app_file",
+  "constructor_args": {
+    "base_dir": "../",
+    "host": "127.0.0.1",
+    "port": 8501,
+    "allow_outside_base_dir": false
+  },
+  "args": [
+    {
+      "file_path": "generated_data/streamlit/simple_submit_form_app.py",
+      "title": "Simple Submit Form",
+      "template": "simple_submit_form",
+      "description": "Use this form to submit your name, email, and a brief message for follow-up.",
+      "app_content": "import streamlit as st\n\nst.set_page_config(page_title='Simple Submit Form')\nst.title('Simple Submit Form')\nst.write('Use this form to submit your name, email, and a brief message for follow-up.')\n\nwith st.form(key='simple_submit_form'):\n    name = st.text_input('Name')\n    email = st.text_input('Email')\n    message = st.text_area('Message')\n    submitted = st.form_submit_button('Submit')\n\nif submitted:\n    st.success('Form submitted successfully')\n    st.json({'name': name, 'email': email, 'message': message})\n",
+      "overwrite_existing": true,
+      "restart_on_overwrite": true,
+      "auto_start": true,
+      "start_host": "127.0.0.1",
+      "start_port": 8501,
+      "start_headless": true
+    }
+  ]
+}
