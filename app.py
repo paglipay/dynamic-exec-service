@@ -290,9 +290,7 @@ def _save_slack_image_copy(
     safe_name = _sanitize_slack_filename(original_name)
     stem = Path(safe_name).stem or "image"
     extension = _guess_image_extension(content_type, safe_name)
-
-    unique_suffix = str(int(time.time() * 1000))
-    target_path = target_dir / f"{stem}_{unique_suffix}{extension}"
+    target_path = target_dir / f"{stem}{extension}"
     target_path.write_bytes(binary_data)
     return str(target_path)
 
@@ -312,8 +310,7 @@ def _save_slack_pdf_copy(
 
     safe_name = _sanitize_slack_filename(original_name)
     stem = Path(safe_name).stem or "document"
-    unique_suffix = str(int(time.time() * 1000))
-    target_path = target_dir / f"{stem}_{unique_suffix}.pdf"
+    target_path = target_dir / f"{stem}.pdf"
     target_path.write_bytes(binary_data)
     return str(target_path)
 
@@ -333,8 +330,7 @@ def _save_slack_docx_copy(
 
     safe_name = _sanitize_slack_filename(original_name)
     stem = Path(safe_name).stem or "document"
-    unique_suffix = str(int(time.time() * 1000))
-    target_path = target_dir / f"{stem}_{unique_suffix}.docx"
+    target_path = target_dir / f"{stem}.docx"
     target_path.write_bytes(binary_data)
     return str(target_path)
 
@@ -358,8 +354,7 @@ def _save_slack_excel_copy(
     if extension not in {".xlsx", ".xlsm", ".xls"}:
         extension = ".xlsx"
 
-    unique_suffix = str(int(time.time() * 1000))
-    target_path = target_dir / f"{stem}_{unique_suffix}{extension}"
+    target_path = target_dir / f"{stem}{extension}"
     target_path.write_bytes(binary_data)
     return str(target_path)
 

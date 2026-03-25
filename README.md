@@ -29,7 +29,8 @@ This README is intended to help an AI agent use the current service safely and c
 - Slack image attachments are saved under:
   - `target_dir = (base_dir / "slack_downloads").resolve()`
 - With default `base_dir=generated_data`, images land in paths like:
-  - `generated_data/slack_downloads/<filename>_<timestamp>.<ext>`
+  - `generated_data/slack_downloads/<filename>.<ext>`
+- Filenames are sanitized and overwritten on name collisions (no timestamp suffix).
 - For markdown/image links in files created under `generated_data`, prioritize **base_dir-relative** references:
   - `slack_downloads/...`
 - Alternative supported form:

@@ -51,6 +51,7 @@ When an image download succeeds, a local copy is written under:
 - `generated_data/slack_downloads/`
 
 The filename is sanitized, and a millisecond timestamp suffix is appended to keep filenames unique.
+The filename is sanitized and saved as the original name (no timestamp suffix); repeated uploads with the same filename overwrite the existing local file.
 
 ## OpenAI handoff details
 
