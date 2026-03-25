@@ -247,15 +247,28 @@ class OpenAIFunctionCallingPlugin:
         if (
             module_name == "plugins.system_tools.excel_plugin"
             and class_name == "ExcelPlugin"
+            and method_name == "preview_sheet"
+        ):
+            return (
+                "Return a small preview of one Excel sheet before larger extraction. "
+                "Use args as a single payload object in args[0], for example: "
+                "[{file_path, sheet, columns, max_rows, start_row}]. "
+                "Prefer this for Slack-uploaded workbooks or when the user asks what a sheet contains."
+            )
+
+        if (
+            module_name == "plugins.system_tools.excel_plugin"
+            and class_name == "ExcelPlugin"
             and method_name == "excel_to_json"
         ):
             return (
                 "Export Excel rows to JSON. "
                 "Use args as a single payload object in args[0], for example: "
-                "[{file_path, sheet, columns, filter_by, save_as}]. "
+                "[{file_path, sheet, columns, filter_by, save_as, max_rows, start_row}]. "
                 "columns must be an array of exact sheet header strings. "
                 "filter_by must be an array of {column, operator, value}; operator supports 'contains'. "
-                "Do not place file_path/sheet/columns/filter_by/save_as at the top level of tool arguments; "
+                "Use max_rows to keep the result small when the user only needs a subset. "
+                "Do not place file_path/sheet/columns/filter_by/save_as/max_rows/start_row at the top level of tool arguments; "
                 "they belong inside args[0]."
             )
 
@@ -268,6 +281,17 @@ class OpenAIFunctionCallingPlugin:
                 "List available columns in a sheet before building excel_to_json filters. "
                 "Use args as a single payload object in args[0], for example: "
                 "[{file_path, sheet}]."
+            )
+
+        if (
+            module_name == "plugins.system_tools.excel_plugin"
+            and class_name == "ExcelPlugin"
+            and method_name == "list_sheet_names"
+        ):
+            return (
+                "List workbook sheet names before previewing or extracting rows. "
+                "Use args as a single payload object in args[0], for example: "
+                "[{file_path}]."
             )
 
         if (

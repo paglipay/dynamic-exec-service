@@ -114,6 +114,33 @@ class ExcelPlugin:
             raise ValueError(f"{field_name} must be an integer >= {minimum}")
         return normalized
 
+    def _open_excel_workbook(self, excel_path: Path) -> pd.ExcelFile:
+        try:
+            return pd.ExcelFile(excel_path)
+        except Exception as exc:
+            raise ValueError(f"Failed to open Excel file: {exc}") from exc
+
+    def _resolve_sheet_reference(
+        self,
+        workbook: pd.ExcelFile,
+        sheet: str | int,
+    ) -> tuple[int, str]:
+        if isinstance(sheet, int):
+            if sheet < 0 or sheet >= len(workbook.sheet_names):
+                raise ValueError(f"sheet index out of range: {sheet}")
+            return sheet, workbook.sheet_names[sheet]
+
+        if sheet not in workbook.sheet_names:
+            raise ValueError(f"sheet not found: {sheet}")
+
+        return workbook.sheet_names.index(sheet), sheet
+
+    def _read_sheet_frame(self, excel_path: Path, sheet_name: str | int) -> pd.DataFrame:
+        try:
+            return pd.read_excel(excel_path, sheet_name=sheet_name)
+        except Exception as exc:
+            raise ValueError(f"Failed to read Excel file: {exc}") from exc
+
     def excel_to_json(
         self,
         file_path: str | dict[str, Any],
@@ -121,6 +148,8 @@ class ExcelPlugin:
         columns: list[str] | None = None,
         filter_by: list[dict[str, Any]] | None = None,
         save_as: str = "output.json",
+        max_rows: int | None = None,
+        start_row: int = 0,
     ) -> dict[str, Any]:
         """Read an Excel sheet, optionally select/filter rows, and save to a JSON file."""
         if isinstance(file_path, dict):
@@ -130,12 +159,16 @@ class ExcelPlugin:
             resolved_columns = payload.get("columns", columns)
             resolved_filter_by = payload.get("filter_by", filter_by)
             resolved_save_as = payload.get("save_as", save_as)
+            resolved_max_rows = payload.get("max_rows", max_rows)
+            resolved_start_row = payload.get("start_row", start_row)
         else:
             resolved_file_path = file_path
             resolved_sheet = sheet
             resolved_columns = columns
             resolved_filter_by = filter_by
             resolved_save_as = save_as
+            resolved_max_rows = max_rows
+            resolved_start_row = start_row
 
         if not isinstance(resolved_file_path, str) or not resolved_file_path.strip():
             raise ValueError("file_path must be a non-empty string")
@@ -145,6 +178,8 @@ class ExcelPlugin:
         columns = resolved_columns
         filter_by = resolved_filter_by
         save_as = resolved_save_as
+        max_rows = resolved_max_rows
+        start_row = resolved_start_row
 
         excel_path = self._resolve_path(file_path)
         if not excel_path.exists() or not excel_path.is_file():
@@ -162,14 +197,17 @@ class ExcelPlugin:
         if filter_by is not None and not isinstance(filter_by, list):
             raise ValueError("filter_by must be an array when provided")
 
+        if max_rows is not None:
+            max_rows = self._normalize_positive_int(max_rows, "max_rows", minimum=1)
+        start_row = self._normalize_positive_int(start_row, "start_row", minimum=0)
+
         output_path = self._resolve_path(save_as)
         if output_path.suffix.lower() != ".json":
             raise ValueError("save_as must be a .json file")
 
-        try:
-            frame = pd.read_excel(excel_path, sheet_name=sheet)
-        except Exception as exc:
-            raise ValueError(f"Failed to read Excel file: {exc}") from exc
+        workbook = self._open_excel_workbook(excel_path)
+        sheet_index, sheet_name = self._resolve_sheet_reference(workbook, sheet)
+        frame = self._read_sheet_frame(excel_path, sheet_name)
 
         frame = frame.copy()
         frame.insert(0, "row", frame.index.astype(int) + 2)
@@ -183,6 +221,12 @@ class ExcelPlugin:
         if filter_by:
             frame = self._apply_filters(frame, filter_by)
 
+        total_row_count = int(len(frame))
+        if start_row:
+            frame = frame.iloc[start_row:]
+        if max_rows is not None:
+            frame = frame.iloc[:max_rows]
+
         records = self._to_json_safe(frame.where(pd.notna(frame), None).to_dict(orient="records"))
 
         # output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -195,13 +239,94 @@ class ExcelPlugin:
             "status": "success",
             "action": "excel_to_json",
             "file_path": str(excel_path),
-            "sheet": sheet,
+            "sheet": sheet_name,
+            "sheet_index": sheet_index,
             "column_names": [str(column) for column in frame.columns.tolist()],
             "selected_columns": columns if columns is not None else "all",
             "filters_applied": len(filter_by) if isinstance(filter_by, list) else 0,
             "row_count": len(records),
+            "total_row_count": total_row_count,
+            "start_row": start_row,
+            "max_rows": max_rows,
             "save_as": str(output_path),
-            "save_as_content": records[:50],
+            "save_as_content": records,
+        }
+
+    def preview_sheet(
+        self,
+        file_path: str | dict[str, Any],
+        sheet: str | int = 0,
+        columns: list[str] | None = None,
+        max_rows: int = 5,
+        start_row: int = 0,
+    ) -> dict[str, Any]:
+        """Return a small JSON-safe preview for one Excel sheet."""
+        if isinstance(file_path, dict):
+            payload = file_path
+            resolved_file_path = payload.get("file_path")
+            resolved_sheet = payload.get("sheet", sheet)
+            resolved_columns = payload.get("columns", columns)
+            resolved_max_rows = payload.get("max_rows", max_rows)
+            resolved_start_row = payload.get("start_row", start_row)
+        else:
+            resolved_file_path = file_path
+            resolved_sheet = sheet
+            resolved_columns = columns
+            resolved_max_rows = max_rows
+            resolved_start_row = start_row
+
+        if not isinstance(resolved_file_path, str) or not resolved_file_path.strip():
+            raise ValueError("file_path must be a non-empty string")
+        if not isinstance(resolved_sheet, (str, int)):
+            raise ValueError("sheet must be a string or integer")
+        if resolved_columns is not None:
+            if not isinstance(resolved_columns, list) or any(
+                not isinstance(item, str) or not item for item in resolved_columns
+            ):
+                raise ValueError("columns must be an array of non-empty strings when provided")
+
+        normalized_max_rows = self._normalize_positive_int(resolved_max_rows, "max_rows", minimum=1)
+        normalized_start_row = self._normalize_positive_int(resolved_start_row, "start_row", minimum=0)
+
+        excel_path = self._resolve_path(resolved_file_path)
+        if not excel_path.exists() or not excel_path.is_file():
+            raise ValueError("file_path does not exist")
+        if excel_path.suffix.lower() not in {".xlsx", ".xlsm", ".xls"}:
+            raise ValueError("file_path must be an Excel file (.xlsx/.xlsm/.xls)")
+
+        workbook = self._open_excel_workbook(excel_path)
+        sheet_index, sheet_name = self._resolve_sheet_reference(workbook, resolved_sheet)
+        frame = self._read_sheet_frame(excel_path, sheet_name)
+
+        frame = frame.copy()
+        frame.insert(0, "row", frame.index.astype(int) + 2)
+
+        if resolved_columns:
+            missing_columns = [column for column in resolved_columns if column not in frame.columns]
+            if missing_columns:
+                raise ValueError(f"columns not found in sheet: {', '.join(missing_columns)}")
+            frame = frame[["row", *resolved_columns]]
+
+        total_row_count = int(len(frame))
+        preview_frame = frame.iloc[normalized_start_row: normalized_start_row + normalized_max_rows]
+        preview_rows = self._to_json_safe(
+            preview_frame.where(pd.notna(preview_frame), None).to_dict(orient="records")
+        )
+
+        return {
+            "status": "success",
+            "action": "preview_sheet",
+            "file_path": str(excel_path),
+            "sheet_index": sheet_index,
+            "sheet_name": sheet_name,
+            "column_count": int(len(frame.columns)),
+            "column_names": [str(column) for column in frame.columns.tolist()],
+            "selected_columns": resolved_columns if resolved_columns is not None else "all",
+            "total_row_count": total_row_count,
+            "start_row": normalized_start_row,
+            "max_rows": normalized_max_rows,
+            "preview_row_count": int(len(preview_rows)),
+            "preview_rows": preview_rows,
         }
 
     def list_columns_in_sheet(self, file_path: str | dict[str, Any], sheet: str | int = 0) -> dict[str, Any]:
@@ -228,26 +353,9 @@ class ExcelPlugin:
         if not isinstance(sheet, (str, int)):
             raise ValueError("sheet must be a string or integer")
 
-        try:
-            workbook = pd.ExcelFile(excel_path)
-        except Exception as exc:
-            raise ValueError(f"Failed to open Excel file: {exc}") from exc
-
-        if isinstance(sheet, int):
-            if sheet < 0 or sheet >= len(workbook.sheet_names):
-                raise ValueError(f"sheet index out of range: {sheet}")
-            sheet_index = sheet
-            sheet_name = workbook.sheet_names[sheet]
-        else:
-            if sheet not in workbook.sheet_names:
-                raise ValueError(f"sheet not found: {sheet}")
-            sheet_name = sheet
-            sheet_index = workbook.sheet_names.index(sheet)
-
-        try:
-            frame = pd.read_excel(excel_path, sheet_name=sheet_name)
-        except Exception as exc:
-            raise ValueError(f"Failed to read sheet '{sheet_name}': {exc}") from exc
+        workbook = self._open_excel_workbook(excel_path)
+        sheet_index, sheet_name = self._resolve_sheet_reference(workbook, sheet)
+        frame = self._read_sheet_frame(excel_path, sheet_name)
 
         column_names = [str(column) for column in frame.columns.tolist()]
         first_data_row = self._to_json_safe(frame.iloc[0].tolist()) if not frame.empty else []
@@ -284,10 +392,7 @@ class ExcelPlugin:
         if excel_path.suffix.lower() not in {".xlsx", ".xlsm", ".xls"}:
             raise ValueError("file_path must be an Excel file (.xlsx/.xlsm/.xls)")
 
-        try:
-            workbook = pd.ExcelFile(excel_path)
-        except Exception as exc:
-            raise ValueError(f"Failed to open Excel file: {exc}") from exc
+        workbook = self._open_excel_workbook(excel_path)
 
         sheet_names = [str(name) for name in workbook.sheet_names]
         return {

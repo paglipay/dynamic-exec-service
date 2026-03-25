@@ -62,6 +62,8 @@ SLACK_MAX_IMAGE_COUNT = 3
 SLACK_MAX_PDF_BYTES = 15 * 1024 * 1024
 SLACK_MAX_PDF_TEXT_CHARS = 20000
 SLACK_MAX_PDF_IMAGE_PAGES = 3
+SLACK_MAX_EXCEL_BYTES = 15 * 1024 * 1024
+SLACK_MAX_EXCEL_PREVIEW_ROWS = 5
 SLACK_MAX_DOCX_BYTES = 15 * 1024 * 1024
 SLACK_MAX_DOCX_TEXT_CHARS = 20000
 SLACK_IMAGE_SAVE_BASE_DIR = os.getenv("SLACK_IMAGE_SAVE_BASE_DIR", "generated_data")
@@ -337,6 +339,31 @@ def _save_slack_docx_copy(
     return str(target_path)
 
 
+def _save_slack_excel_copy(
+    binary_data: bytes,
+    original_name: str,
+    channel: str | None,
+) -> str | None:
+    """Save downloaded Slack Excel bytes under a flat slack_downloads directory."""
+    if not isinstance(binary_data, bytes) or not binary_data:
+        return None
+
+    base_dir = Path(SLACK_IMAGE_SAVE_BASE_DIR).resolve()
+    target_dir = (base_dir / "slack_downloads").resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = _sanitize_slack_filename(original_name)
+    stem = Path(safe_name).stem or "workbook"
+    extension = Path(safe_name).suffix.lower()
+    if extension not in {".xlsx", ".xlsm", ".xls"}:
+        extension = ".xlsx"
+
+    unique_suffix = str(int(time.time() * 1000))
+    target_path = target_dir / f"{stem}_{unique_suffix}{extension}"
+    target_path.write_bytes(binary_data)
+    return str(target_path)
+
+
 def _extract_pdf_text(pdf_bytes: bytes, max_chars: int = SLACK_MAX_PDF_TEXT_CHARS) -> str:
     """Extract bounded text from a PDF payload."""
     if PdfReader is None:
@@ -428,6 +455,51 @@ def _extract_docx_text(docx_bytes: bytes, max_chars: int = SLACK_MAX_DOCX_TEXT_C
                 break
 
     return "\n".join(chunks).strip()
+
+
+def _summarize_slack_excel_file(saved_excel_path: str) -> dict[str, Any] | None:
+    """Return a compact workbook summary for a locally saved Slack Excel file."""
+    if not isinstance(saved_excel_path, str) or not saved_excel_path.strip():
+        return None
+
+    try:
+        from plugins.system_tools.excel_plugin import ExcelPlugin
+
+        plugin = ExcelPlugin(
+            base_dir=SLACK_IMAGE_SAVE_BASE_DIR,
+            allow_outside_base_dir=True,
+        )
+        sheet_result = plugin.list_sheet_names(saved_excel_path)
+        sheet_names = sheet_result.get("sheet_names", [])
+        if not isinstance(sheet_names, list):
+            sheet_names = []
+
+        summary: dict[str, Any] = {
+            "file_path": saved_excel_path,
+            "sheet_count": len(sheet_names),
+            "sheet_names": sheet_names,
+        }
+
+        if sheet_names:
+            preview_result = plugin.preview_sheet(
+                {
+                    "file_path": saved_excel_path,
+                    "sheet": sheet_names[0],
+                    "max_rows": SLACK_MAX_EXCEL_PREVIEW_ROWS,
+                }
+            )
+            summary["first_sheet_preview"] = {
+                "sheet_name": preview_result.get("sheet_name"),
+                "column_names": preview_result.get("column_names"),
+                "total_row_count": preview_result.get("total_row_count"),
+                "preview_row_count": preview_result.get("preview_row_count"),
+                "preview_rows": preview_result.get("preview_rows"),
+            }
+
+        return summary
+    except Exception as exc:
+        app.logger.warning("Failed to summarize Slack Excel file (%s): %s", saved_excel_path, exc)
+        return None
 
 
 def _collect_slack_block_text(node: Any, chunks: list[str]) -> None:
@@ -623,6 +695,7 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
     saved_image_paths: list[str] = []
     saved_pdf_paths: list[str] = []
     saved_docx_paths: list[str] = []
+    saved_excel_paths: list[str] = []
     reply_items: list[str] = []
     channel = event.get("channel")
     for file_item in files:
@@ -779,6 +852,60 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
             else:
                 app.logger.info("Attached DOCX could not be downloaded: %s", name)
 
+        is_excel_candidate = (
+            name.lower().endswith((".xlsx", ".xlsm", ".xls"))
+            or filetype.lower() in {"xlsx", "xlsm", "xls", "excel"}
+            or mimetype.lower() in {
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "application/vnd.ms-excel.sheet.macroenabled.12",
+                "application/vnd.ms-excel",
+            }
+        )
+        if is_excel_candidate and url_private and isinstance(slack_bot_token, str) and slack_bot_token.strip():
+            excel_data, excel_content_type = _download_slack_binary_file(
+                url_private,
+                slack_bot_token,
+                max_bytes=SLACK_MAX_EXCEL_BYTES,
+            )
+            if isinstance(excel_data, bytes) and excel_data:
+                try:
+                    saved_excel_path = _save_slack_excel_copy(
+                        excel_data,
+                        name,
+                        channel if isinstance(channel, str) else None,
+                    )
+                except Exception as exc:
+                    app.logger.warning("Failed to save Slack Excel file locally (%s): %s", name, exc)
+                    saved_excel_path = None
+
+                if isinstance(saved_excel_path, str) and saved_excel_path:
+                    saved_excel_paths.append(saved_excel_path)
+                    file_lines[-1] = f"{file_lines[-1]}; saved_excel_as={saved_excel_path}"
+                    excel_summary = _summarize_slack_excel_file(saved_excel_path)
+                    if isinstance(excel_summary, dict) and excel_summary:
+                        file_content_lines.append(
+                            f"Excel '{name}' workbook summary:\n{json.dumps(excel_summary, ensure_ascii=True)}"
+                        )
+                        preview_block = excel_summary.get("first_sheet_preview")
+                        if isinstance(preview_block, dict):
+                            preview_count = preview_block.get("preview_row_count")
+                            if isinstance(preview_count, int):
+                                file_lines[-1] = f"{file_lines[-1]}; excel_preview_rows={preview_count}"
+                        sheet_count = excel_summary.get("sheet_count")
+                        if isinstance(sheet_count, int):
+                            file_lines[-1] = f"{file_lines[-1]}; excel_sheet_count={sheet_count}"
+                    else:
+                        file_lines[-1] = f"{file_lines[-1]}; excel_processed=true"
+
+                if excel_content_type and excel_content_type not in {
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "application/vnd.ms-excel.sheet.macroenabled.12",
+                    "application/vnd.ms-excel",
+                }:
+                    file_lines[-1] = f"{file_lines[-1]}; detected_content_type={excel_content_type}"
+            else:
+                app.logger.info("Attached Excel file could not be downloaded: %s", name)
+
         is_image_candidate = (
             mimetype.lower().startswith("image/")
             or name.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"))
@@ -835,6 +962,9 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
     if saved_docx_paths:
         prompt_suffix += "\n\nSaved local DOCX copies:\n" + "\n".join(f"- {path}" for path in saved_docx_paths)
         app.logger.info("Saved %s Slack DOCX file(s) under local generated_data path", len(saved_docx_paths))
+    if saved_excel_paths:
+        prompt_suffix += "\n\nSaved local Excel copies:\n" + "\n".join(f"- {path}" for path in saved_excel_paths)
+        app.logger.info("Saved %s Slack Excel file(s) under local generated_data path", len(saved_excel_paths))
     reply_suffix = "\n\nAttachments in your message: " + ", ".join(reply_items)
     return prompt_suffix, reply_suffix, image_data_urls
 
