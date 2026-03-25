@@ -119,6 +119,17 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "generate_documents",
         ],
     },
+    "plugins.system_tools.word_plugin": {
+        "class": "WordPlugin",
+        "methods": [
+            "create_document",
+            "inspect_document",
+            "replace_text",
+            "add_table",
+            "export_pdf",
+            "generate_documents",
+        ],
+    },
     "plugins.system_tools.apscheduler_plugin": {
         "class": "APSchedulerPlugin",
         "methods": [

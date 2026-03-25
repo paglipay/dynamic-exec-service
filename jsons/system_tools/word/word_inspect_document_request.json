@@ -1,0 +1,16 @@
+{
+  "module": "plugins.system_tools.word_plugin",
+  "class": "WordPlugin",
+  "method": "inspect_document",
+  "constructor_args": {
+    "base_dir": "generated_data",
+    "allow_outside_base_dir": true
+  },
+  "args": [
+    {
+      "file_path": "docs/project_kickoff.docx",
+      "max_paragraphs": 10,
+      "max_table_rows": 5
+    }
+  ]
+}

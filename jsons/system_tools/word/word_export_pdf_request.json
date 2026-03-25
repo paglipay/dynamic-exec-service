@@ -1,0 +1,15 @@
+{
+  "module": "plugins.system_tools.word_plugin",
+  "class": "WordPlugin",
+  "method": "export_pdf",
+  "constructor_args": {
+    "base_dir": "generated_data",
+    "allow_outside_base_dir": true
+  },
+  "args": [
+    {
+      "file_path": "docs/project_kickoff.docx",
+      "output_path": "docs/project_kickoff.pdf"
+    }
+  ]
+}

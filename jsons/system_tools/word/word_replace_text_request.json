@@ -1,0 +1,25 @@
+{
+  "module": "plugins.system_tools.word_plugin",
+  "class": "WordPlugin",
+  "method": "replace_text",
+  "constructor_args": {
+    "base_dir": "generated_data",
+    "allow_outside_base_dir": true
+  },
+  "args": [
+    {
+      "file_path": "docs/template.docx",
+      "replacements": [
+        {
+          "find": "<CLIENT_NAME>",
+          "replace": "Contoso"
+        },
+        {
+          "find": "<PROJECT_CODE>",
+          "replace": "ALPHA-42"
+        }
+      ],
+      "output_path": "docs/template_filled.docx"
+    }
+  ]
+}

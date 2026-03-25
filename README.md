@@ -132,6 +132,14 @@ Only these module/class/method combinations are executable via API:
   - methods: `excel_to_json`, `list_columns_in_sheet`, `list_sheet_names`
   - purpose: export sheet rows to `.json`, inspect columns for a specific sheet, and list workbook sheet names
 
+- `plugins.system_tools.word_plugin` → `WordPlugin`
+  - methods: `create_document`, `inspect_document`, `replace_text`, `add_table`, `export_pdf`, `generate_documents`
+  - purpose: create and inspect `.docx` files, fill placeholders, append tables, export to PDF using local converters, and generate batches of Word documents from templates
+
+- `plugins.system_tools.word_template_plugin` → `WordTemplatePlugin`
+  - methods: `generate_documents`
+  - purpose: school-focused Word template generation with optional table row expansion and PDF export
+
 - `plugins.integrations.slack_plugin` → `SlackPlugin`
   - methods: `post_message`, `upload_text_file`, `upload_local_file`
   - purpose: post messages and upload text/local files using Slack's external file upload flow

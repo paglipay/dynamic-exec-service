@@ -1,0 +1,59 @@
+{
+  "module": "plugins.system_tools.word_plugin",
+  "class": "WordPlugin",
+  "method": "generate_documents",
+  "constructor_args": {
+    "base_dir": "generated_data",
+    "allow_outside_base_dir": true
+  },
+  "args": [
+    {
+      "documents_json": [
+        {
+          "document_name": "North Region Summary",
+          "client_name": "Contoso",
+          "project_code": "NR-100",
+          "owner": "Alice"
+        },
+        {
+          "document_name": "South Region Summary",
+          "client_name": "Fabrikam",
+          "project_code": "SR-200",
+          "owner": "Bob"
+        }
+      ],
+      "input_docx": "docs/template.docx",
+      "output_dir": "docs/generated",
+      "filename_template": "{document_name_sanitized}.docx",
+      "replacements_json": [
+        {
+          "find": "<TITLE>",
+          "replace": "Project Summary"
+        }
+      ],
+      "append_lines": [
+        "Generated automatically by WordPlugin"
+      ],
+      "table_updates": [
+        {
+          "table_selector": {
+            "table_index": 0
+          },
+          "template_row_marker": "<ROW_TEMPLATE>",
+          "rows": [
+            {
+              "item": "Owner",
+              "value": "<owner>"
+            },
+            {
+              "item": "Code",
+              "value": "<project_code>"
+            }
+          ]
+        }
+      ],
+      "export_pdf": false,
+      "document_name_field": "document_name"
+    }
+  ]
+}
