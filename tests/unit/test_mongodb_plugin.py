@@ -282,16 +282,8 @@ class _FakeCollection:
         if projection is None:
             return candidate
 
-        include_fields = [
-            key
-            for key, value in projection.items()
-            if value == 1 or value is True
-        ]
-        exclude_fields = [
-            key
-            for key, value in projection.items()
-            if value == 0 or value is False
-        ]
+        include_fields = [key for key, value in projection.items() if value in {1, True} or isinstance(value, dict)]
+        exclude_fields = [key for key, value in projection.items() if value in {0, False}]
 
         if include_fields:
             projected = {key: candidate[key] for key in include_fields if key in candidate}
