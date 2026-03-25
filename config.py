@@ -68,6 +68,7 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
     "plugins.system_tools.excel_plugin": {
         "class": "ExcelPlugin",
         "methods": [
+            "preview_sheet",
             "excel_to_json",
             "list_columns_in_sheet",
             "list_sheet_names",
