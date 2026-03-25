@@ -284,14 +284,82 @@ class OpenAIFunctionCallingPlugin:
             )
 
         if (
-            module_name == "plugins.system_tools.excel_plugin"
-            and class_name == "ExcelPlugin"
-            and method_name == "list_sheet_names"
+            module_name == "plugins.mongodb_plugin"
+            and class_name == "MongoDBPlugin"
+            and method_name == "create_document"
         ):
             return (
-                "List workbook sheet names before previewing or extracting rows. "
-                "Use args as a single payload object in args[0], for example: "
-                "[{file_path}]."
+                "Create one MongoDB document. "
+                "Use args in this exact order: [collection, document]. "
+                "Only claim creation succeeded after tool result shows inserted_id and action=create_document."
+            )
+
+        if (
+            module_name == "plugins.mongodb_plugin"
+            and class_name == "MongoDBPlugin"
+            and method_name == "update_documents"
+        ):
+            return (
+                "Update MongoDB documents with update operators. "
+                "Use args in this exact order: "
+                "[collection, filter_query, update_operations, upsert, many, allow_empty_filter, fail_on_no_match]. "
+                "Check matched_count, modified_count, upserted_id, and operation_result before confirming success. "
+                "If operation_result is no_match, do not claim data was updated."
+            )
+
+        if (
+            module_name == "plugins.mongodb_plugin"
+            and class_name == "MongoDBPlugin"
+            and method_name == "replace_document"
+        ):
+            return (
+                "Replace one MongoDB document by filter. "
+                "Use args in this exact order: [collection, filter_query, replacement, upsert, fail_on_no_match]. "
+                "Check matched_count, modified_count, upserted_id, and operation_result before confirming success."
+            )
+
+        if (
+            module_name == "plugins.mongodb_plugin"
+            and class_name == "MongoDBPlugin"
+            and method_name == "find_documents"
+        ):
+            return (
+                "Find MongoDB documents with filtering, projection, sorting, and pagination. "
+                "Use args in this exact order: "
+                "[collection, filter_query_or_null, projection_or_null, sort_or_null, limit, skip]. "
+                "sort_or_null should be an array like [{field: 'created_at', direction: 'desc'}]."
+            )
+
+        if (
+            module_name == "plugins.mongodb_plugin"
+            and class_name == "MongoDBPlugin"
+            and method_name == "text_search"
+        ):
+            return (
+                "Run a MongoDB text search against a collection that already has a text index. "
+                "Use args in this exact order: "
+                "[collection, search_text, filter_query_or_null, projection_or_null, limit]. "
+                "If search fails because no text index exists, call create_text_index first."
+            )
+
+        if (
+            module_name == "plugins.mongodb_plugin"
+            and class_name == "MongoDBPlugin"
+            and method_name == "aggregate_documents"
+        ):
+            return (
+                "Run a MongoDB aggregation pipeline and return JSON-serializable documents. "
+                "Use args in this exact order: [collection, pipeline, limit]."
+            )
+
+        if (
+            module_name == "plugins.mongodb_plugin"
+            and class_name == "MongoDBPlugin"
+            and method_name == "create_text_index"
+        ):
+            return (
+                "Create a MongoDB text index before using text_search. "
+                "Use args in this exact order: [collection, fields, index_name_or_null]."
             )
 
         if (
@@ -373,6 +441,32 @@ class OpenAIFunctionCallingPlugin:
             validate_request(module_name, class_name, method_name)
             self.executor.instantiate(module_name, class_name, constructor_args)
             result = self.executor.call_method(module_name, method_name, args)
+
+            if module_name == "plugins.mongodb_plugin" and isinstance(result, dict):
+                if method_name == "create_document":
+                    inserted_id = result.get("inserted_id")
+                    if not inserted_id:
+                        return json.dumps(
+                            {
+                                "status": "error",
+                                "message": "MongoDB create_document did not return inserted_id",
+                                "result": result,
+                            },
+                            ensure_ascii=False,
+                        )
+
+                if method_name in {"update_documents", "replace_document"}:
+                    operation_result = result.get("operation_result")
+                    if operation_result == "no_match":
+                        return json.dumps(
+                            {
+                                "status": "error",
+                                "message": "MongoDB write matched zero documents",
+                                "result": result,
+                            },
+                            ensure_ascii=False,
+                        )
+
             return json.dumps({"status": "success", "result": result}, ensure_ascii=False)
         except Exception as exc:
             return json.dumps({"status": "error", "message": str(exc)}, ensure_ascii=False)
@@ -447,6 +541,9 @@ class OpenAIFunctionCallingPlugin:
             "when a plugin method accepts a payload object, pass it as args[0]. "
             "If the user asks to send an email attachment, include attachment file paths in Gmail send_email args. "
             "Do not claim an attachment was sent unless the Gmail tool result shows attachment_count > 0. "
+            "For MongoDB write tools, do not claim a document was created/updated/replaced unless the tool result proves it. "
+            "Require inserted_id for create_document. "
+            "Require operation_result != 'no_match' for update_documents and replace_document. "
             "Slack image attachments are saved locally under "
             f"'{self._slack_images_root}/' as a flat directory by the app. "
             "If the user asks to reference or locate Slack images, use this directory convention."

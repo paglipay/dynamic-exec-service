@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from plugins.integrations.conversation_history_manager import ConversationHistoryManager
 from plugins.integrations.openai_plugin import OpenAIFunctionCallingPlugin
 
@@ -65,6 +67,91 @@ def test_generate_image_tool_description_mentions_arg_order() -> None:
 
     assert "exact order" in description
     assert "gpt-image-1" in description
+
+
+def test_mongodb_find_documents_tool_description_mentions_arg_order() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+
+    description = plugin._build_tool_description(
+        "plugins.mongodb_plugin",
+        "MongoDBPlugin",
+        "find_documents",
+    )
+
+    assert "exact order" in description
+    assert "sort_or_null" in description
+
+
+def test_mongodb_text_search_tool_description_mentions_index_requirement() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+
+    description = plugin._build_tool_description(
+        "plugins.mongodb_plugin",
+        "MongoDBPlugin",
+        "text_search",
+    )
+
+    assert "text index" in description
+    assert "create_text_index" in description
+
+
+def test_mongodb_update_documents_tool_description_mentions_operation_result() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+
+    description = plugin._build_tool_description(
+        "plugins.mongodb_plugin",
+        "MongoDBPlugin",
+        "update_documents",
+    )
+
+    assert "exact order" in description
+    assert "operation_result" in description
+    assert "no_match" in description
+
+
+def test_system_prompt_requires_mongodb_write_verification() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+    plugin._slack_images_root = "generated_data/slack_downloads/images"
+
+    prompt = plugin._build_system_prompt()
+
+    assert "inserted_id" in prompt
+    assert "operation_result" in prompt
+
+
+def test_execute_tool_call_returns_error_for_mongodb_write_no_match() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+    plugin._tool_name_to_target = {
+        "plugin_tool_001": (
+            "plugins.mongodb_plugin",
+            "MongoDBPlugin",
+            "update_documents",
+        )
+    }
+
+    class FakeExecutor:
+        @staticmethod
+        def instantiate(_module_name: str, _class_name: str, _constructor_args: dict) -> None:
+            return None
+
+        @staticmethod
+        def call_method(_module_name: str, _method_name: str, _args: list):
+            return {
+                "status": "success",
+                "action": "update_documents",
+                "matched_count": 0,
+                "modified_count": 0,
+                "upserted_id": None,
+                "operation_result": "no_match",
+            }
+
+    plugin.executor = FakeExecutor()
+
+    output = plugin._execute_tool_call("plugin_tool_001", json.dumps({"constructor_args": {}, "args": []}))
+    parsed = json.loads(output)
+
+    assert parsed["status"] == "error"
+    assert "matched zero documents" in parsed["message"]
 
 
 def test_history_storage_falls_back_to_memory_when_redis_unavailable() -> None:
