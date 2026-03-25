@@ -45,6 +45,7 @@ service-account*.json
 
 # Private keys and cert bundles
 *.pem
+*.crt
 *.key
 *.p12
 *.pfx
@@ -61,6 +62,9 @@ Thumbs.db
 
 # pdf files
 *.pdf
+
+# docx files
+*.docx
 
 # image files
 *.png

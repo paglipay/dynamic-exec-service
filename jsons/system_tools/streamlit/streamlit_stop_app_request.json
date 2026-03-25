@@ -1,0 +1,15 @@
+{
+  "module": "plugins.system_tools.streamlit_plugin",
+  "class": "StreamlitPlugin",
+  "method": "stop_app",
+  "constructor_args": {
+    "base_dir": "../",
+    "host": "127.0.0.1",
+    "port": 8501,
+    "allow_outside_base_dir": false
+  },
+  "args": [
+    false,
+    10
+  ]
+}
