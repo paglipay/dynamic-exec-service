@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import csv
+import hashlib
+import hmac
 import io
 import json
 import os
@@ -74,6 +76,10 @@ SLACK_UNREADABLE_PREVIEW_TEXTS = {
 _processed_slack_events: dict[str, float] = {}
 _processed_slack_events_lock = threading.Lock()
 SLACK_EVENT_REDIS_PREFIX = "slack:event:dedupe"
+SLACK_INTERACTIVITY_TTL_SECONDS = 86400
+SLACK_MAX_STORED_FORM_SUBMISSIONS = 200
+_slack_form_submissions: list[dict[str, Any]] = []
+_slack_form_submissions_lock = threading.Lock()
 
 
 def _build_redis_client() -> Any | None:
@@ -89,6 +95,64 @@ def _build_redis_client() -> Any | None:
 
 
 _slack_dedupe_redis_client = _build_redis_client()
+
+
+def _verify_slack_signed_request(req: Any, signing_secret_value: str | None) -> bool:
+    """Verify Slack request signature for events and interactive payloads."""
+    if not isinstance(signing_secret_value, str) or not signing_secret_value.strip():
+        return False
+
+    timestamp = req.headers.get("X-Slack-Request-Timestamp", "")
+    slack_signature = req.headers.get("X-Slack-Signature", "")
+    if not isinstance(timestamp, str) or not timestamp.strip():
+        return False
+    if not isinstance(slack_signature, str) or not slack_signature.strip():
+        return False
+
+    try:
+        request_ts = int(timestamp)
+    except ValueError:
+        return False
+
+    if abs(int(time.time()) - request_ts) > 60 * 5:
+        return False
+
+    request_body = req.get_data(cache=True, as_text=False)
+    base_string = b"v0:" + timestamp.encode("utf-8") + b":" + request_body
+    expected_signature = "v0=" + hmac.new(
+        signing_secret_value.strip().encode("utf-8"),
+        base_string,
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(expected_signature, slack_signature)
+
+
+def _store_slack_form_submission(submission: dict[str, Any]) -> None:
+    """Store a bounded history of Slack form submissions in memory."""
+    recorded_at = time.time()
+    with _slack_form_submissions_lock:
+        retained: list[dict[str, Any]] = []
+        for item in _slack_form_submissions:
+            created_at = item.get("received_at_epoch")
+            if isinstance(created_at, (int, float)) and (recorded_at - float(created_at)) <= SLACK_INTERACTIVITY_TTL_SECONDS:
+                retained.append(item)
+
+        submission["received_at_epoch"] = recorded_at
+        retained.append(submission)
+        if len(retained) > SLACK_MAX_STORED_FORM_SUBMISSIONS:
+            retained = retained[-SLACK_MAX_STORED_FORM_SUBMISSIONS:]
+
+        _slack_form_submissions.clear()
+        _slack_form_submissions.extend(retained)
+
+
+def _get_recent_slack_form_submissions(limit: int = 25) -> list[dict[str, Any]]:
+    """Return recent Slack form submissions, newest first."""
+    normalized_limit = limit if isinstance(limit, int) and limit > 0 else 25
+    with _slack_form_submissions_lock:
+        items = list(_slack_form_submissions)
+    items.sort(key=lambda item: float(item.get("received_at_epoch", 0.0)), reverse=True)
+    return items[:normalized_limit]
 
 
 def _is_duplicate_slack_event(event_data: dict[str, Any], event: dict[str, Any]) -> bool:
@@ -1113,6 +1177,98 @@ if slack_event_adapter is not None:
 def _error_response(message: str, status_code: int = 400):
     """Standardized API error response."""
     return jsonify({"status": "error", "message": message}), status_code
+
+
+@app.post("/slack/interactivity")
+def slack_interactivity() -> Any:
+    """Handle Slack interactive payloads such as modal form submissions."""
+    if not signing_secret:
+        return _error_response("SIGNING_SECRET is not configured", status_code=503)
+    if not _verify_slack_signed_request(request, signing_secret):
+        return _error_response("Invalid Slack signature", status_code=401)
+
+    raw_payload = request.form.get("payload", "")
+    if not isinstance(raw_payload, str) or not raw_payload.strip():
+        return _error_response("Missing Slack payload")
+
+    try:
+        payload = json.loads(raw_payload)
+    except json.JSONDecodeError:
+        return _error_response("Slack payload must be valid JSON")
+
+    if not isinstance(payload, dict):
+        return _error_response("Slack payload must be an object")
+
+    payload_type = payload.get("type")
+    if payload_type == "view_submission":
+        view = payload.get("view") if isinstance(payload.get("view"), dict) else {}
+        state = view.get("state") if isinstance(view.get("state"), dict) else {}
+        state_values = state.get("values") if isinstance(state.get("values"), dict) else {}
+
+        try:
+            from plugins.integrations.slack_plugin import SlackPlugin
+
+            submitted_values = SlackPlugin.extract_view_submission_values(state_values)
+        except Exception:
+            app.logger.exception("Failed to extract Slack form submission values")
+            submitted_values = {}
+
+        user_info = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+        team_info = payload.get("team") if isinstance(payload.get("team"), dict) else {}
+        container_info = payload.get("container") if isinstance(payload.get("container"), dict) else {}
+        submission_record = {
+            "type": "view_submission",
+            "team_id": team_info.get("id"),
+            "user_id": user_info.get("id"),
+            "user_username": user_info.get("username"),
+            "view_id": view.get("id"),
+            "callback_id": view.get("callback_id"),
+            "private_metadata": view.get("private_metadata"),
+            "app_id": payload.get("api_app_id"),
+            "channel_id": container_info.get("channel_id"),
+            "values": submitted_values,
+            "raw_state_values": state_values,
+        }
+        _store_slack_form_submission(submission_record)
+        return jsonify({"response_action": "clear"})
+
+    if payload_type == "block_actions":
+        user_info = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+        container_info = payload.get("container") if isinstance(payload.get("container"), dict) else {}
+        _store_slack_form_submission(
+            {
+                "type": "block_actions",
+                "user_id": user_info.get("id"),
+                "user_username": user_info.get("username"),
+                "channel_id": container_info.get("channel_id"),
+                "message_ts": container_info.get("message_ts"),
+                "actions": payload.get("actions", []),
+            }
+        )
+        return jsonify({"status": "success"})
+
+    return jsonify({"status": "ignored", "payload_type": payload_type})
+
+
+@app.get("/slack/form-submissions")
+def slack_form_submissions() -> Any:
+    """Return recent Slack form submissions captured by the interactivity endpoint."""
+    raw_limit = request.args.get("limit", "25")
+    try:
+        limit = int(raw_limit)
+    except ValueError:
+        return _error_response("limit must be an integer")
+
+    if limit <= 0 or limit > 200:
+        return _error_response("limit must be between 1 and 200")
+
+    return jsonify(
+        {
+            "status": "success",
+            "count": len(_get_recent_slack_form_submissions(limit)),
+            "submissions": _get_recent_slack_form_submissions(limit),
+        }
+    )
 
 
 def _validate_execution_fields(payload: dict[str, Any]) -> tuple[str, str, str, dict[str, Any], list[Any]]:

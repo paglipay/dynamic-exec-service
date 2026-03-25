@@ -86,6 +86,20 @@ Handled by `SlackEventAdapter` when `SIGNING_SECRET` is set.
 - Current handler listens for `message` events, accepts normal messages plus `file_share`, ignores duplicate deliveries, and replies via function-calling using `plugins.integrations.openai_plugin`.
 - For file attachments, it extracts metadata from `event["files"]` and attempts to download text-like files (`.txt`, `.md`, `text/*`) using `SLACK_BOT_TOKEN` so content can be included in the AI prompt.
 
+### POST /slack/interactivity
+Handles Slack interactive payloads when `SIGNING_SECRET` is set.
+
+- Verifies Slack signatures using `X-Slack-Signature` and `X-Slack-Request-Timestamp`.
+- Accepts `view_submission` payloads from Slack modal forms.
+- Accepts `block_actions` payloads from interactive Block Kit messages.
+- Stores recent submissions in an in-memory bounded history for inspection.
+
+### GET /slack/form-submissions
+Returns recent Slack interactive form submissions captured by `/slack/interactivity`.
+
+- Query param: `limit` (`1..200`, default `25`)
+- Response includes normalized extracted values for modal submissions.
+
 ## Allowlisted plugins (current)
 Only these module/class/method combinations are executable via API:
 
@@ -142,8 +156,8 @@ Only these module/class/method combinations are executable via API:
   - purpose: school-focused Word template generation with optional table row expansion and PDF export
 
 - `plugins.integrations.slack_plugin` → `SlackPlugin`
-  - methods: `post_message`, `upload_text_file`, `upload_local_file`
-  - purpose: post messages and upload text/local files using Slack's external file upload flow
+  - methods: `post_message`, `post_form_message`, `open_modal_form`, `upload_text_file`, `upload_local_file`
+  - purpose: post messages, send interactive Block Kit form messages, open Slack modal forms, and upload text/local files using Slack's external file upload flow
 
 - `plugins.integrations.openai_http_plugin` → `OpenAIHTTPPlugin`
   - methods: `generate_text`
