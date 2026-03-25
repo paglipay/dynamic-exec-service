@@ -1,4 +1,4 @@
-"""Word template plugin for token replacement and optional PDF export."""
+"""Word template plugin for generic document generation from header-driven data rows."""
 
 from __future__ import annotations
 
@@ -6,15 +6,15 @@ from copy import deepcopy
 import json
 import shutil
 import subprocess
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 
 class WordTemplatePlugin:
-    """Generate per-school DOCX outputs from templates and optional PDF export."""
+    """Generate DOCX files from row data with exact header-to-token matching and optional table expansion."""
 
     def __init__(self, base_dir: str = "generated_data", allow_outside_base_dir: bool = True) -> None:
+        """Initialize plugin with base directory and optional path boundary enforcement."""
         if not isinstance(base_dir, str) or not base_dir.strip():
             raise ValueError("base_dir must be a non-empty string")
         if not isinstance(allow_outside_base_dir, bool):
@@ -27,6 +27,7 @@ class WordTemplatePlugin:
             raise ValueError("base_dir must point to an existing directory")
 
     def _resolve_path(self, path_value: str, require_exists: bool = False) -> Path:
+        """Resolve a path relative to base_dir with optional boundary enforcement."""
         if not isinstance(path_value, str) or not path_value.strip():
             raise ValueError("path must be a non-empty string")
 
@@ -45,6 +46,7 @@ class WordTemplatePlugin:
         return resolved
 
     def _load_json_array(self, path: Path) -> list[Any]:
+        """Load and validate a JSON file as a top-level array."""
         if not path.exists() or not path.is_file():
             raise ValueError(f"JSON file not found: {path}")
 
@@ -60,6 +62,7 @@ class WordTemplatePlugin:
         return data
 
     def _load_document(self, path: Path) -> Any:
+        """Load a DOCX file using python-docx."""
         try:
             from docx import Document  # type: ignore[import-not-found]
         except Exception as exc:
@@ -68,6 +71,7 @@ class WordTemplatePlugin:
         return Document(path)
 
     def _replace_in_paragraph_preserve_format(self, paragraph: Any, replacements: list[tuple[str, str]]) -> bool:
+        """Replace tokens in a paragraph while preserving run-level formatting."""
         changed = False
 
         for run in paragraph.runs:
@@ -135,6 +139,7 @@ class WordTemplatePlugin:
         return changed
 
     def _replace_in_document(self, document: Any, replacements: list[tuple[str, str]]) -> int:
+        """Replace tokens across all paragraphs and table cells in a document."""
         changed_count = 0
 
         for paragraph in document.paragraphs:
@@ -151,72 +156,18 @@ class WordTemplatePlugin:
         return changed_count
 
     def _append_paragraphs(self, document: Any, lines: list[str]) -> None:
+        """Append lines as paragraphs to a document."""
         for line in lines:
             document.add_paragraph(line)
 
     def _sanitize_filename(self, name: str) -> str:
+        """Sanitize a string for use as a filesystem filename."""
         invalid = '<>:"/\\|?*'
         sanitized = "".join("_" if char in invalid else char for char in name).strip()
-        return sanitized or "Unknown_School"
-
-    def _is_active_school(self, item: Any, active_flag_field: str, active_flag_value: str) -> bool:
-        if not isinstance(item, dict):
-            return False
-        return str(item.get(active_flag_field) or "").strip().lower() == active_flag_value.lower()
-
-    def _get_school_name(self, item: dict[str, Any]) -> str:
-        return str(
-            item.get("School Name")
-            or item.get("SCHOOL_NAME")
-            or item.get("school_name")
-            or item.get("Site")
-            or item.get("Device Name")
-            or "Unknown School"
-        ).strip()
-
-    def _get_address(self, item: dict[str, Any]) -> str:
-        return str(item.get("Address") or item.get("ADDRESS") or item.get("address") or "").strip()
-
-    def _get_location_code(self, item: dict[str, Any]) -> str:
-        value = item.get("Loc Code")
-        if value is None:
-            value = item.get("LOCATION_CODE")
-        if value is None:
-            value = item.get("location_code")
-        if value is None:
-            return ""
-        if isinstance(value, float) and value.is_integer():
-            return str(int(value))
-        return str(value).strip()
-
-    def _get_contractor(self, item: dict[str, Any]) -> str:
-        value = item.get("Contractor")
-        if value is None:
-            value = item.get("VENDOR")
-        if value is None:
-            value = item.get("vendor")
-        if value is None:
-            return ""
-        if isinstance(value, float) and value.is_integer():
-            return str(int(value))
-        return str(value).strip()
-
-    def _ensure_array(self, value: Any, field_name: str) -> list[Any]:
-        if isinstance(value, list):
-            return value
-        if isinstance(value, str) and value.strip():
-            path = self._resolve_path(value, require_exists=True)
-            if path.suffix.lower() != ".json":
-                raise ValueError(f"{field_name} path must be a .json file")
-            return self._load_json_array(path)
-        raise ValueError(f"{field_name} must be a JSON file path or an array")
-
-    def _has_active_flag(self, item: Any, active_flag_field: str) -> bool:
-        if not isinstance(item, dict):
-            return False
-        return active_flag_field in item
+        return sanitized or "document"
 
     def _export_pdf(self, docx_path: Path, pdf_path: Path) -> None:
+        """Export DOCX to PDF using available local converters."""
         errors: list[str] = []
 
         try:
@@ -283,125 +234,58 @@ class WordTemplatePlugin:
             f"{details}"
         )
 
-    def _parse_replacements_json(self, json_path: Path) -> list[tuple[str, str]]:
-        data = self._load_json_array(json_path)
+    def _ensure_array(self, value: Any, field_name: str) -> list[Any]:
+        """Load data as array from direct list or JSON file path."""
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str) and value.strip():
+            path = self._resolve_path(value, require_exists=True)
+            if path.suffix.lower() != ".json":
+                raise ValueError(f"{field_name} path must be a .json file")
+            return self._load_json_array(path)
+        raise ValueError(f"{field_name} must be a JSON file path or an array")
 
+    def _normalize_row_token(self, key: str) -> str:
+        """Convert a row key to a placeholder token (<Key>)."""
+        token = str(key).strip()
+        if token.startswith("<") and token.endswith(">") and len(token) >= 3:
+            return token
+        return f"<{token}>"
+
+    def _build_row_replacements(self, row_item: dict[str, Any]) -> list[tuple[str, str]]:
+        """Build (token, value) tuples from a row object using exact header names."""
         pairs: list[tuple[str, str]] = []
-        for index, item in enumerate(data):
-            if isinstance(item, dict):
-                if "find" not in item or "replace" not in item:
-                    raise ValueError(f"Invalid object at index {index}. Expected keys: 'find' and 'replace'.")
-                pairs.append((str(item["find"]), str(item["replace"])))
-                continue
-
-            if isinstance(item, list) and len(item) == 2:
-                pairs.append((str(item[0]), str(item[1])))
-                continue
-
-            raise ValueError(
-                f"Invalid replacement at index {index}. Use {{\"find\":\"...\",\"replace\":\"...\"}} or [\"old\", \"new\"]."
-            )
-
+        for key, value in row_item.items():
+            token = self._normalize_row_token(str(key))
+            rendered = "" if value is None else str(value)
+            pairs.append((token, rendered))
         return pairs
 
-    def _parse_template_jobs(self, json_path: Path) -> list[dict[str, str]]:
-        items = self._load_json_array(json_path)
-
-        jobs: list[dict[str, str]] = []
-        for index, item in enumerate(items):
-            if not isinstance(item, dict):
-                raise ValueError(f"Invalid template config at index {index}. Expected object.")
-
-            input_docx = str(item.get("INPUT_DOCX") or "").strip()
-            output_dir = str(item.get("OUTPUT_DIR") or "").strip()
-            filename = str(item.get("filename") or "").strip()
-
-            if not input_docx or not output_dir or not filename:
-                raise ValueError(
-                    f"Invalid template config at index {index}. Required keys: INPUT_DOCX, OUTPUT_DIR, filename."
-                )
-
-            jobs.append({"INPUT_DOCX": input_docx, "OUTPUT_DIR": output_dir, "filename": filename})
-
-        if not jobs:
-            raise ValueError(f"No template jobs found in: {json_path}")
-
-        return jobs
-
-    def _render_filename_template(self, filename_template: str, school_name: str, location_code: str) -> str:
-        sanitized_school_name = self._sanitize_filename(school_name)
-
+    def _render_filename_template(self, filename_template: str, row_context: dict[str, Any]) -> str:
+        """Render output filename using row fields as format context."""
         stripped_template = filename_template.strip()
         if stripped_template.startswith('f"') and stripped_template.endswith('"'):
             stripped_template = stripped_template[2:-1]
         elif stripped_template.startswith("f'") and stripped_template.endswith("'"):
             stripped_template = stripped_template[2:-1]
 
-        rendered = stripped_template.replace("{sanitize_filename(school_name)}", sanitized_school_name)
+        safe_context = {}
+        for key, value in row_context.items():
+            safe_context[key] = "" if value is None else str(value)
+            safe_context[f"{key}_sanitized"] = self._sanitize_filename(str(value) if value is not None else "")
 
         try:
-            rendered = rendered.format(
-                school_name=school_name,
-                school_name_sanitized=sanitized_school_name,
-                location_code=location_code,
-            )
+            rendered = stripped_template.format(**safe_context)
         except KeyError as exc:
             raise ValueError(f"Unknown placeholder in filename template: {exc}") from exc
 
         rendered = rendered.strip()
         if not rendered:
             raise ValueError("Rendered filename is empty.")
-
         return rendered
 
-    def _build_school_replacements(
-        self,
-        base_replacements: list[tuple[str, str]],
-        school_name: str,
-        location_code: str,
-        address: str,
-        contractor: str,
-    ) -> list[tuple[str, str]]:
-        formatted_date = datetime.now().strftime("%m/%d/%y")
-
-        replacements = list(base_replacements)
-        keys = {find for find, _ in replacements}
-
-        if "<SCHOOL_NAME>" not in keys:
-            replacements.append(("<SCHOOL_NAME>", school_name))
-        if "<LOCATION_CODE>" not in keys:
-            replacements.append(("<LOCATION_CODE>", location_code))
-        if "<ADDRESS>" not in keys:
-            replacements.append(("<ADDRESS>", address))
-        if "<VENDOR>" not in keys:
-            replacements.append(("<VENDOR>", contractor))
-        if "<DATE>" not in keys:
-            replacements.append(("<DATE>", formatted_date))
-
-        updated: list[tuple[str, str]] = []
-        for find, replace in replacements:
-            if find == "<SCHOOL_NAME>":
-                updated.append((find, school_name))
-            elif find == "<LOCATION_CODE>":
-                updated.append((find, location_code))
-            elif find == "<ADDRESS>":
-                updated.append((find, address))
-            elif find == "<VENDOR>":
-                updated.append((find, contractor))
-            elif find == "<DATE>":
-                updated.append((find, formatted_date))
-            else:
-                updated.append((find, replace))
-
-        return updated
-
-    def _normalize_row_token(self, key: str) -> str:
-        token = str(key).strip()
-        if token.startswith("<") and token.endswith(">") and len(token) >= 3:
-            return token
-        return f"<{token}>"
-
     def _find_table_index(self, document: Any, selector: dict[str, Any], update_index: int) -> int:
+        """Find a table by explicit index or header substring match."""
         table_count = len(document.tables)
         if table_count <= 0:
             raise ValueError("No tables found in document")
@@ -440,6 +324,7 @@ class WordTemplatePlugin:
         )
 
     def _find_template_row_index(self, table: Any, marker: str | None, row_index: int | None, update_index: int) -> int:
+        """Find a template row by explicit index or marker substring match."""
         if isinstance(row_index, int):
             if row_index < 0 or row_index >= len(table.rows):
                 raise ValueError(
@@ -457,11 +342,10 @@ class WordTemplatePlugin:
                 f"table_updates[{update_index}] could not find template row marker: {marker_value}"
             )
 
-        raise ValueError(
-            f"table_updates[{update_index}] requires template_row_marker or template_row_index"
-        )
+        raise ValueError(f"table_updates[{update_index}] requires template_row_marker or template_row_index")
 
     def _clear_row_marker(self, row: Any, marker: str) -> None:
+        """Clear a marker token from a table row."""
         marker_value = marker.strip()
         for cell in row.cells:
             for paragraph in cell.paragraphs:
@@ -469,6 +353,7 @@ class WordTemplatePlugin:
                     self._replace_in_paragraph_preserve_format(paragraph, [(marker_value, "")])
 
     def _replace_tokens_in_row(self, row: Any, replacements: list[tuple[str, str]]) -> int:
+        """Replace tokens in a table row's cells."""
         changed_count = 0
         for cell in row.cells:
             for paragraph in cell.paragraphs:
@@ -476,24 +361,8 @@ class WordTemplatePlugin:
                     changed_count += 1
         return changed_count
 
-    def _build_row_replacements(
-        self,
-        row_item: dict[str, Any],
-        school_replacements: list[tuple[str, str]],
-    ) -> list[tuple[str, str]]:
-        school_map = {find: replace for find, replace in school_replacements}
-        pairs: list[tuple[str, str]] = []
-
-        for key, value in row_item.items():
-            token = self._normalize_row_token(str(key))
-            rendered = str(value)
-            for school_token, school_value in school_map.items():
-                rendered = rendered.replace(school_token, school_value)
-            pairs.append((token, rendered))
-
-        return pairs
-
     def _remove_row(self, table: Any, row_index: int) -> None:
+        """Remove a row from a table."""
         row = table.rows[row_index]
         row_element = row._tr
         parent = row_element.getparent()
@@ -503,8 +372,9 @@ class WordTemplatePlugin:
         self,
         document: Any,
         table_updates: list[Any],
-        school_replacements: list[tuple[str, str]],
+        document_replacements: list[tuple[str, str]],
     ) -> tuple[int, int, int]:
+        """Apply table updates: find table, clone template row for each data row, optionally remove template."""
         tables_updated = 0
         rows_created = 0
         changed_blocks = 0
@@ -554,7 +424,7 @@ class WordTemplatePlugin:
                 insert_after = new_tr
 
                 created_row = table.rows[resolved_template_row_index + created_for_update + 1]
-                row_replacements = self._build_row_replacements(row_item, school_replacements)
+                row_replacements = self._build_row_replacements(row_item)
                 changed_blocks += self._replace_tokens_in_row(created_row, row_replacements)
                 created_for_update += 1
                 rows_created += 1
@@ -568,99 +438,51 @@ class WordTemplatePlugin:
 
     def generate_documents(
         self,
-        schools_json: str | dict[str, Any],
-        templates_json: str | None = None,
+        rows: str | list[Any] | dict[str, Any],
         input_docx: str | None = None,
         output_dir: str | None = None,
         filename_template: str | None = None,
-        replacements_json: str | None = None,
         append_lines: list[str] | None = None,
         table_updates: list[Any] | None = None,
-        export_pdf: bool = True,
-        active_flag_field: str = "activate",
-        active_flag_value: str = "x",
+        export_pdf: bool = False,
     ) -> dict[str, Any]:
-        """Generate school-specific DOCX/PDF files using token replacements."""
-        if isinstance(schools_json, dict):
-            payload = schools_json
-            resolved_schools_json = payload.get("schools_json")
-            resolved_templates_json = payload.get("templates_json", templates_json)
+        """Generate DOCX files from rows using exact header-to-token matching."""
+        if isinstance(rows, dict):
+            payload = rows
+            resolved_rows = payload.get("rows")
             resolved_input_docx = payload.get("input_docx", input_docx)
             resolved_output_dir = payload.get("output_dir", output_dir)
             resolved_filename_template = payload.get("filename_template", filename_template)
-            resolved_replacements_json = payload.get("replacements_json", replacements_json)
             resolved_append_lines = payload.get("append_lines", append_lines)
             resolved_table_updates = payload.get("table_updates", table_updates)
             resolved_export_pdf = payload.get("export_pdf", export_pdf)
-            resolved_active_flag_field = payload.get("active_flag_field", active_flag_field)
-            resolved_active_flag_value = payload.get("active_flag_value", active_flag_value)
         else:
-            resolved_schools_json = schools_json
-            resolved_templates_json = templates_json
+            resolved_rows = rows
             resolved_input_docx = input_docx
             resolved_output_dir = output_dir
             resolved_filename_template = filename_template
-            resolved_replacements_json = replacements_json
             resolved_append_lines = append_lines
             resolved_table_updates = table_updates
             resolved_export_pdf = export_pdf
-            resolved_active_flag_field = active_flag_field
-            resolved_active_flag_value = active_flag_value
 
-        if isinstance(resolved_schools_json, str):
-            if not resolved_schools_json.strip():
-                raise ValueError("schools_json must be a non-empty string when provided as a path")
-        elif not isinstance(resolved_schools_json, list):
-            raise ValueError("schools_json must be a JSON file path or an array")
+        if not isinstance(resolved_input_docx, str) or not resolved_input_docx.strip():
+            raise ValueError("input_docx is required")
+        if not isinstance(resolved_output_dir, str) or not resolved_output_dir.strip():
+            raise ValueError("output_dir is required")
+        if not isinstance(resolved_filename_template, str) or not resolved_filename_template.strip():
+            raise ValueError("filename_template is required")
         if not isinstance(resolved_export_pdf, bool):
             raise ValueError("export_pdf must be a boolean")
-        if not isinstance(resolved_active_flag_field, str) or not resolved_active_flag_field.strip():
-            raise ValueError("active_flag_field must be a non-empty string")
-        if not isinstance(resolved_active_flag_value, str) or not resolved_active_flag_value.strip():
-            raise ValueError("active_flag_value must be a non-empty string")
         if resolved_append_lines is not None and not isinstance(resolved_append_lines, list):
-            raise ValueError("append_lines must be an array of strings when provided")
+            raise ValueError("append_lines must be an array when provided")
         if resolved_table_updates is not None and not isinstance(resolved_table_updates, list):
             raise ValueError("table_updates must be an array when provided")
 
-        schools_data = self._ensure_array(resolved_schools_json, "schools_json")
+        rows_data = self._ensure_array(resolved_rows, "rows")
+        normalized_rows = [item for item in rows_data if isinstance(item, dict)]
 
-        normalized_active_field = resolved_active_flag_field.strip()
-        normalized_active_value = resolved_active_flag_value.strip()
-        active_flag_present = any(self._has_active_flag(item, normalized_active_field) for item in schools_data)
-
-        if active_flag_present:
-            active_schools = [
-                item
-                for item in schools_data
-                if self._is_active_school(item, normalized_active_field, normalized_active_value)
-            ]
-        else:
-            active_schools = [item for item in schools_data if isinstance(item, dict)]
-
-        if resolved_templates_json is not None:
-            template_items = self._ensure_array(resolved_templates_json, "templates_json")
-            template_jobs = self._parse_template_jobs_from_items(template_items)
-        else:
-            if not isinstance(resolved_input_docx, str) or not resolved_input_docx.strip():
-                raise ValueError("input_docx is required when templates_json is not provided")
-            if not isinstance(resolved_output_dir, str) or not resolved_output_dir.strip():
-                raise ValueError("output_dir is required when templates_json is not provided")
-            if not isinstance(resolved_filename_template, str) or not resolved_filename_template.strip():
-                raise ValueError("filename_template is required when templates_json is not provided")
-
-            template_jobs = [
-                {
-                    "INPUT_DOCX": resolved_input_docx.strip(),
-                    "OUTPUT_DIR": resolved_output_dir.strip(),
-                    "filename": resolved_filename_template.strip(),
-                }
-            ]
-
-        base_replacements: list[tuple[str, str]] = []
-        if resolved_replacements_json is not None:
-            replacement_items = self._ensure_array(resolved_replacements_json, "replacements_json")
-            base_replacements = self._parse_replacements_items(replacement_items)
+        if not normalized_rows:
+            raise ValueError("rows must contain at least one object")
 
         safe_append_lines: list[str] = []
         if isinstance(resolved_append_lines, list):
@@ -668,117 +490,61 @@ class WordTemplatePlugin:
                 if isinstance(line, str) and line.strip():
                     safe_append_lines.append(line)
 
+        input_path = self._resolve_path(resolved_input_docx, require_exists=True)
+        output_path = self._resolve_path(resolved_output_dir, require_exists=False)
+
+        if input_path.suffix.lower() != ".docx":
+            raise ValueError("input_docx must be a .docx file")
+
+        output_path.mkdir(parents=True, exist_ok=True)
+
         generated: list[dict[str, Any]] = []
 
-        for job in template_jobs:
-            job_input = self._resolve_path(job["INPUT_DOCX"], require_exists=True)
-            job_output_dir = self._resolve_path(job["OUTPUT_DIR"], require_exists=False)
-            job_filename_template = str(job["filename"])
+        for row_item in normalized_rows:
+            replacements = self._build_row_replacements(row_item)
+            filename = self._render_filename_template(resolved_filename_template, row_item)
+            output_docx_path = output_path / filename
+            output_docx_path.parent.mkdir(parents=True, exist_ok=True)
 
-            if job_input.suffix.lower() != ".docx":
-                raise ValueError("Only .docx files are supported")
+            shutil.copy2(input_path, output_docx_path)
 
-            job_output_dir.mkdir(parents=True, exist_ok=True)
+            document = self._load_document(output_docx_path)
 
-            for item in active_schools:
-                school = dict(item)
-                school_name = self._get_school_name(school)
-                location_code = self._get_location_code(school)
-                address = self._get_address(school)
-                contractor = self._get_contractor(school)
-
-                filename = self._render_filename_template(job_filename_template, school_name, location_code)
-                output_docx_path = job_output_dir / filename
-                output_docx_path.parent.mkdir(parents=True, exist_ok=True)
-
-                shutil.copy2(job_input, output_docx_path)
-
-                document = self._load_document(output_docx_path)
-                replacements = self._build_school_replacements(
-                    base_replacements=base_replacements,
-                    school_name=school_name,
-                    location_code=location_code,
-                    address=address,
-                    contractor=contractor,
+            table_count_updated = 0
+            rows_generated = 0
+            table_changed_blocks = 0
+            if isinstance(resolved_table_updates, list) and resolved_table_updates:
+                table_count_updated, rows_generated, table_changed_blocks = self._apply_table_updates(
+                    document=document,
+                    table_updates=resolved_table_updates,
+                    document_replacements=replacements,
                 )
-                table_count_updated = 0
-                rows_generated = 0
-                table_changed_blocks = 0
-                if isinstance(resolved_table_updates, list) and resolved_table_updates:
-                    table_count_updated, rows_generated, table_changed_blocks = self._apply_table_updates(
-                        document=document,
-                        table_updates=resolved_table_updates,
-                        school_replacements=replacements,
-                    )
-                changed_count = self._replace_in_document(document, replacements)
-                changed_count += table_changed_blocks
-                self._append_paragraphs(document, safe_append_lines)
-                document.save(output_docx_path)
 
-                output_pdf_path: str | None = None
-                if resolved_export_pdf:
-                    pdf_path = output_docx_path.with_suffix(".pdf")
-                    self._export_pdf(output_docx_path, pdf_path)
-                    output_pdf_path = str(pdf_path)
+            changed_count = self._replace_in_document(document, replacements)
+            changed_count += table_changed_blocks
+            self._append_paragraphs(document, safe_append_lines)
+            document.save(output_docx_path)
 
-                generated.append(
-                    {
-                        "school_name": school_name,
-                        "location_code": location_code,
-                        "output_docx": str(output_docx_path),
-                        "output_pdf": output_pdf_path,
-                        "changed_blocks": changed_count,
-                        "tables_updated": table_count_updated,
-                        "table_rows_generated": rows_generated,
-                    }
-                )
+            output_pdf_path: str | None = None
+            if resolved_export_pdf:
+                pdf_path = output_docx_path.with_suffix(".pdf")
+                self._export_pdf(output_docx_path, pdf_path)
+                output_pdf_path = str(pdf_path)
+
+            generated.append(
+                {
+                    "output_docx": str(output_docx_path),
+                    "output_pdf": output_pdf_path,
+                    "changed_blocks": changed_count,
+                    "tables_updated": table_count_updated,
+                    "table_rows_generated": rows_generated,
+                }
+            )
 
         return {
             "status": "success",
             "action": "generate_documents",
-            "schools_total": len(schools_data),
-            "schools_active": len(active_schools),
+            "rows_total": len(rows_data),
             "generated_count": len(generated),
             "generated": generated,
         }
-
-    def _parse_replacements_items(self, data: list[Any]) -> list[tuple[str, str]]:
-        pairs: list[tuple[str, str]] = []
-        for index, item in enumerate(data):
-            if isinstance(item, dict):
-                if "find" not in item or "replace" not in item:
-                    raise ValueError(f"Invalid object at index {index}. Expected keys: 'find' and 'replace'.")
-                pairs.append((str(item["find"]), str(item["replace"])))
-                continue
-
-            if isinstance(item, list) and len(item) == 2:
-                pairs.append((str(item[0]), str(item[1])))
-                continue
-
-            raise ValueError(
-                f"Invalid replacement at index {index}. Use {{\"find\":\"...\",\"replace\":\"...\"}} or [\"old\", \"new\"]."
-            )
-
-        return pairs
-
-    def _parse_template_jobs_from_items(self, items: list[Any]) -> list[dict[str, str]]:
-        jobs: list[dict[str, str]] = []
-        for index, item in enumerate(items):
-            if not isinstance(item, dict):
-                raise ValueError(f"Invalid template config at index {index}. Expected object.")
-
-            input_docx = str(item.get("INPUT_DOCX") or item.get("input_docx") or "").strip()
-            output_dir = str(item.get("OUTPUT_DIR") or item.get("output_dir") or "").strip()
-            filename = str(item.get("filename") or item.get("FILENAME") or "").strip()
-
-            if not input_docx or not output_dir or not filename:
-                raise ValueError(
-                    f"Invalid template config at index {index}. Required keys: INPUT_DOCX, OUTPUT_DIR, filename."
-                )
-
-            jobs.append({"INPUT_DOCX": input_docx, "OUTPUT_DIR": output_dir, "filename": filename})
-
-        if not jobs:
-            raise ValueError("No template jobs found")
-
-        return jobs
