@@ -1235,6 +1235,33 @@ def slack_interactivity() -> Any:
     if payload_type == "block_actions":
         user_info = payload.get("user") if isinstance(payload.get("user"), dict) else {}
         container_info = payload.get("container") if isinstance(payload.get("container"), dict) else {}
+        trigger_id = payload.get("trigger_id")
+        # Example modal definition (customize as needed)
+        modal_form = {
+            "trigger_id": trigger_id,
+            "title": "My Modal",
+            "submit_label": "Submit",
+            "close_label": "Cancel",
+            "blocks": [
+                {
+                    "type": "input",
+                    "block_id": "input_c",
+                    "label": {"type": "plain_text", "text": "Enter something"},
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "user_input"
+                    }
+                }
+            ],
+            "callback_id": "my_modal_callback"
+        }
+        try:
+            from plugins.integrations.slack_plugin import SlackPlugin
+            slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
+            plugin = SlackPlugin(bot_token=slack_bot_token)
+            plugin.open_modal_form(modal_form)
+        except Exception:
+            app.logger.exception("Failed to open Slack modal")
         _store_slack_form_submission(
             {
                 "type": "block_actions",
