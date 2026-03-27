@@ -1235,33 +1235,6 @@ def slack_interactivity() -> Any:
     if payload_type == "block_actions":
         user_info = payload.get("user") if isinstance(payload.get("user"), dict) else {}
         container_info = payload.get("container") if isinstance(payload.get("container"), dict) else {}
-        trigger_id = payload.get("trigger_id")
-        # Example modal definition (customize as needed)
-        modal_form = {
-            "trigger_id": trigger_id,
-            "title": "My Modal",
-            "submit_label": "Submit",
-            "close_label": "Cancel",
-            "blocks": [
-                {
-                    "type": "input",
-                    "block_id": "input_c",
-                    "label": {"type": "plain_text", "text": "Enter something"},
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "user_input"
-                    }
-                }
-            ],
-            "callback_id": "my_modal_callback"
-        }
-        try:
-            from plugins.integrations.slack_plugin import SlackPlugin
-            slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
-            plugin = SlackPlugin(bot_token=slack_bot_token)
-            plugin.open_modal_form(modal_form)
-        except Exception:
-            app.logger.exception("Failed to open Slack modal")
         _store_slack_form_submission(
             {
                 "type": "block_actions",
@@ -1272,6 +1245,53 @@ def slack_interactivity() -> Any:
                 "actions": payload.get("actions", []),
             }
         )
+        # If a button action includes a value starting with "open_modal:",
+        # use the provided trigger_id to open a modal via SlackPlugin.views.open.
+        trigger_id = payload.get("trigger_id")
+        actions = payload.get("actions") if isinstance(payload.get("actions"), list) else []
+
+        def _open_modal_async(trigger: str, modal_key: str, private_metadata: str | None = None) -> None:
+            try:
+                from plugins.integrations.slack_plugin import SlackPlugin
+
+                # Build a simple modal template. In real usage map modal_key to
+                # a richer view definition or load from a template store.
+                title = modal_key if isinstance(modal_key, str) else "Modal"
+                modal_view = {
+                    "trigger_id": trigger,
+                    "title": title[:24],
+                    "blocks": [
+                        {"type": "section", "text": {"type": "mrkdwn", "text": f"Opened modal: {title}"}},
+                    ],
+                    "callback_id": f"modal:{modal_key}",
+                }
+
+                # Instantiate SlackPlugin via executor and call open_modal_form
+                executor.instantiate(
+                    "plugins.integrations.slack_plugin",
+                    "SlackPlugin",
+                    {"bot_token": os.getenv("SLACK_BOT_TOKEN"), "default_channel": "#general"},
+                )
+                # call_method expects (module, class, method, args)
+                executor.call_method(
+                    "plugins.integrations.slack_plugin",
+                    "open_modal_form",
+                    [modal_view],
+                )
+            except Exception:
+                app.logger.exception("Failed to open Slack modal from button action")
+
+        # Find first action that requests opening a modal. Convention: action.value == "open_modal:<key>"
+        for act in actions:
+            if not isinstance(act, dict):
+                continue
+            value = act.get("value")
+            if isinstance(value, str) and value.startswith("open_modal:"):
+                modal_key = value.split(":", 1)[1]
+                if isinstance(trigger_id, str) and trigger_id.strip():
+                    threading.Thread(target=_open_modal_async, args=(trigger_id.strip(), modal_key), daemon=True).start()
+                    break
+
         return jsonify({"status": "success"})
 
     return jsonify({"status": "ignored", "payload_type": payload_type})
