@@ -44,10 +44,58 @@ from executor.engine import JSONExecutor
 from executor.permissions import validate_request
 
 
+
+
 app = Flask(__name__)
 env_path = Path(".") / ".env"
 load_dotenv(dotenv_path=env_path)
 signing_secret = os.getenv("SIGNING_SECRET")
+print(f"[DEBUG] SIGNING_SECRET loaded: {repr(signing_secret)}")
+
+# --- DEBUG WRAPPER FOR /slack/events ---
+from flask import Response
+@app.before_request
+def log_slack_events():
+    if request.path == "/slack/events":
+        print("[DEBUG] /slack/events called")
+        print(f"[DEBUG] Headers: {dict(request.headers)}")
+        print(f"[DEBUG] Body: {request.get_data(as_text=True)}")
+        if not request.data or not request.get_data(as_text=True).strip():
+            print("[DEBUG] Empty request body received at /slack/events!")
+            return Response("Missing or empty request body", status=400)
+        # Optionally handle Slack url_verification
+        content_type = request.headers.get("Content-Type", "")
+        if "application/x-www-form-urlencoded" in content_type:
+            from urllib.parse import parse_qs, unquote_plus
+            form = parse_qs(request.get_data(as_text=True))
+            payload_raw = form.get("payload", [None])[0]
+            if not payload_raw:
+                print("[DEBUG] No 'payload' field in form data!")
+                return Response("Missing payload field", status=400)
+            payload_json = unquote_plus(payload_raw)
+            try:
+                parsed_payload = json.loads(payload_json)
+                pretty_payload = json.dumps(parsed_payload, indent=2, ensure_ascii=False)
+                print(f"[DEBUG] Decoded payload (pretty):\n{pretty_payload}")
+            except Exception as e:
+                print(f"[DEBUG] Exception parsing payload JSON for pretty print: {e}")
+                print(f"[DEBUG] Raw payload: {payload_json}")
+                return Response("Invalid payload JSON", status=400)
+            # Always return 200 OK for interactive payloads so Slack doesn't retry
+            return Response("OK", status=200)
+        else:
+            try:
+                body = json.loads(request.get_data(as_text=True))
+                pretty_body = json.dumps(body, indent=2, ensure_ascii=False)
+                print(f"[DEBUG] Decoded JSON body (pretty):\n{pretty_body}")
+            except Exception as e:
+                print(f"[DEBUG] Exception parsing JSON: {e}")
+                return Response("Invalid JSON", status=400)
+
+        # Optionally handle Slack url_verification
+        if isinstance(body, dict) and body.get("type") == "url_verification":
+            print("[DEBUG] Handling Slack url_verification event")
+            return jsonify({"challenge": body.get("challenge", "")})
 
 slack_event_adapter: SlackEventAdapter | None = None
 if signing_secret:
@@ -1182,24 +1230,37 @@ def _error_response(message: str, status_code: int = 400):
 @app.post("/slack/interactivity")
 def slack_interactivity() -> Any:
     """Handle Slack interactive payloads such as modal form submissions."""
+
+    print("[DEBUG] /slack/interactivity called")
+    print(f"[DEBUG] Headers: {dict(request.headers)}")
     if not signing_secret:
+        print("[DEBUG] SIGNING_SECRET is not configured!")
         return _error_response("SIGNING_SECRET is not configured", status_code=503)
+    # Verify signature BEFORE reading body or form
     if not _verify_slack_signed_request(request, signing_secret):
+        print("[DEBUG] Invalid Slack signature!")
         return _error_response("Invalid Slack signature", status_code=401)
 
+    # Now it's safe to read the body/form
+    print(f"[DEBUG] Form: {request.form}")
+    print(f"[DEBUG] Body: {request.get_data(as_text=True)}")
     raw_payload = request.form.get("payload", "")
     if not isinstance(raw_payload, str) or not raw_payload.strip():
+        print("[DEBUG] Missing Slack payload!")
         return _error_response("Missing Slack payload")
 
     try:
         payload = json.loads(raw_payload)
     except json.JSONDecodeError:
+        print("[DEBUG] Slack payload is not valid JSON!")
         return _error_response("Slack payload must be valid JSON")
 
     if not isinstance(payload, dict):
+        print("[DEBUG] Slack payload is not an object!")
         return _error_response("Slack payload must be an object")
 
     payload_type = payload.get("type")
+
     if payload_type == "view_submission":
         view = payload.get("view") if isinstance(payload.get("view"), dict) else {}
         state = view.get("state") if isinstance(view.get("state"), dict) else {}
@@ -1207,7 +1268,6 @@ def slack_interactivity() -> Any:
 
         try:
             from plugins.integrations.slack_plugin import SlackPlugin
-
             submitted_values = SlackPlugin.extract_view_submission_values(state_values)
         except Exception:
             app.logger.exception("Failed to extract Slack form submission values")
@@ -1216,6 +1276,7 @@ def slack_interactivity() -> Any:
         user_info = payload.get("user") if isinstance(payload.get("user"), dict) else {}
         team_info = payload.get("team") if isinstance(payload.get("team"), dict) else {}
         container_info = payload.get("container") if isinstance(payload.get("container"), dict) else {}
+        channel_id = container_info.get("channel_id")
         submission_record = {
             "type": "view_submission",
             "team_id": team_info.get("id"),
@@ -1225,26 +1286,155 @@ def slack_interactivity() -> Any:
             "callback_id": view.get("callback_id"),
             "private_metadata": view.get("private_metadata"),
             "app_id": payload.get("api_app_id"),
-            "channel_id": container_info.get("channel_id"),
+            "channel_id": channel_id,
             "values": submitted_values,
             "raw_state_values": state_values,
         }
         _store_slack_form_submission(submission_record)
+
+        # Format the form submission as a message string
+        form_message = "Form submission:\n" + "\n".join(f"{k}: {v}" for k, v in submitted_values.items())
+
+        # Send to OpenAI plugin and post response to Slack
+        try:
+            from executor.engine import JSONExecutor
+            from executor.permissions import validate_request
+            executor = JSONExecutor()
+            validate_request(
+                "plugins.integrations.openai_plugin",
+                "OpenAIFunctionCallingPlugin",
+                "generate_with_function_calls_and_history",
+            )
+            executor.instantiate(
+                "plugins.integrations.openai_plugin",
+                "OpenAIFunctionCallingPlugin",
+                {},
+            )
+            print(f"[DEBUG] Sending to OpenAI plugin: user={user_info.get('id')}, message=\n{form_message}")
+            ai_result = executor.call_method(
+                "plugins.integrations.openai_plugin",
+                "generate_with_function_calls_and_history",
+                [
+                    f"slack:form:{user_info.get('id')}",
+                    form_message,
+                    os.getenv("SLACK_OPENAI_MODEL", "gpt-4.1-mini"),
+                    5,
+                    [],
+                ]
+            )
+            print(f"[DEBUG] OpenAI plugin response: {ai_result}")
+            reply_text = ai_result.get("text", "") if isinstance(ai_result, dict) else str(ai_result)
+            print(f"[DEBUG] Reply text to post to Slack: {reply_text}")
+            # Post reply to Slack if channel_id is available
+            slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
+            if channel_id and slack_bot_token:
+                validate_request(
+                    "plugins.integrations.slack_plugin",
+                    "SlackPlugin",
+                    "post_message",
+                )
+                executor.instantiate(
+                    "plugins.integrations.slack_plugin",
+                    "SlackPlugin",
+                    {"bot_token": slack_bot_token.strip(), "default_channel": "#general"},
+                )
+                executor.call_method(
+                    "plugins.integrations.slack_plugin",
+                    "post_message",
+                    [channel_id, reply_text],
+                )
+        except Exception:
+            app.logger.exception("Failed to process form submission with OpenAI or post reply to Slack")
+
         return jsonify({"response_action": "clear"})
 
     if payload_type == "block_actions":
         user_info = payload.get("user") if isinstance(payload.get("user"), dict) else {}
         container_info = payload.get("container") if isinstance(payload.get("container"), dict) else {}
+        channel_id = container_info.get("channel_id")
+        actions = payload.get("actions", [])
         _store_slack_form_submission(
             {
                 "type": "block_actions",
                 "user_id": user_info.get("id"),
                 "user_username": user_info.get("username"),
-                "channel_id": container_info.get("channel_id"),
+                "channel_id": channel_id,
                 "message_ts": container_info.get("message_ts"),
-                "actions": payload.get("actions", []),
+                "actions": actions,
             }
         )
+
+        # Extract form field values from state if present
+        state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+        state_values = state.get("values") if isinstance(state.get("values"), dict) else {}
+        try:
+            from plugins.integrations.slack_plugin import SlackPlugin
+            submitted_values = SlackPlugin.extract_view_submission_values(state_values)
+        except Exception:
+            app.logger.exception("Failed to extract Slack form submission values (block_actions)")
+            submitted_values = {}
+
+        # Format the block action and form values as a message string
+        action_message = "Block action submission:\n" + "\n".join(
+            f"{a.get('block_id', '')} {a.get('action_id', '')}: {a.get('value', '')}" for a in actions
+        )
+        if submitted_values:
+            form_message = "Form values:\n" + "\n".join(f"{k}: {v}" for k, v in submitted_values.items())
+            full_message = f"{action_message}\n{form_message}"
+        else:
+            full_message = action_message
+
+        # Send to OpenAI plugin and post response to Slack
+        try:
+            from executor.engine import JSONExecutor
+            from executor.permissions import validate_request
+            executor = JSONExecutor()
+            validate_request(
+                "plugins.integrations.openai_plugin",
+                "OpenAIFunctionCallingPlugin",
+                "generate_with_function_calls_and_history",
+            )
+            executor.instantiate(
+                "plugins.integrations.openai_plugin",
+                "OpenAIFunctionCallingPlugin",
+                {},
+            )
+            print(f"[DEBUG] Sending to OpenAI plugin: user={user_info.get('id')}, message=\n{full_message}")
+            ai_result = executor.call_method(
+                "plugins.integrations.openai_plugin",
+                "generate_with_function_calls_and_history",
+                [
+                    f"slack:form:{user_info.get('id')}",
+                    full_message,
+                    os.getenv("SLACK_OPENAI_MODEL", "gpt-4.1-mini"),
+                    5,
+                    [],
+                ]
+            )
+            print(f"[DEBUG] OpenAI plugin response: {ai_result}")
+            reply_text = ai_result.get("text", "") if isinstance(ai_result, dict) else str(ai_result)
+            print(f"[DEBUG] Reply text to post to Slack: {reply_text}")
+            # Post reply to Slack if channel_id is available
+            slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
+            if channel_id and slack_bot_token:
+                validate_request(
+                    "plugins.integrations.slack_plugin",
+                    "SlackPlugin",
+                    "post_message",
+                )
+                executor.instantiate(
+                    "plugins.integrations.slack_plugin",
+                    "SlackPlugin",
+                    {"bot_token": slack_bot_token.strip(), "default_channel": "#general"},
+                )
+                executor.call_method(
+                    "plugins.integrations.slack_plugin",
+                    "post_message",
+                    [channel_id, reply_text],
+                )
+        except Exception:
+            app.logger.exception("Failed to process block action with OpenAI or post reply to Slack")
+
         return jsonify({"status": "success"})
 
     return jsonify({"status": "ignored", "payload_type": payload_type})
