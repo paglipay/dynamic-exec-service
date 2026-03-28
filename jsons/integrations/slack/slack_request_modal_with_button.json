@@ -1,0 +1,28 @@
+{
+  "module": "plugins.integrations.slack_plugin",
+  "class": "SlackPlugin",
+  "method": "request_modal_with_button",
+  "constructor_args": {},
+  "args": [
+    {
+      "channel": "#general",
+      "button_text": "Open Modal",
+      "message_text": "Click the button below to open a modal dialog.",
+      "callback_id": "open_modal_button",
+      "modal_view": {
+        "type": "modal",
+        "title": {"type": "plain_text", "text": "Dynamic Modal"},
+        "close": {"type": "plain_text", "text": "Close"},
+        "submit": {"type": "plain_text", "text": "Submit"},
+        "blocks": [
+          {
+            "type": "input",
+            "block_id": "input_c",
+            "label": {"type": "plain_text", "text": "Your feedback?"},
+            "element": {"type": "plain_text_input", "action_id": "user_input"}
+          }
+        ]
+      }
+    }
+  ]
+}

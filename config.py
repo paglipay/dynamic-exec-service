@@ -159,7 +159,9 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
         "methods": [
             "post_message",
             "post_form_message",
+            "open_modal",
             "open_modal_form",
+            "request_modal_with_button",
             "upload_text_file",
             "upload_local_file",
         ],
