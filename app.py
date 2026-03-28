@@ -1255,9 +1255,7 @@ def slack_interactivity() -> Any:
         user_info = payload.get("user") if isinstance(payload.get("user"), dict) else {}
         team_info = payload.get("team") if isinstance(payload.get("team"), dict) else {}
         container_info = payload.get("container") if isinstance(payload.get("container"), dict) else {}
-        # Try to get the original channel from the root message if available (for modals)
         channel_id = container_info.get("channel_id")
-        # For modals, if channel_id is missing, try to get it from the root message in the payload
         if not channel_id:
             root = payload.get("root")
             if isinstance(root, dict):
@@ -1279,95 +1277,92 @@ def slack_interactivity() -> Any:
         }
         _store_slack_form_submission(submission_record)
 
-        # Format the form submission as a message string
-        form_message = "Form submission:\n" + "\n".join(f"{k}: {v}" for k, v in submitted_values.items())
-
-        # Send to OpenAI plugin and post response to Slack
-        try:
-            from executor.engine import JSONExecutor
-            from executor.permissions import validate_request
-            executor = JSONExecutor()
-            validate_request(
-                "plugins.integrations.openai_plugin",
-                "OpenAIFunctionCallingPlugin",
-                "generate_with_function_calls_and_history",
-            )
-            executor.instantiate(
-                "plugins.integrations.openai_plugin",
-                "OpenAIFunctionCallingPlugin",
-                {},
-            )
-            # Pass trigger_id as part of the message payload to OpenAI plugin
-            openai_payload = {
-                "user_id": user_info.get("id"),
-                "form_message": form_message,
-                "trigger_id": trigger_id,
-                "channel_id": channel_id,
-                "values": submitted_values,
-            }
-            debug_payload = json.dumps(openai_payload, indent=2, ensure_ascii=False)
-            print(f"[DEBUG] Payload sent to OpenAI plugin (forms):\n{debug_payload}")
-            ai_result = executor.call_method(
-                "plugins.integrations.openai_plugin",
-                "generate_with_function_calls_and_history",
-                [
-                    f"slack:form:{user_info.get('id')}",
-                    json.dumps(openai_payload),
-                    os.getenv("SLACK_OPENAI_MODEL", "gpt-4.1-mini"),
-                    5,
-                    [],
-                ]
-            )
-            print(f"[DEBUG] OpenAI plugin response: {ai_result}")
-            reply_text = ai_result.get("text", "") if isinstance(ai_result, dict) else str(ai_result)
-            print(f"[DEBUG] Reply text to post to Slack: {reply_text}")
-            # Post reply to Slack, fallback if channel_id is missing
-            slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
-            post_channel = channel_id
-            if not post_channel:
-                # Fallback: try to DM the user if user_id is available
-                user_id = user_info.get("id")
-                if user_id and slack_bot_token:
-                    try:
-                        import requests
-                        resp = requests.post(
-                            "https://slack.com/api/conversations.open",
-                            headers={
-                                "Authorization": f"Bearer {slack_bot_token.strip()}",
-                                "Content-Type": "application/json",
-                            },
-                            json={"users": user_id},
-                            timeout=5,
-                        )
-                        resp_json = resp.json()
-                        print(f"[DEBUG] conversations.open response: {resp_json}")
-                        if resp_json.get("ok") and resp_json.get("channel", {}).get("id"):
-                            post_channel = resp_json["channel"]["id"]
-                    except Exception as e:
-                        print(f"[DEBUG] Failed to open DM channel: {e}")
-            if not post_channel:
-                post_channel = "#general"
-            print(f"[DEBUG] Posting reply to channel: {post_channel}")
-            if slack_bot_token:
+        # Immediately respond to Slack to avoid timeout
+        from threading import Thread
+        def process_form_submission_async(user_info, channel_id, submitted_values, trigger_id, view, payload):
+            try:
+                from executor.engine import JSONExecutor
+                from executor.permissions import validate_request
+                executor = JSONExecutor()
                 validate_request(
-                    "plugins.integrations.slack_plugin",
-                    "SlackPlugin",
-                    "post_message",
+                    "plugins.integrations.openai_plugin",
+                    "OpenAIFunctionCallingPlugin",
+                    "generate_with_function_calls_and_history",
                 )
                 executor.instantiate(
-                    "plugins.integrations.slack_plugin",
-                    "SlackPlugin",
-                    {"bot_token": slack_bot_token.strip(), "default_channel": "#general"},
+                    "plugins.integrations.openai_plugin",
+                    "OpenAIFunctionCallingPlugin",
+                    {},
                 )
-                executor.call_method(
-                    "plugins.integrations.slack_plugin",
-                    "post_message",
-                    [post_channel, reply_text],
+                form_message = "Form submission:\n" + "\n".join(f"{k}: {v}" for k, v in submitted_values.items())
+                openai_payload = {
+                    "user_id": user_info.get("id"),
+                    "form_message": form_message,
+                    "trigger_id": trigger_id,
+                    "channel_id": channel_id,
+                    "values": submitted_values,
+                }
+                debug_payload = json.dumps(openai_payload, indent=2, ensure_ascii=False)
+                print(f"[DEBUG] Payload sent to OpenAI plugin (forms):\n{debug_payload}")
+                ai_result = executor.call_method(
+                    "plugins.integrations.openai_plugin",
+                    "generate_with_function_calls_and_history",
+                    [
+                        f"slack:form:{user_info.get('id')}",
+                        json.dumps(openai_payload),
+                        os.getenv("SLACK_OPENAI_MODEL", "gpt-4.1-mini"),
+                        5,
+                        [],
+                    ]
                 )
-        except Exception:
-            app.logger.exception("Failed to process form submission with OpenAI or post reply to Slack")
+                print(f"[DEBUG] OpenAI plugin response: {ai_result}")
+                reply_text = ai_result.get("text", "") if isinstance(ai_result, dict) else str(ai_result)
+                print(f"[DEBUG] Reply text to post to Slack: {reply_text}")
+                slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
+                post_channel = channel_id
+                if not post_channel:
+                    user_id = user_info.get("id")
+                    if user_id and slack_bot_token:
+                        try:
+                            import requests
+                            resp = requests.post(
+                                "https://slack.com/api/conversations.open",
+                                headers={
+                                    "Authorization": f"Bearer {slack_bot_token.strip()}",
+                                    "Content-Type": "application/json",
+                                },
+                                json={"users": user_id},
+                                timeout=5,
+                            )
+                            resp_json = resp.json()
+                            print(f"[DEBUG] conversations.open response: {resp_json}")
+                            if resp_json.get("ok") and resp_json.get("channel", {}).get("id"):
+                                post_channel = resp_json["channel"]["id"]
+                        except Exception as e:
+                            print(f"[DEBUG] Failed to open DM channel: {e}")
+                if not post_channel:
+                    post_channel = "#general"
+                print(f"[DEBUG] Posting reply to channel: {post_channel}")
+                if slack_bot_token:
+                    validate_request(
+                        "plugins.integrations.slack_plugin",
+                        "SlackPlugin",
+                        "post_message",
+                    )
+                    executor.instantiate(
+                        "plugins.integrations.slack_plugin",
+                        "SlackPlugin",
+                        {"bot_token": slack_bot_token.strip(), "default_channel": "#general"},
+                    )
+                    executor.call_method(
+                        "plugins.integrations.slack_plugin",
+                        "post_message",
+                        [post_channel, reply_text],
+                    )
+            except Exception:
+                app.logger.exception("Failed to process form submission with OpenAI or post reply to Slack (async)")
 
-        # Always close the modal after submission
+        Thread(target=process_form_submission_async, args=(user_info, channel_id, submitted_values, trigger_id, view, payload), daemon=True).start()
         return jsonify({"response_action": "clear"})
 
     if payload_type == "block_actions":
