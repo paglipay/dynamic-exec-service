@@ -1,0 +1,53 @@
+{
+  "module": "plugins.integrations.slack_plugin",
+  "class": "SlackPlugin",
+  "method": "request_modal_with_button",
+  "constructor_args": {},
+  "args": [
+    {
+      "channel": "#general",
+      "button_text": "Open Modal",
+      "message_text": "Click the button below to open a modal dialog.",
+      "callback_id": "open_modal_button",
+      "modal_view": {
+        "type": "modal",
+        "title": {"type": "plain_text", "text": "Dropdown & Textarea"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "submit": {"type": "plain_text", "text": "Submit"},
+        "blocks": [
+          {
+            "type": "input",
+            "block_id": "dropdown_block",
+            "label": {"type": "plain_text", "text": "Choose a module"},
+            "element": {
+              "type": "static_select",
+              "action_id": "dropdown",
+              "placeholder": {"type": "plain_text", "text": "Select a module"},
+              "options": [
+                {"text": {"type": "plain_text", "text": "generated_data_plugin.py"}, "value": "generated_data_plugin.py"},
+                {"text": {"type": "plain_text", "text": "generated_math_plugin.py"}, "value": "generated_math_plugin.py"},
+                {"text": {"type": "plain_text", "text": "local_http_module.py"}, "value": "local_http_module.py"},
+                {"text": {"type": "plain_text", "text": "mongodb_plugin.py"}, "value": "mongodb_plugin.py"},
+                {"text": {"type": "plain_text", "text": "plugin_generator.py"}, "value": "plugin_generator.py"},
+                {"text": {"type": "plain_text", "text": "sample_module.py"}, "value": "sample_module.py"},
+                {"text": {"type": "plain_text", "text": "ssh_module.py"}, "value": "ssh_module.py"},
+                {"text": {"type": "plain_text", "text": "text_file_crud_plugin.py"}, "value": "text_file_crud_plugin.py"}
+              ]
+            }
+          },
+          {
+            "type": "input",
+            "block_id": "textarea_block",
+            "label": {"type": "plain_text", "text": "Details"},
+            "element": {
+              "type": "plain_text_input",
+              "action_id": "textarea",
+              "multiline": true,
+              "placeholder": {"type": "plain_text", "text": "Enter details here..."}
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
