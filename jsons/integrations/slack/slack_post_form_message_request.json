@@ -8,66 +8,53 @@
   "args": [
     {
       "channel": "#general",
-      "text": "Please complete this request form.",
+      "text": "Please complete this form.",
       "blocks": [
         {
           "type": "section",
           "text": {
             "type": "mrkdwn",
-            "text": "*Equipment Request Form*"
+            "text": "*Sample Form*"
           }
         },
         {
           "type": "input",
-          "block_id": "requester_block",
+          "block_id": "name_block",
           "label": {
             "type": "plain_text",
-            "text": "Requester Name"
+            "text": "Your Name"
           },
           "element": {
             "type": "plain_text_input",
-            "action_id": "requester_name",
+            "action_id": "user_name",
             "placeholder": {
               "type": "plain_text",
-              "text": "Enter full name"
+              "text": "Enter your name"
             }
           }
         },
         {
           "type": "input",
-          "block_id": "device_block",
+          "block_id": "choice_block",
           "label": {
             "type": "plain_text",
-            "text": "Device Type"
+            "text": "Choose an option"
           },
           "element": {
             "type": "static_select",
-            "action_id": "device_type",
+            "action_id": "user_choice",
             "placeholder": {
               "type": "plain_text",
-              "text": "Choose a device"
+              "text": "Select one"
             },
             "options": [
               {
-                "text": {
-                  "type": "plain_text",
-                  "text": "Laptop"
-                },
-                "value": "laptop"
+                "text": { "type": "plain_text", "text": "Option 1" },
+                "value": "option1"
               },
               {
-                "text": {
-                  "type": "plain_text",
-                  "text": "Monitor"
-                },
-                "value": "monitor"
-              },
-              {
-                "text": {
-                  "type": "plain_text",
-                  "text": "Docking Station"
-                },
-                "value": "dock"
+                "text": { "type": "plain_text", "text": "Option 2" },
+                "value": "option2"
               }
             ]
           }
@@ -77,13 +64,10 @@
           "elements": [
             {
               "type": "button",
-              "text": {
-                "type": "plain_text",
-                "text": "Submit"
-              },
+              "text": { "type": "plain_text", "text": "Submit" },
               "style": "primary",
-              "action_id": "submit_equipment_request",
-              "value": "equipment_request"
+              "action_id": "submit_form",
+              "value": "submit_form"
             }
           ]
         }

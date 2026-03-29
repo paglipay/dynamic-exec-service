@@ -1388,15 +1388,20 @@ def slack_interactivity() -> Any:
         redis_client = _slack_dedupe_redis_client
         modal_key = None
         # 1. Check actions for a value that looks like a modal_view key
+        print(f"[DEBUG] block_actions: actions received: {actions}")
         for action in actions:
-            if action.get("action_id") == "open_modal_button":
-                value = action.get("value")
-                if value and value.startswith("modalview:"):
-                    modal_key = value[len("modalview:"):]
+            print(f"[DEBUG] Inspecting action: {action}")
+            value = action.get("value")
+            if value and isinstance(value, str) and value.startswith("modalview:"):
+                modal_key = value[len("modalview:"):]
+                print(f"[DEBUG] Extracted modal_key: {modal_key} from action_id: {action.get('action_id')}")
         # 2. If modal_key is found, try to fetch modal_view from Redis
+        if modal_key:
+            print(f"[DEBUG] modal_key is set: {modal_key}, redis_client is {'present' if redis_client is not None else 'None'}")
         if modal_key and redis_client is not None:
             try:
                 modal_json = redis_client.get(f"slack:modal_view:{modal_key}")
+                print(f"[DEBUG] modal_json from Redis for key slack:modal_view:{modal_key}: {modal_json}")
                 if modal_json:
                     modal_view = json.loads(modal_json)
             except Exception as exc:
@@ -1444,9 +1449,6 @@ def slack_interactivity() -> Any:
                 app.logger.exception("Failed to open Slack modal: %s", exc)
                 return jsonify({"status": "error", "message": f"Failed to open modal: {exc}"}), 500
         return jsonify({"status": "error", "message": "Missing trigger_id for modal opening"}), 400
-
-        # ...existing block_actions logic (if any) can go here...
-        return jsonify({"status": "success"})
 
     return jsonify({"status": "ignored", "payload_type": payload_type})
 

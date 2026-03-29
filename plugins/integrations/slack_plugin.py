@@ -38,18 +38,25 @@ class SlackPlugin:
 
     def request_modal_with_button(self, args: dict[str, Any]) -> dict[str, Any]:
         """Post a message with a button to trigger a modal. Args: channel, button_text, message_text, callback_id, modal_view (optional)."""
+        import traceback
+        print("[SlackPlugin][DEBUG] request_modal_with_button called with args:", args)
         channel = args.get("channel", self.default_channel)
         button_text = args.get("button_text", "Open Modal")
         message_text = args.get("message_text", "Click the button to open a modal.")
         callback_id = args.get("callback_id", "open_modal_button")
         modal_view = args.get("modal_view")
+        print(f"[SlackPlugin][DEBUG] channel={channel}, button_text={button_text}, message_text={message_text}, callback_id={callback_id}")
         if not isinstance(channel, str) or not channel.strip():
+            print("[SlackPlugin][ERROR] channel must be a non-empty string")
             raise ValueError("channel must be a non-empty string")
         if not isinstance(button_text, str) or not button_text.strip():
+            print("[SlackPlugin][ERROR] button_text must be a non-empty string")
             raise ValueError("button_text must be a non-empty string")
         if not isinstance(message_text, str) or not message_text.strip():
+            print("[SlackPlugin][ERROR] message_text must be a non-empty string")
             raise ValueError("message_text must be a non-empty string")
         if not isinstance(callback_id, str) or not callback_id.strip():
+            print("[SlackPlugin][ERROR] callback_id must be a non-empty string")
             raise ValueError("callback_id must be a non-empty string")
         # If modal_view is provided, store it in Redis and set button value to modalview:<key>
         button_value = "open_modal"
@@ -64,7 +71,8 @@ class SlackPlugin:
             if redis_mod and redis_url:
                 try:
                     redis_client = redis_mod.from_url(redis_url, decode_responses=True)
-                except Exception:
+                except Exception as exc:
+                    print(f"[SlackPlugin][ERROR] Failed to connect to Redis: {exc}")
                     redis_client = None
             import uuid
             modal_id = str(uuid.uuid4())
@@ -74,7 +82,7 @@ class SlackPlugin:
                     button_value = f"modalview:{modal_id}"
                     redis_key = modal_id
                 except Exception as exc:
-                    print(f"[SlackPlugin] Failed to store modal_view in Redis: {exc}")
+                    print(f"[SlackPlugin][ERROR] Failed to store modal_view in Redis: {exc}")
         button_element = {
             "type": "button",
             "text": {"type": "plain_text", "text": button_text},
@@ -98,10 +106,21 @@ class SlackPlugin:
             "text": message_text,
             "blocks": blocks,
         }
-        # Debug: print outgoing payload for troubleshooting
-        print("[SlackPlugin] Sending chat.postMessage payload:")
+        print("[SlackPlugin][DEBUG] Sending chat.postMessage payload:")
         print(json.dumps(payload, indent=2))
-        response = self._post_json(self.api_url, payload)
+        try:
+            response = self._post_json(self.api_url, payload)
+        except Exception as exc:
+            print("[SlackPlugin][ERROR] Exception in _post_json:", exc)
+            traceback.print_exc()
+            return {
+                "status": "error",
+                "action": "request_modal_with_button",
+                "error": str(exc),
+                "traceback": traceback.format_exc(),
+                "message": "Failed to post message with modal trigger button",
+            }
+        print("[SlackPlugin][DEBUG] chat.postMessage response:", response)
         return {
             "status": "success",
             "action": "request_modal_with_button",
@@ -293,6 +312,10 @@ class SlackPlugin:
         return parsed
 
     def _post_json(self, api_url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        import traceback
+        print(f"[SlackPlugin][DEBUG] _post_json called: api_url={api_url}")
+        print(f"[SlackPlugin][DEBUG] bot_token={self.bot_token[:8]}... (length={len(self.bot_token)})")
+        print(f"[SlackPlugin][DEBUG] payload: {json.dumps(payload, indent=2)}")
         data = json.dumps(payload).encode("utf-8")
         req = request.Request(
             api_url,
@@ -303,16 +326,19 @@ class SlackPlugin:
             },
             method="POST",
         )
-
         try:
             with request.urlopen(req, timeout=20) as response:
                 body = response.read().decode("utf-8")
         except error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
+            print(f"[SlackPlugin][ERROR] HTTPError: {exc.code} {body}")
+            traceback.print_exc()
             raise ValueError(f"Slack HTTP error {exc.code}: {body}") from exc
         except error.URLError as exc:
+            print(f"[SlackPlugin][ERROR] URLError: {exc.reason}")
+            traceback.print_exc()
             raise ValueError(f"Failed to reach Slack API: {exc.reason}") from exc
-
+        print(f"[SlackPlugin][DEBUG] _post_json response body: {body}")
         return self._parse_slack_response(body)
 
     def _post_form(self, api_url: str, payload: dict[str, Any]) -> dict[str, Any]:
