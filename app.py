@@ -18,7 +18,7 @@ from urllib import error as urlerror, request as urlrequest
 from urllib.parse import urljoin
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from slackeventsapi import SlackEventAdapter
 try:
     import redis  # type: ignore[import-not-found]
@@ -115,6 +115,29 @@ SLACK_INTERACTIVITY_TTL_SECONDS = 86400
 SLACK_MAX_STORED_FORM_SUBMISSIONS = 200
 _slack_form_submissions: list[dict[str, Any]] = []
 _slack_form_submissions_lock = threading.Lock()
+
+# --- File Storage Configuration ---
+# Set FILE_UPLOAD_API_KEY in .env to require authentication for upload/download/list/delete.
+# Set MEDIA_STORAGE_DIR to override the local directory where uploads are saved.
+# Set FILE_MAX_UPLOAD_MB to change the per-request size cap (default 500 MB).
+MEDIA_STORAGE_DIR = os.getenv("MEDIA_STORAGE_DIR", "media_storage")
+FILE_UPLOAD_API_KEY = os.getenv("FILE_UPLOAD_API_KEY", "").strip()
+try:
+    FILE_MAX_UPLOAD_MB = max(1, int(os.getenv("FILE_MAX_UPLOAD_MB", "500")))
+except ValueError:
+    FILE_MAX_UPLOAD_MB = 500
+FILE_MAX_UPLOAD_BYTES = FILE_MAX_UPLOAD_MB * 1024 * 1024
+ALLOWED_FILE_EXTENSIONS: frozenset[str] = frozenset({
+    # Images
+    "jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff",
+    # Videos
+    "mp4", "mov", "avi", "mkv", "webm", "m4v", "wmv", "flv",
+    # Documents / data
+    "pdf", "docx", "xlsx", "csv", "txt",
+})
+_MEDIA_STORAGE_PATH = Path(MEDIA_STORAGE_DIR).resolve()
+_MEDIA_STORAGE_PATH.mkdir(parents=True, exist_ok=True)
+app.config.setdefault("MAX_CONTENT_LENGTH", FILE_MAX_UPLOAD_BYTES)
 
 
 def _build_redis_client() -> Any | None:
@@ -1628,6 +1651,231 @@ def workflow() -> Any:
     except Exception:
         app.logger.exception("Unhandled workflow execution error")
         return _error_response("Internal server error", status_code=500)
+
+
+# ---------------------------------------------------------------------------
+# File Storage — helpers
+# ---------------------------------------------------------------------------
+
+def _check_file_api_key() -> bool:
+    """Return True when no key is configured, or when the request supplies it."""
+    if not FILE_UPLOAD_API_KEY:
+        return True
+    provided = (
+        request.headers.get("X-API-Key", "")
+        or request.args.get("api_key", "")
+    ).strip()
+    if not provided:
+        return False
+    return hmac.compare_digest(FILE_UPLOAD_API_KEY, provided)
+
+
+def _sanitize_storage_filename(name: str) -> str:
+    """Return a filesystem-safe filename, preserving the original extension."""
+    stem = Path(name).stem or "file"
+    suffix = Path(name).suffix.lower()
+    safe_stem = re.sub(r"[^A-Za-z0-9._-]", "_", stem).strip("._") or "file"
+    return f"{safe_stem}{suffix}"
+
+
+def _resolve_storage_path(folder: str, filename: str) -> Path:
+    """Resolve a path confined within _MEDIA_STORAGE_PATH."""
+    if folder:
+        if not re.fullmatch(r"[A-Za-z0-9_\-/]+", folder):
+            raise ValueError(
+                "folder may only contain letters, numbers, hyphens, "
+                "underscores, and forward slashes"
+            )
+        folder_path = (_MEDIA_STORAGE_PATH / folder).resolve()
+        try:
+            folder_path.relative_to(_MEDIA_STORAGE_PATH)
+        except ValueError as exc:
+            raise ValueError("Invalid folder path") from exc
+    else:
+        folder_path = _MEDIA_STORAGE_PATH
+
+    dest = (folder_path / filename).resolve()
+    try:
+        dest.relative_to(_MEDIA_STORAGE_PATH)
+    except ValueError as exc:
+        raise ValueError("Invalid file path") from exc
+    return dest
+
+
+# ---------------------------------------------------------------------------
+# File Storage — routes
+# ---------------------------------------------------------------------------
+
+@app.errorhandler(413)
+def _handle_request_entity_too_large(error: Any) -> Any:
+    return _error_response(
+        f"File exceeds the maximum allowed size of {FILE_MAX_UPLOAD_MB} MB",
+        status_code=413,
+    )
+
+
+@app.post("/files/upload")
+def upload_file() -> Any:
+    """Accept a multipart/form-data file and store it in the media storage directory.
+
+    Form fields:
+      - file (required): the file to upload
+      - folder (optional): subdirectory within media_storage, e.g. "videos/2026"
+
+    Headers:
+      - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment
+    """
+    if not _check_file_api_key():
+        return _error_response("Unauthorized", status_code=401)
+
+    if "file" not in request.files:
+        return _error_response("No 'file' field in the multipart request")
+
+    f = request.files["file"]
+    if not f.filename:
+        return _error_response("No filename provided")
+
+    ext = Path(f.filename).suffix.lower().lstrip(".")
+    if ext not in ALLOWED_FILE_EXTENSIONS:
+        return _error_response(
+            f"File type '.{ext}' is not allowed. "
+            f"Allowed: {', '.join(sorted(ALLOWED_FILE_EXTENSIONS))}"
+        )
+
+    safe_name = _sanitize_storage_filename(f.filename)
+    folder = request.form.get("folder", "").strip()
+
+    try:
+        dest = _resolve_storage_path(folder, safe_name)
+    except ValueError as exc:
+        return _error_response(str(exc))
+
+    # Avoid silently overwriting an existing file
+    if dest.exists():
+        ts = int(time.time())
+        stem = Path(safe_name).stem
+        suffix = Path(safe_name).suffix
+        safe_name = f"{stem}_{ts}{suffix}"
+        try:
+            dest = _resolve_storage_path(folder, safe_name)
+        except ValueError as exc:
+            return _error_response(str(exc))
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    f.save(str(dest))
+
+    size_bytes = dest.stat().st_size
+    relative = dest.relative_to(_MEDIA_STORAGE_PATH).as_posix()
+    return jsonify({
+        "status": "success",
+        "filename": safe_name,
+        "path": relative,
+        "size_bytes": size_bytes,
+        "download_url": f"/files/download/{relative}",
+    })
+
+
+@app.get("/files/download/<path:filename>")
+def download_file(filename: str) -> Any:
+    """Stream a stored file back to the caller.
+
+    Pass ?download=true to force an attachment (browser download prompt).
+
+    Headers:
+      - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment
+    """
+    if not _check_file_api_key():
+        return _error_response("Unauthorized", status_code=401)
+
+    try:
+        target = (_MEDIA_STORAGE_PATH / filename).resolve()
+        target.relative_to(_MEDIA_STORAGE_PATH)
+    except ValueError:
+        return _error_response("Invalid file path", status_code=400)
+
+    if not target.exists() or not target.is_file():
+        return _error_response("File not found", status_code=404)
+
+    as_attachment = request.args.get("download", "false").lower() == "true"
+    return send_from_directory(str(target.parent), target.name, as_attachment=as_attachment)
+
+
+@app.get("/files/list")
+def list_files() -> Any:
+    """List files and directories inside the media storage root or a subfolder.
+
+    Query params:
+      - folder (optional): subdirectory to list, e.g. "videos/2026"
+
+    Headers:
+      - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment
+    """
+    if not _check_file_api_key():
+        return _error_response("Unauthorized", status_code=401)
+
+    folder = request.args.get("folder", "").strip()
+    if folder:
+        if not re.fullmatch(r"[A-Za-z0-9_\-/]+", folder):
+            return _error_response(
+                "folder may only contain letters, numbers, hyphens, "
+                "underscores, and forward slashes"
+            )
+        try:
+            scan_dir = (_MEDIA_STORAGE_PATH / folder).resolve()
+            scan_dir.relative_to(_MEDIA_STORAGE_PATH)
+        except ValueError:
+            return _error_response("Invalid folder path", status_code=400)
+    else:
+        scan_dir = _MEDIA_STORAGE_PATH
+
+    if not scan_dir.exists():
+        return _error_response("Folder not found", status_code=404)
+
+    entries = []
+    for item in sorted(scan_dir.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):
+        relative = item.relative_to(_MEDIA_STORAGE_PATH).as_posix()
+        entry: dict[str, Any] = {
+            "name": item.name,
+            "path": relative,
+            "type": "file" if item.is_file() else "directory",
+        }
+        if item.is_file():
+            entry["size_bytes"] = item.stat().st_size
+            entry["download_url"] = f"/files/download/{relative}"
+        entries.append(entry)
+
+    return jsonify({
+        "status": "success",
+        "folder": folder or "/",
+        "count": len(entries),
+        "files": entries,
+    })
+
+
+@app.delete("/files/delete/<path:filename>")
+def delete_file(filename: str) -> Any:
+    """Delete a stored file.
+
+    Headers:
+      - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment
+    """
+    if not _check_file_api_key():
+        return _error_response("Unauthorized", status_code=401)
+
+    try:
+        target = (_MEDIA_STORAGE_PATH / filename).resolve()
+        target.relative_to(_MEDIA_STORAGE_PATH)
+    except ValueError:
+        return _error_response("Invalid file path", status_code=400)
+
+    if not target.exists():
+        return _error_response("File not found", status_code=404)
+
+    if not target.is_file():
+        return _error_response("Path is not a file", status_code=400)
+
+    target.unlink()
+    return jsonify({"status": "success", "deleted": filename})
 
 
 if __name__ == "__main__":
