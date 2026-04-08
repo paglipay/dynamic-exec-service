@@ -1,42 +1,188 @@
 """
-Flask endpoint to add to app.py
-================================
+Flask endpoints to add to app.py
+==================================
 Paste this into your Flask app alongside the existing /files/* routes.
 
-Requirements on the Flask server:
-  pip install Pillow hachoir
+pip requirements on the Flask server (add to your server's requirements.txt):
+    Pillow
+    hachoir
+    werkzeug   (already a Flask dependency)
 
 Environment variables (same ones already used by the other /files/* routes):
-  FILE_STORAGE_DIR   — root directory where files are stored
-  FILE_UPLOAD_API_KEY — shared secret checked in X-API-Key header
+    FILE_STORAGE_DIR     — root directory where files are stored
+    FILE_UPLOAD_API_KEY  — shared secret checked in X-API-Key header
 
-The endpoint accepts the same multipart files that the Streamlit page sends via
-  POST /files/rename-zip
-and returns a JSON response with a download_url the user can click.
+New routes added:
+    POST   /files/stage/<session_id>           — stage one file (called per-file from Streamlit)
+    GET    /files/stage/<session_id>           — list staged files for a session
+    DELETE /files/stage/<session_id>           — clear all staged files for a session
+    DELETE /files/stage/<session_id>/<filename>— remove one staged file
+    POST   /files/rename-zip                   — build ZIP from staged session (returns download_url)
+
+The existing GET /files/download/<path> route already serves the completed ZIP.
 """
 
 import hashlib
 import io
 import os
+import re
+import shutil
 import tempfile
 import zipfile
 from datetime import datetime
 from pathlib import Path
 
-# ── Flask / auth imports ── adapt to wherever your route registration lives
 from flask import Blueprint, jsonify, request
+from werkzeug.utils import secure_filename
 
-# Reuse / replicate the auth decorator you already have for /files/upload etc.
-# e.g.:  from your_auth_module import require_api_key
-# If your routes are registered directly on `app`, replace `files_bp.route` with
-# `app.route` or whatever pattern you use.
-
-files_bp = Blueprint("files_rename_zip", __name__)  # adjust / remove if not needed
+# Adjust / remove this Blueprint if your routes are registered directly on `app`.
+files_bp = Blueprint("files_rename_zip", __name__)
 
 FILE_STORAGE_DIR = os.getenv("FILE_STORAGE_DIR", "./storage")
 
 # ---------------------------------------------------------------------------
-# Helpers — identical logic to deploy/heroku/pages/cam_img_rename.py
+# Auth helper — replace with your existing API key decorator/check
+# ---------------------------------------------------------------------------
+
+def _check_api_key():
+    """
+    Returns a 401 JSON response if the request is missing or has a wrong
+    X-API-Key header, or None if auth passes.
+    Adapt this to match how your existing /files/* routes authenticate.
+    """
+    expected = os.getenv("FILE_UPLOAD_API_KEY", "")
+    if expected and request.headers.get("X-API-Key") != expected:
+        return jsonify({"error": "Unauthorized"}), 401
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Input validation helpers
+# ---------------------------------------------------------------------------
+
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+
+def _valid_session_id(sid: str) -> bool:
+    return bool(_UUID_RE.match(sid))
+
+
+def _safe_stage_path(session_id: str, filename: str | None = None) -> str | None:
+    """
+    Return the absolute path for a staging dir / file, or None if the path
+    would escape the staging root (path-traversal guard).
+    """
+    stage_root = os.path.realpath(os.path.join(FILE_STORAGE_DIR, "staging"))
+    session_dir = os.path.realpath(os.path.join(stage_root, session_id))
+    if not session_dir.startswith(stage_root + os.sep) and session_dir != stage_root:
+        return None
+    if filename is None:
+        return session_dir
+    safe_name = secure_filename(filename)
+    if not safe_name:
+        return None
+    file_path = os.path.realpath(os.path.join(session_dir, safe_name))
+    if not file_path.startswith(session_dir + os.sep):
+        return None
+    return file_path
+
+
+# ---------------------------------------------------------------------------
+# Staging endpoints
+# ---------------------------------------------------------------------------
+
+@files_bp.route("/files/stage/<session_id>", methods=["POST"])
+def stage_file(session_id):
+    auth_err = _check_api_key()
+    if auth_err:
+        return auth_err
+
+    if not _valid_session_id(session_id):
+        return jsonify({"error": "Invalid session ID"}), 400
+
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"error": "No file provided"}), 400
+
+    session_dir = _safe_stage_path(session_id)
+    if session_dir is None:
+        return jsonify({"error": "Invalid session ID"}), 400
+
+    safe_name = secure_filename(f.filename)
+    if not safe_name:
+        return jsonify({"error": "Invalid filename"}), 400
+
+    os.makedirs(session_dir, exist_ok=True)
+    dest = os.path.join(session_dir, safe_name)
+    f.save(dest)
+
+    return jsonify({
+        "filename": safe_name,
+        "size_bytes": os.path.getsize(dest),
+        "staged": True,
+    })
+
+
+@files_bp.route("/files/stage/<session_id>", methods=["GET"])
+def list_staged(session_id):
+    auth_err = _check_api_key()
+    if auth_err:
+        return auth_err
+
+    if not _valid_session_id(session_id):
+        return jsonify({"error": "Invalid session ID"}), 400
+
+    session_dir = _safe_stage_path(session_id)
+    if session_dir is None or not os.path.isdir(session_dir):
+        return jsonify({"files": [], "session_id": session_id})
+
+    files = []
+    for name in sorted(os.listdir(session_dir)):
+        path = os.path.join(session_dir, name)
+        if os.path.isfile(path):
+            files.append({"name": name, "size_bytes": os.path.getsize(path)})
+
+    return jsonify({"files": files, "session_id": session_id})
+
+
+@files_bp.route("/files/stage/<session_id>", methods=["DELETE"])
+def clear_staged(session_id):
+    auth_err = _check_api_key()
+    if auth_err:
+        return auth_err
+
+    if not _valid_session_id(session_id):
+        return jsonify({"error": "Invalid session ID"}), 400
+
+    session_dir = _safe_stage_path(session_id)
+    if session_dir and os.path.isdir(session_dir):
+        shutil.rmtree(session_dir)
+
+    return jsonify({"cleared": True})
+
+
+@files_bp.route("/files/stage/<session_id>/<filename>", methods=["DELETE"])
+def remove_staged_file(session_id, filename):
+    auth_err = _check_api_key()
+    if auth_err:
+        return auth_err
+
+    if not _valid_session_id(session_id):
+        return jsonify({"error": "Invalid session ID"}), 400
+
+    file_path = _safe_stage_path(session_id, filename)
+    if file_path is None:
+        return jsonify({"error": "Invalid filename"}), 400
+
+    if os.path.isfile(file_path):
+        os.unlink(file_path)
+
+    return jsonify({"removed": True})
+
+
+# ---------------------------------------------------------------------------
+# Processing helpers (same logic as Streamlit page — runs on flask server)
 # ---------------------------------------------------------------------------
 
 VIDEO_EXTS = {".mov", ".mp4", ".avi", ".mkv", ".wmv", ".flv", ".mpeg", ".mpg"}
@@ -46,7 +192,6 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff", ".webp"}
 def _image_date_from_bytes(data: bytes):
     try:
         from PIL import Image, ExifTags
-
         with Image.open(io.BytesIO(data)) as img:
             exif_data = img._getexif()
             if not exif_data:
@@ -54,9 +199,7 @@ def _image_date_from_bytes(data: bytes):
             tag_map = {v: k for k, v in ExifTags.TAGS.items()}
             dto_tag = tag_map.get("DateTimeOriginal")
             if dto_tag and dto_tag in exif_data:
-                return datetime.strptime(
-                    exif_data[dto_tag], "%Y:%m:%d %H:%M:%S"
-                ).timestamp()
+                return datetime.strptime(exif_data[dto_tag], "%Y:%m:%d %H:%M:%S").timestamp()
     except Exception:
         pass
     return None
@@ -67,7 +210,6 @@ def _video_date_from_bytes(data: bytes, suffix: str):
     try:
         from hachoir.metadata import extractMetadata
         from hachoir.parser import createParser
-
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(data)
             tmp_path = tmp.name
@@ -98,20 +240,19 @@ def _video_date_from_bytes(data: bytes, suffix: str):
     return None
 
 
-def _taken_time(data: bytes, ext: str, upload_index: int) -> float:
+def _taken_time(data: bytes, ext: str, index: int) -> float:
     if ext in IMAGE_EXTS:
         t = _image_date_from_bytes(data)
     elif ext in VIDEO_EXTS:
         t = _video_date_from_bytes(data, ext)
     else:
         t = None
-    return t if t is not None else float(upload_index)
+    return t if t is not None else float(index)
 
 
 def _resize_image_bytes(data: bytes, max_px: int = 1920) -> bytes:
     try:
         from PIL import Image
-
         with Image.open(io.BytesIO(data)) as img:
             w, h = img.size
             if max(w, h) <= max_px:
@@ -131,11 +272,8 @@ def _resize_image_bytes(data: bytes, max_px: int = 1920) -> bytes:
         return data
 
 
-def _build_plan_and_zip(files_list, use_upload_order: bool) -> tuple[bytes, int, int]:
-    """
-    files_list: list of (filename: str, data: bytes)
-    Returns (zip_bytes, image_count, video_count)
-    """
+def _build_plan_and_zip(files_list: list[tuple[str, bytes]], use_upload_order: bool):
+    """files_list: [(filename, bytes), ...]  Returns (zip_bytes, n_images, n_videos)."""
     entries = []
     for i, (name, data) in enumerate(files_list):
         ext = Path(name).suffix.lower()
@@ -153,7 +291,7 @@ def _build_plan_and_zip(files_list, use_upload_order: bool) -> tuple[bytes, int,
     image_count = 0
     current_prefix = None
 
-    for original_name, ext, data, _ in entries:
+    for name, ext, data, _ in entries:
         if ext in VIDEO_EXTS:
             video_count += 1
             current_prefix = f"{video_count:02d}"
@@ -176,67 +314,79 @@ def _build_plan_and_zip(files_list, use_upload_order: bool) -> tuple[bytes, int,
 
 
 # ---------------------------------------------------------------------------
-# Route
+# Rename-zip endpoint
 # ---------------------------------------------------------------------------
 
-
 @files_bp.route("/files/rename-zip", methods=["POST"])
-# @require_api_key   ← uncomment / replace with your existing auth decorator
 def rename_zip():
     """
-    Accepts multipart/form-data with:
-      files       — one or more uploaded files (images + videos)
-      sort_order  — "date_taken" (default) | "upload_order"
+    Expects JSON body:
+        {"session_id": "<uuid>", "sort_order": "date_taken" | "upload_order"}
 
-    Returns JSON:
-      {
-        "filename":     "renamed_media_20260408_153000.zip",
-        "size_bytes":   123456,
-        "download_url": "/files/download/zips/renamed_media_20260408_153000.zip"
-      }
+    Reads staged files for the session, runs rename+zip, stores the ZIP under
+    FILE_STORAGE_DIR/zips/, and returns:
+        {"filename", "size_bytes", "download_url", "images_renamed", "video_markers"}
+
+    The download_url is served by the existing GET /files/download/<path> route.
     """
-    uploaded = request.files.getlist("files")
-    if not uploaded:
-        return jsonify({"error": "No files provided"}), 400
+    auth_err = _check_api_key()
+    if auth_err:
+        return auth_err
 
-    sort_order = request.form.get("sort_order", "date_taken")
+    body = request.get_json(silent=True) or {}
+    session_id = body.get("session_id", "")
+    sort_order = body.get("sort_order", "date_taken")
+
+    if not _valid_session_id(session_id):
+        return jsonify({"error": "Invalid or missing session_id"}), 400
+
+    session_dir = _safe_stage_path(session_id)
+    if session_dir is None or not os.path.isdir(session_dir):
+        return jsonify({"error": "No staged files found for this session"}), 404
+
     use_upload_order = sort_order == "upload_order"
 
-    files_list = [(f.filename, f.read()) for f in uploaded]
+    # Load all staged files in sorted order
+    files_list = []
+    for name in sorted(os.listdir(session_dir)):
+        path = os.path.join(session_dir, name)
+        if os.path.isfile(path):
+            with open(path, "rb") as fh:
+                files_list.append((name, fh.read()))
+
+    if not files_list:
+        return jsonify({"error": "No staged files found for this session"}), 404
 
     try:
         zip_bytes, n_images, n_videos = _build_plan_and_zip(files_list, use_upload_order)
     except Exception as exc:
         return jsonify({"error": f"Processing failed: {exc}"}), 500
 
-    if not zip_bytes or n_images == 0:
-        return jsonify(
-            {
-                "error": (
-                    "No renameable images found. "
-                    "Upload at least one video marker alongside your images."
-                )
-            }
-        ), 422
+    if n_images == 0:
+        return jsonify({
+            "error": (
+                "No renameable images found. "
+                "Stage at least one video marker alongside your images."
+            )
+        }), 422
 
-    # Store the ZIP under FILE_STORAGE_DIR/zips/
+    # Store ZIP under FILE_STORAGE_DIR/zips/
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    # Add a short hash to avoid collisions on concurrent requests
     short_hash = hashlib.md5(zip_bytes[:512]).hexdigest()[:6]
     zip_filename = f"renamed_media_{ts}_{short_hash}.zip"
     zip_dir = os.path.join(FILE_STORAGE_DIR, "zips")
     os.makedirs(zip_dir, exist_ok=True)
     zip_path = os.path.join(zip_dir, zip_filename)
-
     with open(zip_path, "wb") as fh:
         fh.write(zip_bytes)
 
-    return jsonify(
-        {
-            "filename": zip_filename,
-            "size_bytes": len(zip_bytes),
-            "download_url": f"/files/download/zips/{zip_filename}",
-            "images_renamed": n_images,
-            "video_markers": n_videos,
-        }
-    )
+    # Clean up staging dir now that the ZIP is built
+    shutil.rmtree(session_dir, ignore_errors=True)
+
+    return jsonify({
+        "filename": zip_filename,
+        "size_bytes": len(zip_bytes),
+        "download_url": f"/files/download/zips/{zip_filename}",
+        "images_renamed": n_images,
+        "video_markers": n_videos,
+    })

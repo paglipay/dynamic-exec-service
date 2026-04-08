@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import shutil
 import tempfile
 import threading
 import time
@@ -22,6 +23,7 @@ from urllib.parse import urljoin
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory
+from werkzeug.utils import secure_filename
 from slackeventsapi import SlackEventAdapter
 try:
     import redis  # type: ignore[import-not-found]
@@ -1885,6 +1887,147 @@ def delete_file(filename: str) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Staging — helpers and routes
+# ---------------------------------------------------------------------------
+
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+
+
+def _valid_session_id(sid: str) -> bool:
+    return bool(_UUID_RE.match(sid))
+
+
+def _safe_stage_path(session_id: str, filename: str | None = None) -> Path | None:
+    """Return the absolute Path for a staging dir or file, or None if out-of-bounds."""
+    stage_root = (_MEDIA_STORAGE_PATH / "staging").resolve()
+    session_dir = (stage_root / session_id).resolve()
+    try:
+        session_dir.relative_to(stage_root)
+    except ValueError:
+        return None
+    if filename is None:
+        return session_dir
+    safe_name = secure_filename(filename)
+    if not safe_name:
+        return None
+    file_path = (session_dir / safe_name).resolve()
+    try:
+        file_path.relative_to(session_dir)
+    except ValueError:
+        return None
+    return file_path
+
+
+@app.post("/files/stage/<session_id>")
+def stage_file(session_id: str) -> Any:
+    """Upload a single file into a temporary staging area for a session.
+
+    Form fields:
+      - file (required): the file to stage
+
+    Headers:
+      - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment
+    """
+    if not _check_file_api_key():
+        return _error_response("Unauthorized", status_code=401)
+
+    if not _valid_session_id(session_id):
+        return _error_response("Invalid session ID", status_code=400)
+
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return _error_response("No file provided")
+
+    session_dir = _safe_stage_path(session_id)
+    if session_dir is None:
+        return _error_response("Invalid session ID", status_code=400)
+
+    safe_name = secure_filename(f.filename)
+    if not safe_name:
+        return _error_response("Invalid filename")
+
+    session_dir.mkdir(parents=True, exist_ok=True)
+    dest = session_dir / safe_name
+    f.save(str(dest))
+
+    return jsonify({
+        "filename": safe_name,
+        "size_bytes": dest.stat().st_size,
+        "staged": True,
+    })
+
+
+@app.get("/files/stage/<session_id>")
+def list_staged(session_id: str) -> Any:
+    """List files currently staged for a session.
+
+    Headers:
+      - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment
+    """
+    if not _check_file_api_key():
+        return _error_response("Unauthorized", status_code=401)
+
+    if not _valid_session_id(session_id):
+        return _error_response("Invalid session ID", status_code=400)
+
+    session_dir = _safe_stage_path(session_id)
+    if session_dir is None or not session_dir.is_dir():
+        return jsonify({"files": [], "session_id": session_id})
+
+    files = [
+        {"name": p.name, "size_bytes": p.stat().st_size}
+        for p in sorted(session_dir.iterdir())
+        if p.is_file()
+    ]
+    return jsonify({"files": files, "session_id": session_id})
+
+
+@app.delete("/files/stage/<session_id>")
+def clear_staged(session_id: str) -> Any:
+    """Remove all staged files for a session.
+
+    Headers:
+      - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment
+    """
+    if not _check_file_api_key():
+        return _error_response("Unauthorized", status_code=401)
+
+    if not _valid_session_id(session_id):
+        return _error_response("Invalid session ID", status_code=400)
+
+    session_dir = _safe_stage_path(session_id)
+    if session_dir is not None and session_dir.is_dir():
+        shutil.rmtree(str(session_dir))
+
+    return jsonify({"cleared": True})
+
+
+@app.delete("/files/stage/<session_id>/<filename>")
+def remove_staged_file(session_id: str, filename: str) -> Any:
+    """Remove a single staged file.
+
+    Headers:
+      - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment
+    """
+    if not _check_file_api_key():
+        return _error_response("Unauthorized", status_code=401)
+
+    if not _valid_session_id(session_id):
+        return _error_response("Invalid session ID", status_code=400)
+
+    file_path = _safe_stage_path(session_id, filename)
+    if file_path is None:
+        return _error_response("Invalid filename", status_code=400)
+
+    if file_path.is_file():
+        file_path.unlink()
+
+    return jsonify({"removed": True})
+
+
+# ---------------------------------------------------------------------------
 # Rename-zip — helpers
 # ---------------------------------------------------------------------------
 
@@ -2052,6 +2195,53 @@ def rename_zip() -> Any:
     if not _check_file_api_key():
         return _error_response("Unauthorized", status_code=401)
 
+    # Branch: JSON body with session_id → build ZIP from staged files
+    if request.is_json:
+        body = request.get_json(silent=True) or {}
+        session_id = body.get("session_id", "")
+        sort_order = body.get("sort_order", "date_taken")
+        if not _valid_session_id(session_id):
+            return _error_response("Invalid or missing session_id", status_code=400)
+        session_dir = _safe_stage_path(session_id)
+        if session_dir is None or not session_dir.is_dir():
+            return _error_response("No staged files found for this session", status_code=404)
+        files_list = [
+            (p.name, p.read_bytes())
+            for p in sorted(session_dir.iterdir())
+            if p.is_file()
+        ]
+        if not files_list:
+            return _error_response("No staged files found for this session", status_code=404)
+        use_upload_order = sort_order == "upload_order"
+        try:
+            zip_bytes, n_images, n_videos = _build_rename_zip(files_list, use_upload_order)
+        except Exception:
+            app.logger.exception("rename_zip (staged) processing failed")
+            return _error_response("Processing failed", status_code=500)
+        if not zip_bytes or n_images == 0:
+            return _error_response(
+                "No renameable images found. "
+                "Stage at least one video marker alongside your images.",
+                status_code=422,
+            )
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        short_hash = hashlib.md5(zip_bytes[:512]).hexdigest()[:6]  # nosec — not crypto
+        zip_filename = f"renamed_media_{ts}_{short_hash}.zip"
+        zip_dir = (_MEDIA_STORAGE_PATH / "zips").resolve()
+        zip_dir.mkdir(parents=True, exist_ok=True)
+        zip_path = zip_dir / zip_filename
+        zip_path.write_bytes(zip_bytes)
+        shutil.rmtree(str(session_dir), ignore_errors=True)
+        relative = zip_path.relative_to(_MEDIA_STORAGE_PATH).as_posix()
+        return jsonify({
+            "status": "success",
+            "filename": zip_filename,
+            "size_bytes": len(zip_bytes),
+            "download_url": f"/files/download/{relative}",
+            "images_renamed": n_images,
+            "video_markers": n_videos,
+        })
+
     uploaded = request.files.getlist("files")
     if not uploaded:
         return _error_response("No files provided")
@@ -2094,4 +2284,4 @@ def rename_zip() -> Any:
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=True)
+    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
