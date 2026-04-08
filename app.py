@@ -10,8 +10,11 @@ import io
 import json
 import os
 import re
+import tempfile
 import threading
 import time
+import zipfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib import error as urlerror, request as urlrequest
@@ -138,6 +141,9 @@ ALLOWED_FILE_EXTENSIONS: frozenset[str] = frozenset({
 _MEDIA_STORAGE_PATH = Path(MEDIA_STORAGE_DIR).resolve()
 _MEDIA_STORAGE_PATH.mkdir(parents=True, exist_ok=True)
 app.config.setdefault("MAX_CONTENT_LENGTH", FILE_MAX_UPLOAD_BYTES)
+# Extension sets used by the rename-zip feature
+_VIDEO_EXTS: frozenset[str] = frozenset({".mov", ".mp4", ".avi", ".mkv", ".wmv", ".flv", ".mpeg", ".mpg"})
+_IMAGE_EXTS: frozenset[str] = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff", ".webp"})
 
 
 def _build_redis_client() -> Any | None:
@@ -1876,6 +1882,215 @@ def delete_file(filename: str) -> Any:
 
     target.unlink()
     return jsonify({"status": "success", "deleted": filename})
+
+
+# ---------------------------------------------------------------------------
+# Rename-zip — helpers
+# ---------------------------------------------------------------------------
+
+def _image_date_from_bytes(data: bytes) -> float | None:
+    """Extract DateTimeOriginal from EXIF as a UTC timestamp, or None."""
+    try:
+        from PIL import Image, ExifTags  # type: ignore[import-not-found]
+
+        with Image.open(io.BytesIO(data)) as img:
+            exif_data = img._getexif()
+            if not exif_data:
+                return None
+            tag_map = {v: k for k, v in ExifTags.TAGS.items()}
+            dto_tag = tag_map.get("DateTimeOriginal")
+            if dto_tag and dto_tag in exif_data:
+                return datetime.strptime(exif_data[dto_tag], "%Y:%m:%d %H:%M:%S").timestamp()
+    except Exception:
+        pass
+    return None
+
+
+def _video_date_from_bytes(data: bytes, suffix: str) -> float | None:
+    """Extract creation date from a video's metadata via hachoir, or None."""
+    tmp_path = None
+    try:
+        from hachoir.metadata import extractMetadata  # type: ignore[import-not-found]
+        from hachoir.parser import createParser  # type: ignore[import-not-found]
+
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+        parser = createParser(tmp_path)
+        if parser:
+            with parser:
+                metadata = extractMetadata(parser)
+            if metadata:
+                for field in ("creation_date", "date_time_original"):
+                    val = metadata.get(field)
+                    if val:
+                        if hasattr(val, "timestamp"):
+                            return val.timestamp()
+                        if isinstance(val, str):
+                            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y:%m:%d %H:%M:%S"):
+                                try:
+                                    return datetime.strptime(val, fmt).timestamp()
+                                except ValueError:
+                                    pass
+    except Exception:
+        pass
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+    return None
+
+
+def _media_taken_time(data: bytes, ext: str, upload_index: int) -> float:
+    """Return the best available sort key for a media file."""
+    t: float | None = None
+    if ext in _IMAGE_EXTS:
+        t = _image_date_from_bytes(data)
+    elif ext in _VIDEO_EXTS:
+        t = _video_date_from_bytes(data, ext)
+    return t if t is not None else float(upload_index)
+
+
+def _resize_image_bytes(data: bytes, max_px: int = 1920) -> bytes:
+    """Downsample an image to max_px on its longest side, preserving EXIF."""
+    try:
+        from PIL import Image  # type: ignore[import-not-found]
+
+        with Image.open(io.BytesIO(data)) as img:
+            w, h = img.size
+            if max(w, h) <= max_px:
+                return data
+            scale = max_px / max(w, h)
+            new_size = (int(w * scale), int(h * scale))
+            exif = img.info.get("exif", b"")
+            resized = img.resize(new_size, Image.LANCZOS)
+            buf = io.BytesIO()
+            fmt = img.format or "JPEG"
+            save_kwargs: dict[str, Any] = {"format": fmt}
+            if exif:
+                save_kwargs["exif"] = exif
+            resized.save(buf, **save_kwargs)
+            return buf.getvalue()
+    except Exception:
+        return data
+
+
+def _build_rename_zip(
+    files_list: list[tuple[str, bytes]],
+    use_upload_order: bool,
+) -> tuple[bytes, int, int]:
+    """Sort, rename, and zip the uploaded media files.
+
+    Returns (zip_bytes, image_count, video_count).
+    """
+    entries: list[tuple[str, str, bytes, float]] = []
+    for i, (name, data) in enumerate(files_list):
+        ext = Path(name).suffix.lower()
+        if ext not in _IMAGE_EXTS and ext not in _VIDEO_EXTS:
+            continue
+        if ext in _IMAGE_EXTS:
+            data = _resize_image_bytes(data)
+        sort_key = float(i) if use_upload_order else _media_taken_time(data, ext, i)
+        entries.append((name, ext, data, sort_key))
+
+    entries.sort(key=lambda x: x[3])
+
+    plan: list[tuple[str, bytes]] = []
+    video_count = 0
+    image_count = 0
+    current_prefix: str | None = None
+
+    for _original_name, ext, data, _ in entries:
+        if ext in _VIDEO_EXTS:
+            video_count += 1
+            current_prefix = f"{video_count:02d}"
+            image_count = 0
+        elif ext in _IMAGE_EXTS and current_prefix is not None:
+            image_count += 1
+            if image_count == 1:
+                new_name = f"{current_prefix}_INSTALL{ext}"
+            else:
+                letter = chr(ord("A") + image_count - 2)
+                new_name = f"{current_prefix}{letter}{ext}"
+            plan.append((new_name, data))
+
+    spool = tempfile.SpooledTemporaryFile(max_size=50 * 1024 * 1024)
+    with zipfile.ZipFile(spool, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for new_name, data in plan:
+            zf.writestr(new_name, data)
+    spool.seek(0)
+    return spool.read(), len(plan), video_count
+
+
+# ---------------------------------------------------------------------------
+# Rename-zip — route
+# ---------------------------------------------------------------------------
+
+@app.post("/files/rename-zip")
+def rename_zip() -> Any:
+    """Sort, rename, and zip uploaded images and videos grouped by video markers.
+
+    Accepts multipart/form-data:
+      files       — one or more image/video files
+      sort_order  — "date_taken" (default) | "upload_order"
+
+    Returns JSON:
+      {
+        "status":         "success",
+        "filename":       "renamed_media_20260408_153000_abc123.zip",
+        "size_bytes":     123456,
+        "download_url":   "/files/download/zips/renamed_media_...zip",
+        "images_renamed": 5,
+        "video_markers":  2
+      }
+
+    Headers:
+      - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment
+    """
+    if not _check_file_api_key():
+        return _error_response("Unauthorized", status_code=401)
+
+    uploaded = request.files.getlist("files")
+    if not uploaded:
+        return _error_response("No files provided")
+
+    sort_order = request.form.get("sort_order", "date_taken")
+    use_upload_order = sort_order == "upload_order"
+
+    files_list = [(f.filename or f"file_{i}", f.read()) for i, f in enumerate(uploaded)]
+
+    try:
+        zip_bytes, n_images, n_videos = _build_rename_zip(files_list, use_upload_order)
+    except Exception:
+        app.logger.exception("rename_zip processing failed")
+        return _error_response("Processing failed", status_code=500)
+
+    if not zip_bytes or n_images == 0:
+        return _error_response(
+            "No renameable images found. "
+            "Upload at least one video marker alongside your images.",
+            status_code=422,
+        )
+
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    short_hash = hashlib.md5(zip_bytes[:512]).hexdigest()[:6]  # nosec — not crypto
+    zip_filename = f"renamed_media_{ts}_{short_hash}.zip"
+    zip_dir = (_MEDIA_STORAGE_PATH / "zips").resolve()
+    zip_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = zip_dir / zip_filename
+    zip_path.write_bytes(zip_bytes)
+
+    relative = zip_path.relative_to(_MEDIA_STORAGE_PATH).as_posix()
+    return jsonify({
+        "status": "success",
+        "filename": zip_filename,
+        "size_bytes": len(zip_bytes),
+        "download_url": f"/files/download/{relative}",
+        "images_renamed": n_images,
+        "video_markers": n_videos,
+    })
 
 
 if __name__ == "__main__":
