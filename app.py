@@ -1599,10 +1599,35 @@ def _trigger_upload_notification(filename: str, relative_path: str, size_bytes: 
         print(f"[UploadNotify] Posting to channel: {SLACK_NETWORK_CHANNEL}", flush=True)
         try:
             from plugins.integrations.slack_plugin import SlackPlugin
+            from plugins.integrations.openai_plugin import OpenAIFunctionCallingPlugin
             slack = SlackPlugin(bot_token=bot_token)
             result = slack.post_message(SLACK_NETWORK_CHANNEL, text)
             print(f"[UploadNotify] post_message result: {result}", flush=True)
             app.logger.warning("Upload notification posted to %s for file %s", SLACK_NETWORK_CHANNEL, filename)
+
+            # Inject the upload event into the channel's conversation history so the
+            # bot is aware when a user subsequently asks "what just happened?" etc.
+            channel_id = result.get("channel", SLACK_NETWORK_CHANNEL)
+            forced_conversation_id = os.getenv("SLACK_CONVERSATION_ID", "").strip()
+            conversation_id = forced_conversation_id if forced_conversation_id else f"slack:{channel_id}"
+            try:
+                openai_plugin = OpenAIFunctionCallingPlugin()
+                history = openai_plugin._load_conversation_history(conversation_id)
+                history.append({
+                    "role": "assistant",
+                    "content": (
+                        f"[System event] A file was uploaded via the Streamlit UI and I posted a notification to this channel.\n"
+                        f"File: {filename}\n"
+                        f"Size: {size_kb:.1f} KB\n"
+                        f"Path: media_storage/{relative_path}\n"
+                        f"Uploaded at: {uploaded_at}"
+                    ),
+                })
+                openai_plugin._save_conversation_history(conversation_id, history)
+                print(f"[UploadNotify] Injected upload event into conversation {conversation_id}", flush=True)
+            except Exception as exc:
+                print(f"[UploadNotify] History injection failed (non-fatal): {exc}", flush=True)
+
         except Exception as exc:
             print(f"[UploadNotify] Slack post failed: {exc}", flush=True)
             app.logger.warning("Upload notification: Slack post failed: %s", exc)
