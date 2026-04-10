@@ -440,14 +440,14 @@ class OpenAIFunctionCallingPlugin:
             and class_name == "SlackPlugin"
             and method_name == "upload_local_file"
         ):
-            network_channel = os.getenv("SLACK_NETWORK_CHANNEL", "#network")
             return (
                 "Upload a local file to a Slack channel. "
-                "No constructor_args needed — the bot token and default channel are set automatically. "
-                "Use args: [file_path, channel_or_null, title_or_null, initial_comment_or_null]. "
-                f"If the user does not specify a channel, pass null and the upload will go to '{network_channel}'. "
+                "Use args: [file_path, channel, title_or_null, initial_comment_or_null]. "
+                "For 'channel', always use the channel ID from [slack_channel_id: ...] in the current message — "
+                "do NOT pass null; pass the explicit channel ID so the bot can upload to the right place. "
+                "Example: if the message contains '[slack_channel_id: C08SH2VRPJL]', use 'C08SH2VRPJL' as channel. "
                 "file_path must be the path relative to the app working directory, e.g. "
-                "'media_storage/photo.jpg' or 'generated_data/slack_downloads/image.png'. "
+                "'media_storage/photo.jpg' or 'generated_data/device_image_proper.md'. "
                 "Obtain the path from list_files or list_directory result entries "
                 "by prepending the root ('media_storage/' or 'generated_data/') to the relative_path field. "
                 "Do not invent paths; always look up the path from a prior tool result."
@@ -526,12 +526,6 @@ class OpenAIFunctionCallingPlugin:
             return json.dumps({"status": "error", "message": "constructor_args must be an object"})
         if not isinstance(args, list):
             return json.dumps({"status": "error", "message": "args must be an array"})
-
-        # Inject SLACK_NETWORK_CHANNEL as the default_channel for SlackPlugin
-        # so tool calls without an explicit channel use the expected channel.
-        if module_name == "plugins.integrations.slack_plugin" and "default_channel" not in constructor_args:
-            network_channel = os.getenv("SLACK_NETWORK_CHANNEL", "#network")
-            constructor_args = {**constructor_args, "default_channel": network_channel}
 
         try:
             validate_request(module_name, class_name, method_name)
@@ -748,7 +742,7 @@ class OpenAIFunctionCallingPlugin:
             isinstance(message, dict)
             and message.get("role") == "system"
             and isinstance(message.get("content"), str)
-            and "Slack image attachments are saved locally" in message.get("content", "")
+            and "media_storage/" in message.get("content", "")
             for message in messages
         ):
             messages.insert(0, {"role": "system", "content": self._build_system_prompt()})

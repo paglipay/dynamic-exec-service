@@ -248,7 +248,7 @@ class SlackPlugin:
             payload: dict[str, Any] = {
                 "exclude_archived": "true",
                 "limit": "1000",
-                "types": "public_channel,private_channel",
+                "types": "public_channel",
             }
             if cursor:
                 payload["cursor"] = cursor
@@ -569,66 +569,17 @@ class SlackPlugin:
         if isinstance(initial_comment, str) and initial_comment.strip():
             completion_payload["initial_comment"] = initial_comment.strip()
 
-        try:
-            completed = self._post_form(
-                "https://slack.com/api/files.completeUploadExternal",
-                completion_payload,
-            )
-        except ValueError as exc:
-            err_str = str(exc)
-            # Bot is not a member of the target channel — complete without sharing to a channel,
-            # then post a message containing the file so chat:write.public can deliver it.
-            if "not_in_channel" in err_str or "channel_not_found" in err_str:
-                no_channel_payload = {
-                    "files": json.dumps([{"id": file_id, "title": file_title}])
-                }
-                completed = self._post_form(
-                    "https://slack.com/api/files.completeUploadExternal",
-                    no_channel_payload,
-                )
-                files_list = completed.get("files")
-                uploaded_file = files_list[0] if isinstance(files_list, list) and files_list else {}
-                resolved_file_id = uploaded_file.get("id", file_id)
-
-                # Share to channel via chat.postMessage (works with chat:write.public)
-                comment_text = initial_comment.strip() if isinstance(initial_comment, str) and initial_comment.strip() else ""
-                share_text = comment_text or f"File shared: {file_title}"
-                share_payload: dict[str, Any] = {
-                    "channel": target_channel_id,
-                    "text": share_text,
-                    "files": [{"id": resolved_file_id}],
-                }
-                try:
-                    self._post_json(self.api_url.replace("chat.postMessage", "chat.postMessage"), share_payload)
-                except Exception:
-                    # Attempt legacy block-based share as final fallback
-                    permalink_payload: dict[str, Any] = {
-                        "channel": target_channel_id,
-                        "text": f"{share_text}\n<slack://file/{resolved_file_id}|View file>",
-                    }
-                    try:
-                        self._post_json(self.api_url, permalink_payload)
-                    except Exception:
-                        pass
-
-                return {
-                    "status": "success",
-                    "action": "upload_local_file",
-                    "channel": target_channel,
-                    "channel_id": target_channel_id,
-                    "file_id": resolved_file_id,
-                    "file_name": uploaded_file.get("name", filename.strip()),
-                    "title": uploaded_file.get("title", file_title),
-                    "message": "File uploaded to Slack and shared via message (bot was not a channel member)",
-                }
-            raise
+        completed = self._post_form(
+            "https://slack.com/api/files.completeUploadExternal",
+            completion_payload,
+        )
 
         files = completed.get("files")
         uploaded_file = files[0] if isinstance(files, list) and files else {}
 
         return {
             "status": "success",
-            "action": "upload_text_file",
+            "action": "upload_local_file",
             "channel": target_channel,
             "channel_id": target_channel_id,
             "file_id": uploaded_file.get("id", file_id),

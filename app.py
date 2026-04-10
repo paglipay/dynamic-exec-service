@@ -1131,7 +1131,7 @@ if slack_event_adapter is not None:
                 "generate_with_function_calls_and_history",
                 [
                     conversation_id,
-                    (text.strip() or "Please analyze attached files.") + file_prompt_suffix,
+                    (text.strip() or "Please analyze attached files.") + file_prompt_suffix + f"\n[slack_channel_id: {channel}]",
                     model_name,
                     max_tool_rounds,
                     image_data_urls,
