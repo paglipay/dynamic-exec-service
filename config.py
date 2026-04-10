@@ -219,4 +219,26 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "commit_streamlit_app",
         ],
     },
+    "plugins.system_tools.media_storage_plugin": {
+        "class": "MediaStoragePlugin",
+        "methods": [
+            "list_files",
+            "delete_file",
+            "list_staged",
+            "clear_staged",
+            "remove_staged_file",
+            "rename_zip_from_staged",
+        ],
+    },
+    "plugins.system_tools.file_reader_plugin": {
+        "class": "FileReaderPlugin",
+        "methods": [
+            "list_directory",
+            "read_text_file",
+            "read_pdf_text",
+            "read_docx_text",
+            "parse_csv_tsv",
+            "summarize_excel",
+        ],
+    },
 }

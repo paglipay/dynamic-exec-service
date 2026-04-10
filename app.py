@@ -15,7 +15,7 @@ import tempfile
 import threading
 import time
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib import error as urlerror, request as urlrequest
@@ -125,7 +125,9 @@ _slack_form_submissions_lock = threading.Lock()
 # Set FILE_UPLOAD_API_KEY in .env to require authentication for upload/download/list/delete.
 # Set MEDIA_STORAGE_DIR to override the local directory where uploads are saved.
 # Set FILE_MAX_UPLOAD_MB to change the per-request size cap (default 500 MB).
+# Set SLACK_NETWORK_CHANNEL to the channel name/ID where upload notifications are posted.
 MEDIA_STORAGE_DIR = os.getenv("MEDIA_STORAGE_DIR", "media_storage")
+SLACK_NETWORK_CHANNEL = os.getenv("SLACK_NETWORK_CHANNEL", "#network")
 FILE_UPLOAD_API_KEY = os.getenv("FILE_UPLOAD_API_KEY", "").strip()
 try:
     FILE_MAX_UPLOAD_MB = max(1, int(os.getenv("FILE_MAX_UPLOAD_MB", "500")))
@@ -143,9 +145,12 @@ ALLOWED_FILE_EXTENSIONS: frozenset[str] = frozenset({
 _MEDIA_STORAGE_PATH = Path(MEDIA_STORAGE_DIR).resolve()
 _MEDIA_STORAGE_PATH.mkdir(parents=True, exist_ok=True)
 app.config.setdefault("MAX_CONTENT_LENGTH", FILE_MAX_UPLOAD_BYTES)
-# Extension sets used by the rename-zip feature
-_VIDEO_EXTS: frozenset[str] = frozenset({".mov", ".mp4", ".avi", ".mkv", ".wmv", ".flv", ".mpeg", ".mpg"})
-_IMAGE_EXTS: frozenset[str] = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff", ".webp"})
+
+from plugins.system_tools.media_storage_plugin import MediaStoragePlugin  # noqa: E402
+_media_storage_plugin = MediaStoragePlugin(base_dir=MEDIA_STORAGE_DIR)
+
+from plugins.system_tools.file_reader_plugin import FileReaderPlugin  # noqa: E402
+_file_reader_plugin = FileReaderPlugin(base_dir=SLACK_IMAGE_SAVE_BASE_DIR)
 
 
 def _build_redis_client() -> Any | None:
@@ -489,144 +494,6 @@ def _save_slack_excel_copy(
     return str(target_path)
 
 
-def _extract_pdf_text(pdf_bytes: bytes, max_chars: int = SLACK_MAX_PDF_TEXT_CHARS) -> str:
-    """Extract bounded text from a PDF payload."""
-    if PdfReader is None:
-        return ""
-    if not isinstance(pdf_bytes, bytes) or not pdf_bytes:
-        return ""
-
-    try:
-        reader = PdfReader(io.BytesIO(pdf_bytes))
-    except Exception as exc:
-        app.logger.warning("Failed to parse PDF for text extraction: %s", exc)
-        return ""
-
-    chunks: list[str] = []
-    current_size = 0
-    for page in getattr(reader, "pages", []):
-        try:
-            text = page.extract_text() or ""
-        except Exception:
-            text = ""
-        if not text.strip():
-            continue
-
-        remaining = max_chars - current_size
-        if remaining <= 0:
-            break
-        trimmed = text[:remaining]
-        chunks.append(trimmed)
-        current_size += len(trimmed)
-
-    return "\n\n".join(chunks).strip()
-
-
-def _extract_docx_text(docx_bytes: bytes, max_chars: int = SLACK_MAX_DOCX_TEXT_CHARS) -> str:
-    """Extract bounded text from a DOCX payload, including table cell content."""
-    if DocxDocument is None:
-        return ""
-    if not isinstance(docx_bytes, bytes) or not docx_bytes:
-        return ""
-
-    try:
-        document = DocxDocument(io.BytesIO(docx_bytes))
-    except Exception as exc:
-        app.logger.warning("Failed to parse DOCX for text extraction: %s", exc)
-        return ""
-
-    chunks: list[str] = []
-    current_size = 0
-
-    def _add_chunk(text: str) -> bool:
-        nonlocal current_size
-        text = text.strip()
-        if not text:
-            return True
-        remaining = max_chars - current_size
-        if remaining <= 0:
-            return False
-        trimmed = text[:remaining]
-        chunks.append(trimmed)
-        current_size += len(trimmed)
-        return current_size < max_chars
-
-    for paragraph in getattr(document, "paragraphs", []):
-        try:
-            text = str(paragraph.text or "")
-        except Exception:
-            text = ""
-        if not _add_chunk(text):
-            break
-
-    for table in getattr(document, "tables", []):
-        try:
-            rows = getattr(table, "rows", [])
-        except Exception:
-            continue
-        for row in rows:
-            try:
-                cells = getattr(row, "cells", [])
-                cell_texts = []
-                for cell in cells:
-                    try:
-                        cell_texts.append(str(cell.text or "").strip())
-                    except Exception:
-                        cell_texts.append("")
-                row_text = "\t".join(cell_texts)
-            except Exception:
-                row_text = ""
-            if not _add_chunk(row_text):
-                break
-
-    return "\n".join(chunks).strip()
-
-
-def _summarize_slack_excel_file(saved_excel_path: str) -> dict[str, Any] | None:
-    """Return a compact workbook summary for a locally saved Slack Excel file."""
-    if not isinstance(saved_excel_path, str) or not saved_excel_path.strip():
-        return None
-
-    try:
-        from plugins.system_tools.excel_plugin import ExcelPlugin
-
-        plugin = ExcelPlugin(
-            base_dir=SLACK_IMAGE_SAVE_BASE_DIR,
-            allow_outside_base_dir=True,
-        )
-        sheet_result = plugin.list_sheet_names(saved_excel_path)
-        sheet_names = sheet_result.get("sheet_names", [])
-        if not isinstance(sheet_names, list):
-            sheet_names = []
-
-        summary: dict[str, Any] = {
-            "file_path": saved_excel_path,
-            "sheet_count": len(sheet_names),
-            "sheet_names": sheet_names,
-        }
-
-        if sheet_names:
-            preview_result = plugin.preview_sheet(
-                {
-                    "file_path": saved_excel_path,
-                    "sheet": sheet_names[0],
-                    "max_rows": SLACK_MAX_EXCEL_PREVIEW_ROWS,
-                }
-            )
-            summary["first_sheet_preview"] = {
-                "sheet_name": preview_result.get("sheet_name"),
-                "column_names": preview_result.get("column_names"),
-                "total_row_count": preview_result.get("total_row_count"),
-                "preview_row_count": preview_result.get("preview_row_count"),
-                "preview_rows": preview_result.get("preview_rows"),
-            }
-
-        return summary
-    except Exception as exc:
-        app.logger.warning("Failed to summarize Slack Excel file (%s): %s", saved_excel_path, exc)
-        return None
-
-
 def _collect_slack_block_text(node: Any, chunks: list[str]) -> None:
     """Recursively collect textual snippets from Slack block structures."""
     if isinstance(node, str):
@@ -908,7 +775,15 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
                     saved_pdf_paths.append(saved_pdf_path)
                     file_lines[-1] = f"{file_lines[-1]}; saved_pdf_as={saved_pdf_path}"
 
-                extracted_pdf_text = _extract_pdf_text(pdf_data)
+                extracted_pdf_text = ""
+                if isinstance(saved_pdf_path, str) and saved_pdf_path:
+                    try:
+                        pdf_read_result = _file_reader_plugin.read_pdf_text(
+                            saved_pdf_path, max_chars=SLACK_MAX_PDF_TEXT_CHARS
+                        )
+                        extracted_pdf_text = pdf_read_result.get("text", "")
+                    except Exception as exc:
+                        app.logger.warning("Failed to read PDF text via plugin (%s): %s", name, exc)
                 rendered_pages = 0
                 if extracted_pdf_text:
                     file_content_lines.append(f"PDF '{name}' extracted text:\n{extracted_pdf_text}")
@@ -964,7 +839,15 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
                     saved_docx_paths.append(saved_docx_path)
                     file_lines[-1] = f"{file_lines[-1]}; saved_docx_as={saved_docx_path}"
 
-                extracted_docx_text = _extract_docx_text(docx_data)
+                extracted_docx_text = ""
+                if isinstance(saved_docx_path, str) and saved_docx_path:
+                    try:
+                        docx_read_result = _file_reader_plugin.read_docx_text(
+                            saved_docx_path, max_chars=SLACK_MAX_DOCX_TEXT_CHARS
+                        )
+                        extracted_docx_text = docx_read_result.get("text", "")
+                    except Exception as exc:
+                        app.logger.warning("Failed to read DOCX text via plugin (%s): %s", name, exc)
                 if extracted_docx_text:
                     file_content_lines.append(f"DOCX '{name}' extracted text:\n{extracted_docx_text}")
                     app.logger.info("Attached DOCX text extracted: %s chars=%s", name, len(extracted_docx_text))
@@ -1006,7 +889,13 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
                 if isinstance(saved_excel_path, str) and saved_excel_path:
                     saved_excel_paths.append(saved_excel_path)
                     file_lines[-1] = f"{file_lines[-1]}; saved_excel_as={saved_excel_path}"
-                    excel_summary = _summarize_slack_excel_file(saved_excel_path)
+                    excel_summary = None
+                    try:
+                        excel_summary = _file_reader_plugin.summarize_excel(
+                            saved_excel_path, max_preview_rows=SLACK_MAX_EXCEL_PREVIEW_ROWS
+                        )
+                    except Exception as exc:
+                        app.logger.warning("Failed to summarize Excel via plugin (%s): %s", saved_excel_path, exc)
                     if isinstance(excel_summary, dict) and excel_summary:
                         file_content_lines.append(
                             f"Excel '{name}' workbook summary:\n{json.dumps(excel_summary, ensure_ascii=True)}"
@@ -1678,43 +1567,49 @@ def _check_file_api_key() -> bool:
     return hmac.compare_digest(FILE_UPLOAD_API_KEY, provided)
 
 
-def _sanitize_storage_filename(name: str) -> str:
-    """Return a filesystem-safe filename, preserving the original extension."""
-    stem = Path(name).stem or "file"
-    suffix = Path(name).suffix.lower()
-    safe_stem = re.sub(r"[^A-Za-z0-9._-]", "_", stem).strip("._") or "file"
-    return f"{safe_stem}{suffix}"
-
-
-def _resolve_storage_path(folder: str, filename: str) -> Path:
-    """Resolve a path confined within _MEDIA_STORAGE_PATH."""
-    if folder:
-        if not re.fullmatch(r"[A-Za-z0-9_\-/]+", folder):
-            raise ValueError(
-                "folder may only contain letters, numbers, hyphens, "
-                "underscores, and forward slashes"
-            )
-        folder_path = (_MEDIA_STORAGE_PATH / folder).resolve()
-        try:
-            folder_path.relative_to(_MEDIA_STORAGE_PATH)
-        except ValueError as exc:
-            raise ValueError("Invalid folder path") from exc
-    else:
-        folder_path = _MEDIA_STORAGE_PATH
-
-    dest = (folder_path / filename).resolve()
-    try:
-        dest.relative_to(_MEDIA_STORAGE_PATH)
-    except ValueError as exc:
-        raise ValueError("Invalid file path") from exc
-    return dest
-
-
 # ---------------------------------------------------------------------------
 # File Storage — routes
 # ---------------------------------------------------------------------------
 
 @app.errorhandler(413)
+def _trigger_upload_notification(filename: str, relative_path: str, size_bytes: int) -> None:
+    """Fire-and-forget: post a Slack upload notification directly via SlackPlugin."""
+    import threading
+    from datetime import datetime, timezone
+
+    def _notify() -> None:
+        print("[UploadNotify] Thread started", flush=True)
+        bot_token = os.getenv("SLACK_BOT_TOKEN", "").strip()
+        if not bot_token:
+            print("[UploadNotify] SLACK_BOT_TOKEN not set, skipping", flush=True)
+            app.logger.warning("Upload notification: SLACK_BOT_TOKEN not set, skipping")
+            return
+
+        uploaded_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        size_kb = size_bytes / 1024
+        text = (
+            f":file_folder: *New file uploaded via Streamlit*\n"
+            f"*File:* `{filename}`\n"
+            f"*Size:* {size_kb:.1f} KB\n"
+            f"*Path:* `media_storage/{relative_path}`\n"
+            f"*Uploaded:* {uploaded_at}\n"
+            f"*Download:* /files/download/{relative_path}"
+        )
+
+        print(f"[UploadNotify] Posting to channel: {SLACK_NETWORK_CHANNEL}", flush=True)
+        try:
+            from plugins.integrations.slack_plugin import SlackPlugin
+            slack = SlackPlugin(bot_token=bot_token)
+            result = slack.post_message(SLACK_NETWORK_CHANNEL, text)
+            print(f"[UploadNotify] post_message result: {result}", flush=True)
+            app.logger.warning("Upload notification posted to %s for file %s", SLACK_NETWORK_CHANNEL, filename)
+        except Exception as exc:
+            print(f"[UploadNotify] Slack post failed: {exc}", flush=True)
+            app.logger.warning("Upload notification: Slack post failed: %s", exc)
+
+    threading.Thread(target=_notify, daemon=True).start()
+
+
 def _handle_request_entity_too_large(error: Any) -> Any:
     return _error_response(
         f"File exceeds the maximum allowed size of {FILE_MAX_UPLOAD_MB} MB",
@@ -1750,11 +1645,11 @@ def upload_file() -> Any:
             f"Allowed: {', '.join(sorted(ALLOWED_FILE_EXTENSIONS))}"
         )
 
-    safe_name = _sanitize_storage_filename(f.filename)
+    safe_name = _media_storage_plugin._sanitize_filename(f.filename)
     folder = request.form.get("folder", "").strip()
 
     try:
-        dest = _resolve_storage_path(folder, safe_name)
+        dest = _media_storage_plugin._resolve_path(folder, safe_name)
     except ValueError as exc:
         return _error_response(str(exc))
 
@@ -1765,7 +1660,7 @@ def upload_file() -> Any:
         suffix = Path(safe_name).suffix
         safe_name = f"{stem}_{ts}{suffix}"
         try:
-            dest = _resolve_storage_path(folder, safe_name)
+            dest = _media_storage_plugin._resolve_path(folder, safe_name)
         except ValueError as exc:
             return _error_response(str(exc))
 
@@ -1773,7 +1668,10 @@ def upload_file() -> Any:
     f.save(str(dest))
 
     size_bytes = dest.stat().st_size
-    relative = dest.relative_to(_MEDIA_STORAGE_PATH).as_posix()
+    relative = dest.relative_to(_media_storage_plugin._base).as_posix()
+
+    _trigger_upload_notification(safe_name, relative, size_bytes)
+
     return jsonify({
         "status": "success",
         "filename": safe_name,
@@ -1822,42 +1720,13 @@ def list_files() -> Any:
         return _error_response("Unauthorized", status_code=401)
 
     folder = request.args.get("folder", "").strip()
-    if folder:
-        if not re.fullmatch(r"[A-Za-z0-9_\-/]+", folder):
-            return _error_response(
-                "folder may only contain letters, numbers, hyphens, "
-                "underscores, and forward slashes"
-            )
-        try:
-            scan_dir = (_MEDIA_STORAGE_PATH / folder).resolve()
-            scan_dir.relative_to(_MEDIA_STORAGE_PATH)
-        except ValueError:
-            return _error_response("Invalid folder path", status_code=400)
-    else:
-        scan_dir = _MEDIA_STORAGE_PATH
-
-    if not scan_dir.exists():
+    try:
+        result = _media_storage_plugin.list_files(folder)
+        return jsonify(result)
+    except FileNotFoundError:
         return _error_response("Folder not found", status_code=404)
-
-    entries = []
-    for item in sorted(scan_dir.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):
-        relative = item.relative_to(_MEDIA_STORAGE_PATH).as_posix()
-        entry: dict[str, Any] = {
-            "name": item.name,
-            "path": relative,
-            "type": "file" if item.is_file() else "directory",
-        }
-        if item.is_file():
-            entry["size_bytes"] = item.stat().st_size
-            entry["download_url"] = f"/files/download/{relative}"
-        entries.append(entry)
-
-    return jsonify({
-        "status": "success",
-        "folder": folder or "/",
-        "count": len(entries),
-        "files": entries,
-    })
+    except ValueError as exc:
+        return _error_response(str(exc), status_code=400)
 
 
 @app.delete("/files/delete/<path:filename>")
@@ -1871,53 +1740,17 @@ def delete_file(filename: str) -> Any:
         return _error_response("Unauthorized", status_code=401)
 
     try:
-        target = (_MEDIA_STORAGE_PATH / filename).resolve()
-        target.relative_to(_MEDIA_STORAGE_PATH)
-    except ValueError:
-        return _error_response("Invalid file path", status_code=400)
-
-    if not target.exists():
+        result = _media_storage_plugin.delete_file(filename)
+        return jsonify(result)
+    except FileNotFoundError:
         return _error_response("File not found", status_code=404)
-
-    if not target.is_file():
-        return _error_response("Path is not a file", status_code=400)
-
-    target.unlink()
-    return jsonify({"status": "success", "deleted": filename})
+    except ValueError as exc:
+        return _error_response(str(exc), status_code=400)
 
 
 # ---------------------------------------------------------------------------
-# Staging — helpers and routes
+# Staging — routes
 # ---------------------------------------------------------------------------
-
-_UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-)
-
-
-def _valid_session_id(sid: str) -> bool:
-    return bool(_UUID_RE.match(sid))
-
-
-def _safe_stage_path(session_id: str, filename: str | None = None) -> Path | None:
-    """Return the absolute Path for a staging dir or file, or None if out-of-bounds."""
-    stage_root = (_MEDIA_STORAGE_PATH / "staging").resolve()
-    session_dir = (stage_root / session_id).resolve()
-    try:
-        session_dir.relative_to(stage_root)
-    except ValueError:
-        return None
-    if filename is None:
-        return session_dir
-    safe_name = secure_filename(filename)
-    if not safe_name:
-        return None
-    file_path = (session_dir / safe_name).resolve()
-    try:
-        file_path.relative_to(session_dir)
-    except ValueError:
-        return None
-    return file_path
 
 
 @app.post("/files/stage/<session_id>")
@@ -1933,14 +1766,14 @@ def stage_file(session_id: str) -> Any:
     if not _check_file_api_key():
         return _error_response("Unauthorized", status_code=401)
 
-    if not _valid_session_id(session_id):
+    if not _media_storage_plugin._valid_session_id(session_id):
         return _error_response("Invalid session ID", status_code=400)
 
     f = request.files.get("file")
     if not f or not f.filename:
         return _error_response("No file provided")
 
-    session_dir = _safe_stage_path(session_id)
+    session_dir = _media_storage_plugin._safe_stage_path(session_id)
     if session_dir is None:
         return _error_response("Invalid session ID", status_code=400)
 
@@ -1952,15 +1785,18 @@ def stage_file(session_id: str) -> Any:
     dest = session_dir / safe_name
     f.save(str(dest))
 
+    size_bytes = dest.stat().st_size
+    _trigger_upload_notification(safe_name, f"staging/{session_id}/{safe_name}", size_bytes)
+
     return jsonify({
         "filename": safe_name,
-        "size_bytes": dest.stat().st_size,
+        "size_bytes": size_bytes,
         "staged": True,
     })
 
 
 @app.get("/files/stage/<session_id>")
-def list_staged(session_id: str) -> Any:
+def list_staged_route(session_id: str) -> Any:
     """List files currently staged for a session.
 
     Headers:
@@ -1969,23 +1805,15 @@ def list_staged(session_id: str) -> Any:
     if not _check_file_api_key():
         return _error_response("Unauthorized", status_code=401)
 
-    if not _valid_session_id(session_id):
-        return _error_response("Invalid session ID", status_code=400)
-
-    session_dir = _safe_stage_path(session_id)
-    if session_dir is None or not session_dir.is_dir():
-        return jsonify({"files": [], "session_id": session_id})
-
-    files = [
-        {"name": p.name, "size_bytes": p.stat().st_size}
-        for p in sorted(session_dir.iterdir())
-        if p.is_file()
-    ]
-    return jsonify({"files": files, "session_id": session_id})
+    try:
+        result = _media_storage_plugin.list_staged(session_id)
+        return jsonify(result)
+    except ValueError as exc:
+        return _error_response(str(exc), status_code=400)
 
 
 @app.delete("/files/stage/<session_id>")
-def clear_staged(session_id: str) -> Any:
+def clear_staged_route(session_id: str) -> Any:
     """Remove all staged files for a session.
 
     Headers:
@@ -1994,18 +1822,15 @@ def clear_staged(session_id: str) -> Any:
     if not _check_file_api_key():
         return _error_response("Unauthorized", status_code=401)
 
-    if not _valid_session_id(session_id):
-        return _error_response("Invalid session ID", status_code=400)
-
-    session_dir = _safe_stage_path(session_id)
-    if session_dir is not None and session_dir.is_dir():
-        shutil.rmtree(str(session_dir))
-
-    return jsonify({"cleared": True})
+    try:
+        result = _media_storage_plugin.clear_staged(session_id)
+        return jsonify(result)
+    except ValueError as exc:
+        return _error_response(str(exc), status_code=400)
 
 
 @app.delete("/files/stage/<session_id>/<filename>")
-def remove_staged_file(session_id: str, filename: str) -> Any:
+def remove_staged_file_route(session_id: str, filename: str) -> Any:
     """Remove a single staged file.
 
     Headers:
@@ -2014,157 +1839,11 @@ def remove_staged_file(session_id: str, filename: str) -> Any:
     if not _check_file_api_key():
         return _error_response("Unauthorized", status_code=401)
 
-    if not _valid_session_id(session_id):
-        return _error_response("Invalid session ID", status_code=400)
-
-    file_path = _safe_stage_path(session_id, filename)
-    if file_path is None:
-        return _error_response("Invalid filename", status_code=400)
-
-    if file_path.is_file():
-        file_path.unlink()
-
-    return jsonify({"removed": True})
-
-
-# ---------------------------------------------------------------------------
-# Rename-zip — helpers
-# ---------------------------------------------------------------------------
-
-def _image_date_from_bytes(data: bytes) -> float | None:
-    """Extract DateTimeOriginal from EXIF as a UTC timestamp, or None."""
     try:
-        from PIL import Image, ExifTags  # type: ignore[import-not-found]
-
-        with Image.open(io.BytesIO(data)) as img:
-            exif_data = img._getexif()
-            if not exif_data:
-                return None
-            tag_map = {v: k for k, v in ExifTags.TAGS.items()}
-            dto_tag = tag_map.get("DateTimeOriginal")
-            if dto_tag and dto_tag in exif_data:
-                return datetime.strptime(exif_data[dto_tag], "%Y:%m:%d %H:%M:%S").timestamp()
-    except Exception:
-        pass
-    return None
-
-
-def _video_date_from_bytes(data: bytes, suffix: str) -> float | None:
-    """Extract creation date from a video's metadata via hachoir, or None."""
-    tmp_path = None
-    try:
-        from hachoir.metadata import extractMetadata  # type: ignore[import-not-found]
-        from hachoir.parser import createParser  # type: ignore[import-not-found]
-
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(data)
-            tmp_path = tmp.name
-        parser = createParser(tmp_path)
-        if parser:
-            with parser:
-                metadata = extractMetadata(parser)
-            if metadata:
-                for field in ("creation_date", "date_time_original"):
-                    val = metadata.get(field)
-                    if val:
-                        if hasattr(val, "timestamp"):
-                            return val.timestamp()
-                        if isinstance(val, str):
-                            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y:%m:%d %H:%M:%S"):
-                                try:
-                                    return datetime.strptime(val, fmt).timestamp()
-                                except ValueError:
-                                    pass
-    except Exception:
-        pass
-    finally:
-        if tmp_path:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
-    return None
-
-
-def _media_taken_time(data: bytes, ext: str, upload_index: int) -> float:
-    """Return the best available sort key for a media file."""
-    t: float | None = None
-    if ext in _IMAGE_EXTS:
-        t = _image_date_from_bytes(data)
-    elif ext in _VIDEO_EXTS:
-        t = _video_date_from_bytes(data, ext)
-    return t if t is not None else float(upload_index)
-
-
-def _resize_image_bytes(data: bytes, max_px: int = 1920) -> bytes:
-    """Downsample an image to max_px on its longest side, preserving EXIF."""
-    try:
-        from PIL import Image  # type: ignore[import-not-found]
-
-        with Image.open(io.BytesIO(data)) as img:
-            w, h = img.size
-            if max(w, h) <= max_px:
-                return data
-            scale = max_px / max(w, h)
-            new_size = (int(w * scale), int(h * scale))
-            exif = img.info.get("exif", b"")
-            resized = img.resize(new_size, Image.LANCZOS)
-            buf = io.BytesIO()
-            fmt = img.format or "JPEG"
-            save_kwargs: dict[str, Any] = {"format": fmt}
-            if exif:
-                save_kwargs["exif"] = exif
-            resized.save(buf, **save_kwargs)
-            return buf.getvalue()
-    except Exception:
-        return data
-
-
-def _build_rename_zip(
-    files_list: list[tuple[str, bytes]],
-    use_upload_order: bool,
-) -> tuple[bytes, int, int]:
-    """Sort, rename, and zip the uploaded media files.
-
-    Returns (zip_bytes, image_count, video_count).
-    """
-    entries: list[tuple[str, str, bytes, float]] = []
-    for i, (name, data) in enumerate(files_list):
-        ext = Path(name).suffix.lower()
-        if ext not in _IMAGE_EXTS and ext not in _VIDEO_EXTS:
-            continue
-        if ext in _IMAGE_EXTS:
-            data = _resize_image_bytes(data)
-        sort_key = float(i) if use_upload_order else _media_taken_time(data, ext, i)
-        entries.append((name, ext, data, sort_key))
-
-    entries.sort(key=lambda x: x[3])
-
-    plan: list[tuple[str, bytes]] = []
-    video_count = 0
-    image_count = 0
-    current_prefix: str | None = None
-
-    for _original_name, ext, data, _ in entries:
-        if ext in _VIDEO_EXTS:
-            video_count += 1
-            current_prefix = f"{video_count:02d}"
-            image_count = 0
-        elif ext in _IMAGE_EXTS and current_prefix is not None:
-            image_count += 1
-            if image_count == 1:
-                new_name = f"{current_prefix}_INSTALL{ext}"
-            else:
-                letter = chr(ord("A") + image_count - 2)
-                new_name = f"{current_prefix}{letter}{ext}"
-            plan.append((new_name, data))
-
-    spool = tempfile.SpooledTemporaryFile(max_size=50 * 1024 * 1024)
-    with zipfile.ZipFile(spool, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for new_name, data in plan:
-            zf.writestr(new_name, data)
-    spool.seek(0)
-    return spool.read(), len(plan), video_count
+        result = _media_storage_plugin.remove_staged_file(session_id, filename)
+        return jsonify(result)
+    except ValueError as exc:
+        return _error_response(str(exc), status_code=400)
 
 
 # ---------------------------------------------------------------------------
@@ -2200,88 +1879,34 @@ def rename_zip() -> Any:
         body = request.get_json(silent=True) or {}
         session_id = body.get("session_id", "")
         sort_order = body.get("sort_order", "date_taken")
-        if not _valid_session_id(session_id):
-            return _error_response("Invalid or missing session_id", status_code=400)
-        session_dir = _safe_stage_path(session_id)
-        if session_dir is None or not session_dir.is_dir():
-            return _error_response("No staged files found for this session", status_code=404)
-        files_list = [
-            (p.name, p.read_bytes())
-            for p in sorted(session_dir.iterdir())
-            if p.is_file()
-        ]
-        if not files_list:
-            return _error_response("No staged files found for this session", status_code=404)
-        use_upload_order = sort_order == "upload_order"
         try:
-            zip_bytes, n_images, n_videos = _build_rename_zip(files_list, use_upload_order)
+            result = _media_storage_plugin.rename_zip_from_staged(session_id, sort_order)
+            return jsonify(result)
+        except FileNotFoundError as exc:
+            return _error_response(str(exc), status_code=404)
+        except ValueError as exc:
+            return _error_response(str(exc), status_code=422)
         except Exception:
             app.logger.exception("rename_zip (staged) processing failed")
             return _error_response("Processing failed", status_code=500)
-        if not zip_bytes or n_images == 0:
-            return _error_response(
-                "No renameable images found. "
-                "Stage at least one video marker alongside your images.",
-                status_code=422,
-            )
-        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        short_hash = hashlib.md5(zip_bytes[:512]).hexdigest()[:6]  # nosec — not crypto
-        zip_filename = f"renamed_media_{ts}_{short_hash}.zip"
-        zip_dir = (_MEDIA_STORAGE_PATH / "zips").resolve()
-        zip_dir.mkdir(parents=True, exist_ok=True)
-        zip_path = zip_dir / zip_filename
-        zip_path.write_bytes(zip_bytes)
-        shutil.rmtree(str(session_dir), ignore_errors=True)
-        relative = zip_path.relative_to(_MEDIA_STORAGE_PATH).as_posix()
-        return jsonify({
-            "status": "success",
-            "filename": zip_filename,
-            "size_bytes": len(zip_bytes),
-            "download_url": f"/files/download/{relative}",
-            "images_renamed": n_images,
-            "video_markers": n_videos,
-        })
 
+    # Branch: multipart/form-data with inline file bytes
     uploaded = request.files.getlist("files")
     if not uploaded:
         return _error_response("No files provided")
 
     sort_order = request.form.get("sort_order", "date_taken")
-    use_upload_order = sort_order == "upload_order"
-
     files_list = [(f.filename or f"file_{i}", f.read()) for i, f in enumerate(uploaded)]
 
     try:
-        zip_bytes, n_images, n_videos = _build_rename_zip(files_list, use_upload_order)
+        result = _media_storage_plugin.rename_zip_from_file_data(files_list, sort_order)
+        return jsonify(result)
+    except ValueError as exc:
+        return _error_response(str(exc), status_code=422)
     except Exception:
         app.logger.exception("rename_zip processing failed")
         return _error_response("Processing failed", status_code=500)
 
-    if not zip_bytes or n_images == 0:
-        return _error_response(
-            "No renameable images found. "
-            "Upload at least one video marker alongside your images.",
-            status_code=422,
-        )
-
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    short_hash = hashlib.md5(zip_bytes[:512]).hexdigest()[:6]  # nosec — not crypto
-    zip_filename = f"renamed_media_{ts}_{short_hash}.zip"
-    zip_dir = (_MEDIA_STORAGE_PATH / "zips").resolve()
-    zip_dir.mkdir(parents=True, exist_ok=True)
-    zip_path = zip_dir / zip_filename
-    zip_path.write_bytes(zip_bytes)
-
-    relative = zip_path.relative_to(_MEDIA_STORAGE_PATH).as_posix()
-    return jsonify({
-        "status": "success",
-        "filename": zip_filename,
-        "size_bytes": len(zip_bytes),
-        "download_url": f"/files/download/{relative}",
-        "images_renamed": n_images,
-        "video_markers": n_videos,
-    })
-
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+    app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=True)
