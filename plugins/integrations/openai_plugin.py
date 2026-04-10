@@ -374,6 +374,96 @@ class OpenAIFunctionCallingPlugin:
                 "Example: ['A friendly robot coding', 'gpt-image-1', '1024x1024', 'high', 'opaque', 'png', 'robot_coding']."
             )
 
+        if (
+            module_name == "plugins.system_tools.media_storage_plugin"
+            and class_name == "MediaStoragePlugin"
+        ):
+            base = "Use constructor_args: {\"base_dir\": \"media_storage\"}. "
+            if method_name == "list_files":
+                return (
+                    base +
+                    "List files in media storage. "
+                    "Use args: [folder_or_empty_string]. Empty string lists the root. "
+                    "Result entries include 'relative_path' relative to media_storage/. "
+                    "To get the full path for upload, prepend 'media_storage/' to relative_path."
+                )
+            if method_name == "delete_file":
+                return base + "Delete a file. Use args: [relative_path_within_media_storage]."
+            if method_name == "list_staged":
+                return base + "List staged files for a session. Use args: [session_id]."
+            if method_name == "clear_staged":
+                return base + "Clear all staged files for a session. Use args: [session_id]."
+            if method_name == "remove_staged_file":
+                return base + "Remove one staged file. Use args: [session_id, filename]."
+            if method_name == "rename_zip_from_staged":
+                return base + "Build rename-zip from staged session. Use args: [session_id, sort_order]."
+
+        if (
+            module_name == "plugins.system_tools.file_reader_plugin"
+            and class_name == "FileReaderPlugin"
+        ):
+            base = "Use constructor_args: {\"base_dir\": \"generated_data\"}. "
+            if method_name == "list_directory":
+                return (
+                    base +
+                    "List files in generated_data/. "
+                    "Use args: [relative_subdirectory_or_dot]. "
+                    "'.' lists the root of generated_data. 'slack_downloads' lists Slack files. "
+                    "Result entries include 'relative_path' relative to generated_data/. "
+                    "To get the full path for Slack upload, use 'generated_data/' + relative_path."
+                )
+            if method_name == "read_text_file":
+                return base + "Read a text/markdown/csv/tsv file. Use args: [file_path, max_chars_or_20000]."
+            if method_name == "read_pdf_text":
+                return base + "Extract text from a PDF file. Use args: [file_path, max_chars_or_20000]."
+            if method_name == "read_docx_text":
+                return base + "Extract text from a DOCX file. Use args: [file_path, max_chars_or_20000]."
+            if method_name == "parse_csv_tsv":
+                return base + "Parse a CSV or TSV file. Use args: [file_path, max_rows_or_25, delimiter_or_auto]."
+            if method_name == "summarize_excel":
+                return base + "Summarize an Excel workbook. Use args: [file_path, max_preview_rows_or_5]."
+
+        if (
+            module_name == "plugins.system_tools.file_system_plugin"
+            and class_name == "FileSystemPlugin"
+            and method_name == "list_directory"
+        ):
+            return (
+                "List files inside generated_data/. "
+                "Use constructor_args: {\"base_dir\": \"generated_data\"}. "
+                "Use args: [relative_subdirectory_or_dot]. "
+                "Do NOT use this to list media_storage/; use MediaStoragePlugin.list_files instead."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
+            and method_name == "upload_local_file"
+        ):
+            network_channel = os.getenv("SLACK_NETWORK_CHANNEL", "#network")
+            return (
+                "Upload a local file to a Slack channel. "
+                "No constructor_args needed — the bot token and default channel are set automatically. "
+                "Use args: [file_path, channel_or_null, title_or_null, initial_comment_or_null]. "
+                f"If the user does not specify a channel, pass null and the upload will go to '{network_channel}'. "
+                "file_path must be the path relative to the app working directory, e.g. "
+                "'media_storage/photo.jpg' or 'generated_data/slack_downloads/image.png'. "
+                "Obtain the path from list_files or list_directory result entries "
+                "by prepending the root ('media_storage/' or 'generated_data/') to the relative_path field. "
+                "Do not invent paths; always look up the path from a prior tool result."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
+            and method_name == "post_message"
+        ):
+            return (
+                "Post a text message to a Slack channel. "
+                "Use args: [channel, text]. "
+                "channel can be a channel name like '#network' or a channel ID like 'C123ABC'."
+            )
+
         return (
             f"Call plugin method {module_name}::{class_name}.{method_name}. "
             "Provide constructor_args and args when needed."
@@ -436,6 +526,12 @@ class OpenAIFunctionCallingPlugin:
             return json.dumps({"status": "error", "message": "constructor_args must be an object"})
         if not isinstance(args, list):
             return json.dumps({"status": "error", "message": "args must be an array"})
+
+        # Inject SLACK_NETWORK_CHANNEL as the default_channel for SlackPlugin
+        # so tool calls without an explicit channel use the expected channel.
+        if module_name == "plugins.integrations.slack_plugin" and "default_channel" not in constructor_args:
+            network_channel = os.getenv("SLACK_NETWORK_CHANNEL", "#network")
+            constructor_args = {**constructor_args, "default_channel": network_channel}
 
         try:
             validate_request(module_name, class_name, method_name)
@@ -539,14 +635,22 @@ class OpenAIFunctionCallingPlugin:
             "If a user provides a local file path, do not claim you cannot access local files; call the appropriate tool instead. "
             "For plugin tool calls, put method inputs inside 'args' as positional arguments; "
             "when a plugin method accepts a payload object, pass it as args[0]. "
-            "If the user asks to send an email attachment, include attachment file paths in Gmail send_email args. "
+            "\n\nStorage layout (relative to the app working directory):\n"
+            "- media_storage/ : uploaded files, staging sessions, and zip outputs. "
+            "Use MediaStoragePlugin (constructor_args: {\"base_dir\": \"media_storage\"}) to list or manage these files. "
+            "list_files returns entries with a 'relative_path' field; prepend 'media_storage/' to get the full path.\n"
+            "- generated_data/ : Slack downloads, processed files, notes. "
+            "Use FileReaderPlugin (constructor_args: {\"base_dir\": \"generated_data\"}) to read files here. "
+            "list_directory returns entries with a 'relative_path' field; prepend 'generated_data/' to get the full path. "
+            "Slack image attachments are saved under 'generated_data/slack_downloads/'.\n"
+            "\nWhen uploading a file to Slack with upload_local_file, the file_path arg must be the "
+            "full relative path constructed from the tool result (e.g. 'media_storage/photo.jpg'). "
+            "Always look up the path from a prior list_files or list_directory call — never invent it. "
+            "\n\nIf the user asks to send an email attachment, include attachment file paths in Gmail send_email args. "
             "Do not claim an attachment was sent unless the Gmail tool result shows attachment_count > 0. "
             "For MongoDB write tools, do not claim a document was created/updated/replaced unless the tool result proves it. "
             "Require inserted_id for create_document. "
-            "Require operation_result != 'no_match' for update_documents and replace_document. "
-            "Slack image attachments are saved locally under "
-            f"'{self._slack_images_root}/' as a flat directory by the app. "
-            "If the user asks to reference or locate Slack images, use this directory convention."
+            "Require operation_result != 'no_match' for update_documents and replace_document."
         )
 
     def _build_user_message(

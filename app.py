@@ -1166,7 +1166,7 @@ if slack_event_adapter is not None:
             executor.instantiate(
                 "plugins.integrations.slack_plugin",
                 "SlackPlugin",
-                {"bot_token": slack_bot_token.strip(), "default_channel": "#general"},
+                {"bot_token": slack_bot_token.strip(), "default_channel": SLACK_NETWORK_CHANNEL},
             )
             executor.call_method(
                 "plugins.integrations.slack_plugin",
@@ -1321,7 +1321,7 @@ def slack_interactivity() -> Any:
                     executor.instantiate(
                         "plugins.integrations.slack_plugin",
                         "SlackPlugin",
-                        {"bot_token": slack_bot_token.strip(), "default_channel": "#general"},
+                        {"bot_token": slack_bot_token.strip(), "default_channel": SLACK_NETWORK_CHANNEL},
                     )
                     executor.call_method(
                         "plugins.integrations.slack_plugin",
@@ -1405,7 +1405,7 @@ def slack_interactivity() -> Any:
                 executor.instantiate(
                     "plugins.integrations.slack_plugin",
                     "SlackPlugin",
-                    {"bot_token": os.getenv("SLACK_BOT_TOKEN", ""), "default_channel": "#general"},
+                    {"bot_token": os.getenv("SLACK_BOT_TOKEN", ""), "default_channel": SLACK_NETWORK_CHANNEL},
                 )
                 # open_modal expects a dict with at least trigger_id and modal_view
                 result = executor.call_method(
@@ -1649,7 +1649,7 @@ def _trigger_upload_notification(filename: str, relative_path: str, size_bytes: 
         try:
             from plugins.integrations.slack_plugin import SlackPlugin
             from plugins.integrations.openai_plugin import OpenAIFunctionCallingPlugin
-            slack = SlackPlugin(bot_token=bot_token)
+            slack = SlackPlugin(bot_token=bot_token, default_channel=SLACK_NETWORK_CHANNEL)
             result = slack.post_message(SLACK_NETWORK_CHANNEL, text)
             print(f"[UploadNotify] post_message result: {result}", flush=True)
             app.logger.warning("Upload notification posted to %s for file %s", SLACK_NETWORK_CHANNEL, filename)
@@ -1983,4 +1983,4 @@ def rename_zip() -> Any:
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=True)
+    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
