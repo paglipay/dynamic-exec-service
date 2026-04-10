@@ -239,6 +239,7 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "read_docx_text",
             "parse_csv_tsv",
             "summarize_excel",
+            "read_image_for_vision",
         ],
     },
 }

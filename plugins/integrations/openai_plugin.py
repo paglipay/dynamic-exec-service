@@ -422,6 +422,17 @@ class OpenAIFunctionCallingPlugin:
                 return base + "Parse a CSV or TSV file. Use args: [file_path, max_rows_or_25, delimiter_or_auto]."
             if method_name == "summarize_excel":
                 return base + "Summarize an Excel workbook. Use args: [file_path, max_preview_rows_or_5]."
+            if method_name == "read_image_for_vision":
+                return (
+                    "Read an image file and return a base64 data_url for vision analysis. "
+                    "No constructor_args needed. "
+                    "Use args: [file_path, max_long_edge_or_1024]. "
+                    "file_path is the path as shown in the upload notification or list_files result, e.g. "
+                    "'media_storage/staging/<session_id>/photo.jpg' or 'media_storage/photo.jpg' or "
+                    "'generated_data/slack_downloads/image.png'. "
+                    "Use the EXACT path from the [System event] or tool result — do not shorten or guess it. "
+                    "The result contains a 'data_url' field; pass it directly to vision reasoning to describe the image."
+                )
 
         if (
             module_name == "plugins.system_tools.file_system_plugin"
@@ -606,6 +617,33 @@ class OpenAIFunctionCallingPlugin:
                             "content": tool_output,
                         }
                     )
+                    # If the tool returned an image data_url, inject it as a user
+                    # vision message so the model can actually see the image.
+                    try:
+                        tool_result_parsed = json.loads(tool_output)
+                        data_url = (
+                            tool_result_parsed.get("result", {}).get("data_url")
+                            if isinstance(tool_result_parsed.get("result"), dict)
+                            else None
+                        )
+                        if isinstance(data_url, str) and data_url.startswith("data:image/"):
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {
+                                            "type": "text",
+                                            "text": "Here is the image content for your analysis:",
+                                        },
+                                        {
+                                            "type": "image_url",
+                                            "image_url": {"url": data_url},
+                                        },
+                                    ],
+                                }
+                            )
+                    except Exception:
+                        pass
                 continue
 
             final_text = message.content or ""
@@ -629,6 +667,10 @@ class OpenAIFunctionCallingPlugin:
             "If a user provides a local file path, do not claim you cannot access local files; call the appropriate tool instead. "
             "For plugin tool calls, put method inputs inside 'args' as positional arguments; "
             "when a plugin method accepts a payload object, pass it as args[0]. "
+            "\nWhen a Slack message includes image attachments, the image pixels are passed directly "
+            "in this conversation as vision content. Describe and analyze them fully — never say you cannot view images. "
+            "If the user asks about an image that is NOT already in the conversation, call "
+            "FileReaderPlugin.read_image_for_vision with the file path to load it first, then describe it. "
             "\n\nStorage layout (relative to the app working directory):\n"
             "- media_storage/ : uploaded files, staging sessions, and zip outputs. "
             "Use MediaStoragePlugin (constructor_args: {\"base_dir\": \"media_storage\"}) to list or manage these files. "

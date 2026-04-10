@@ -399,3 +399,88 @@ class FileReaderPlugin:
                 summary["first_sheet_preview_error"] = str(exc)
 
         return summary
+
+    def read_image_for_vision(
+        self,
+        file_path: str,
+        max_long_edge: int = 1024,
+    ) -> dict[str, Any]:
+        """Read an image file and return it as a base64-encoded data URL for vision analysis.
+
+        Args:
+            file_path: Path to the image (relative to base_dir or absolute).
+            max_long_edge: Resize so the longest edge is at most this many pixels (default 1024).
+
+        Returns:
+            {"status": "success", "data_url": "data:image/jpeg;base64,...",
+             "width": int, "height": int, "original_width": int, "original_height": int,
+             "mime": str, "file_name": str}
+        """
+        import base64
+        import mimetypes
+
+        resolved = self._resolve_path(file_path)
+        if not resolved.exists() or not resolved.is_file():
+            # Fall back to resolving from CWD so paths like "media_storage/..." work
+            # even when base_dir is "generated_data".
+            cwd_resolved = Path(file_path.strip()).resolve()
+            if cwd_resolved.exists() and cwd_resolved.is_file():
+                resolved = cwd_resolved
+            else:
+                raise ValueError(f"Image file does not exist: {file_path}")
+
+        raw_bytes = resolved.read_bytes()
+
+        # Detect MIME type from extension
+        mime, _ = mimetypes.guess_type(resolved.name)
+        if not isinstance(mime, str) or not mime.startswith("image/"):
+            # Check magic bytes for common formats
+            if raw_bytes[:8] == b"\x89PNG\r\n\x1a\n":
+                mime = "image/png"
+            elif raw_bytes[:3] == b"\xff\xd8\xff":
+                mime = "image/jpeg"
+            elif raw_bytes[:6] in (b"GIF87a", b"GIF89a"):
+                mime = "image/gif"
+            elif raw_bytes[:4] == b"RIFF" and raw_bytes[8:12] == b"WEBP":
+                mime = "image/webp"
+            else:
+                mime = "image/png"
+
+        original_width = original_height = width = height = 0
+        try:
+            from PIL import Image as _PILImage
+
+            with _PILImage.open(io.BytesIO(raw_bytes)) as img:
+                original_width, original_height = img.size
+                if max_long_edge > 0 and max(img.size) > max_long_edge:
+                    ratio = max_long_edge / max(img.size)
+                    new_size = (max(1, int(img.width * ratio)), max(1, int(img.height * ratio)))
+                    img = img.resize(new_size, _PILImage.LANCZOS)
+                width, height = img.size
+                buf = io.BytesIO()
+                save_format = "JPEG" if mime == "image/jpeg" else "PNG"
+                save_kwargs: dict[str, Any] = {"format": save_format}
+                if save_format == "JPEG":
+                    save_kwargs["quality"] = 85
+                img.convert("RGB" if save_format == "JPEG" else "RGBA" if img.mode == "RGBA" else "RGB").save(
+                    buf, **save_kwargs
+                )
+                raw_bytes = buf.getvalue()
+        except Exception:
+            # PIL unavailable or failed — use raw bytes as-is
+            width = original_width
+            height = original_height
+
+        encoded = base64.b64encode(raw_bytes).decode("ascii")
+        data_url = f"data:{mime};base64,{encoded}"
+
+        return {
+            "status": "success",
+            "data_url": data_url,
+            "mime": mime,
+            "file_name": resolved.name,
+            "width": width,
+            "height": height,
+            "original_width": original_width,
+            "original_height": original_height,
+        }
