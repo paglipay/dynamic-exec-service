@@ -436,7 +436,9 @@ class OpenAIFunctionCallingPlugin:
             if method_name == "read_image_gps":
                 return (
                     "Read GPS coordinates AND all EXIF metadata from a JPEG image file. "
-                    "ALWAYS use this tool first when the user asks about location, GPS, camera details, or when a photo was taken. "
+                    "Use this tool — and ONLY this tool — when the user asks about EXIF data, location, GPS, "
+                    "camera details, when a photo was taken, or any image metadata. "
+                    "Do NOT also call read_image_for_vision for metadata questions — this tool is self-contained. "
                     "No constructor_args needed. "
                     "Use args: [file_path]. "
                     "Use the EXACT file path from the upload notification or list_files result. "
@@ -680,7 +682,10 @@ class OpenAIFunctionCallingPlugin:
             "\nWhen a Slack message includes image attachments, the image pixels are passed directly "
             "in this conversation as vision content. Describe and analyze them fully — never say you cannot view images. "
             "If the user asks about an image that is NOT already in the conversation, call "
-            "FileReaderPlugin.read_image_for_vision with the file path to load it first, then describe it. "
+            "FileReaderPlugin.read_image_for_vision with the file path to load it, then describe it. "
+            "EXCEPTION: if the user is asking about EXIF data, GPS, camera settings, metadata, or when the photo was taken, "
+            "call FileReaderPlugin.read_image_gps instead — do NOT call read_image_for_vision for metadata questions. "
+            "read_image_gps reads metadata directly from the file and is complete on its own; no vision loading needed. "
             "\n\nStorage layout (relative to the app working directory):\n"
             "- media_storage/ : uploaded files, staging sessions, and zip outputs. "
             "Use MediaStoragePlugin (constructor_args: {\"base_dir\": \"media_storage\"}) to list or manage these files. "
