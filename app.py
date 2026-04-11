@@ -150,7 +150,7 @@ _slack_form_submissions_lock = threading.Lock()
 # Set FILE_MAX_UPLOAD_MB to change the per-request size cap (default 500 MB).
 # Set SLACK_NETWORK_CHANNEL to the channel name/ID where upload notifications are posted.
 MEDIA_STORAGE_DIR = os.getenv("MEDIA_STORAGE_DIR", "media_storage")
-SLACK_NETWORK_CHANNEL = os.getenv("SLACK_NETWORK_CHANNEL", "#network")
+SLACK_NETWORK_CHANNEL = os.getenv("SLACK_NETWORK_CHANNEL", "#general")
 FILE_UPLOAD_API_KEY = os.getenv("FILE_UPLOAD_API_KEY", "").strip()
 try:
     FILE_MAX_UPLOAD_MB = max(1, int(os.getenv("FILE_MAX_UPLOAD_MB", "500")))
