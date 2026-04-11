@@ -435,12 +435,12 @@ class OpenAIFunctionCallingPlugin:
                 )
             if method_name == "read_image_gps":
                 return (
-                    "Read GPS coordinates from a JPEG image's EXIF metadata. "
-                    "ALWAYS use this tool first when the user asks about location, GPS, or where a photo was taken. "
+                    "Read GPS coordinates AND all EXIF metadata from a JPEG image file. "
+                    "ALWAYS use this tool first when the user asks about location, GPS, camera details, or when a photo was taken. "
                     "No constructor_args needed. "
                     "Use args: [file_path]. "
                     "Use the EXACT file path from the upload notification or list_files result. "
-                    "Returns lat, lon, and has_gps. If has_gps is true, report the coordinates to the user. "
+                    "Returns lat, lon, has_gps, and an 'exif' dict with all decoded fields (Make, Model, DateTime, ExposureTime, ISO, etc.). "
                     "Do NOT use ImageProcessingPlugin for GPS — it is slow due to database connections."
                 )
 

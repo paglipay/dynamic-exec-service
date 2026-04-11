@@ -486,7 +486,7 @@ class FileReaderPlugin:
         }
 
     def read_image_gps(self, file_path: str) -> dict[str, Any]:
-        """Read GPS EXIF coordinates from a JPEG image file.
+        """Read GPS coordinates and all EXIF metadata from a JPEG image file.
 
         Uses piexif to read directly from binary EXIF — no network calls, no database.
 
@@ -495,7 +495,8 @@ class FileReaderPlugin:
 
         Returns:
             {"status": "success", "lat": float|None, "lon": float|None,
-             "has_gps": bool, "file_name": str}
+             "has_gps": bool, "file_name": str, "exif": dict}
+            where "exif" contains all decoded human-readable EXIF fields.
         """
         resolved = self._resolve_path(file_path)
         if not resolved.exists() or not resolved.is_file():
@@ -507,17 +508,56 @@ class FileReaderPlugin:
 
         if resolved.suffix.lower() not in {".jpg", ".jpeg"}:
             return {"status": "success", "lat": None, "lon": None, "has_gps": False,
-                    "file_name": resolved.name, "note": "GPS EXIF is only supported in JPEG files"}
+                    "file_name": resolved.name, "exif": {},
+                    "note": "GPS EXIF is only supported in JPEG files"}
 
         try:
             import piexif
 
-            exif = piexif.load(str(resolved))
-            gps = exif.get("GPS", {})
-            if not gps:
-                return {"status": "success", "lat": None, "lon": None, "has_gps": False,
-                        "file_name": resolved.name}
+            raw_exif = piexif.load(str(resolved))
 
+            # Build reverse tag-name maps for each IFD
+            def _tag_names(ifd_class: Any) -> dict[int, str]:
+                return {
+                    v: k for k, v in vars(ifd_class).items()
+                    if not k.startswith("_") and isinstance(v, int)
+                }
+
+            _ifd_maps: dict[str, dict[int, str]] = {
+                "0th":    _tag_names(piexif.ImageIFD),
+                "Exif":   _tag_names(piexif.ExifIFD),
+                "GPS":    _tag_names(piexif.GPSIFD),
+                "1st":    _tag_names(piexif.ImageIFD),
+                "Interop": _tag_names(piexif.InteropIFD),
+            }
+
+            def _decode_value(value: Any) -> Any:
+                """Convert bytes/tuples to JSON-serializable types."""
+                if isinstance(value, bytes):
+                    try:
+                        return value.decode("utf-8").rstrip("\x00")
+                    except Exception:
+                        return value.hex()
+                if isinstance(value, tuple) and len(value) == 2 and isinstance(value[0], int):
+                    # Rational number (numerator, denominator)
+                    try:
+                        return round(value[0] / value[1], 6) if value[1] != 0 else None
+                    except Exception:
+                        return list(value)
+                if isinstance(value, (list, tuple)):
+                    return [_decode_value(v) for v in value]
+                return value
+
+            decoded_exif: dict[str, Any] = {}
+            for ifd_name, tag_map in _ifd_maps.items():
+                ifd_data = raw_exif.get(ifd_name, {})
+                if not ifd_data:
+                    continue
+                for tag_id, raw_value in ifd_data.items():
+                    tag_label = tag_map.get(tag_id, f"tag_{tag_id}")
+                    decoded_exif[tag_label] = _decode_value(raw_value)
+
+            # Decode GPS to decimal degrees
             def _dms_to_dec(dms: tuple, ref: bytes) -> float | None:
                 try:
                     d = dms[0][0] / dms[0][1]
@@ -528,6 +568,7 @@ class FileReaderPlugin:
                 except Exception:
                     return None
 
+            gps = raw_exif.get("GPS", {})
             lat = _dms_to_dec(
                 gps.get(piexif.GPSIFD.GPSLatitude, ()),
                 gps.get(piexif.GPSIFD.GPSLatitudeRef, b"N"),
@@ -536,7 +577,6 @@ class FileReaderPlugin:
                 gps.get(piexif.GPSIFD.GPSLongitude, ()),
                 gps.get(piexif.GPSIFD.GPSLongitudeRef, b"E"),
             )
-
             if lat is not None:
                 lat = round(lat, 7)
             if lon is not None:
@@ -548,10 +588,11 @@ class FileReaderPlugin:
                 "lon": lon,
                 "has_gps": lat is not None and lon is not None,
                 "file_name": resolved.name,
+                "exif": decoded_exif,
             }
         except ImportError:
             return {"status": "error", "message": "piexif is not installed",
-                    "lat": None, "lon": None, "has_gps": False, "file_name": resolved.name}
+                    "lat": None, "lon": None, "has_gps": False, "file_name": resolved.name, "exif": {}}
         except Exception as exc:
             return {"status": "error", "message": f"Failed to read EXIF: {exc}",
-                    "lat": None, "lon": None, "has_gps": False, "file_name": resolved.name}
+                    "lat": None, "lon": None, "has_gps": False, "file_name": resolved.name, "exif": {}}
