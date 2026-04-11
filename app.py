@@ -1757,12 +1757,48 @@ def upload_file() -> Any:
             return _error_response(str(exc))
 
     dest.parent.mkdir(parents=True, exist_ok=True)
-    f.save(str(dest))
 
-    # Write GPS EXIF data when lat/lon are provided (JPEG only)
+    # Read GPS coords early — used to decide whether to convert to JPEG
     lat_raw = request.form.get("lat", "").strip()
     lon_raw = request.form.get("lon", "").strip()
-    if lat_raw and lon_raw and dest.suffix.lower() in {".jpg", ".jpeg"}:
+    has_gps = bool(lat_raw and lon_raw)
+
+    # When GPS coords are present and the file is not already JPEG, convert it
+    # so piexif can embed the coordinates (EXIF requires JPEG format).
+    _JPEG_EXTS = {".jpg", ".jpeg"}
+    _CONVERTIBLE_EXTS = {".png", ".webp", ".gif", ".bmp", ".tiff"}
+    if has_gps and dest.suffix.lower() in _CONVERTIBLE_EXTS and _PILImage is not None:
+        try:
+            import io as _io_mod
+            img = _PILImage.open(f.stream)
+            img = img.convert("RGB")
+            buf = _io_mod.BytesIO()
+            img.save(buf, format="JPEG", quality=90, optimize=True)
+            # Re-target the destination to a .jpg filename
+            stem = Path(safe_name).stem
+            safe_name = f"{stem}.jpg"
+            try:
+                dest = _media_storage_plugin._resolve_path(folder, safe_name)
+            except ValueError as exc:
+                return _error_response(str(exc))
+            if dest.exists():
+                ts_now = int(time.time())
+                safe_name = f"{stem}_{ts_now}.jpg"
+                try:
+                    dest = _media_storage_plugin._resolve_path(folder, safe_name)
+                except ValueError as exc:
+                    return _error_response(str(exc))
+            dest.write_bytes(buf.getvalue())
+            app.logger.info("Converted %s to JPEG for GPS EXIF embedding: %s", ext, safe_name)
+        except Exception as exc:
+            app.logger.warning("JPEG conversion failed, saving original format: %s", exc)
+            f.stream.seek(0)
+            f.save(str(dest))
+    else:
+        f.save(str(dest))
+
+    # Write GPS EXIF data when lat/lon are provided (JPEG only)
+    if has_gps and dest.suffix.lower() in _JPEG_EXTS:
         try:
             import piexif
 
