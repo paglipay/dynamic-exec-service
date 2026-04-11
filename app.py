@@ -1651,7 +1651,13 @@ def _check_file_api_key() -> bool:
 # ---------------------------------------------------------------------------
 
 @app.errorhandler(413)
-def _trigger_upload_notification(filename: str, relative_path: str, size_bytes: int) -> None:
+def _trigger_upload_notification(
+    filename: str,
+    relative_path: str,
+    size_bytes: int,
+    lat: float | None = None,
+    lon: float | None = None,
+) -> None:
     """Fire-and-forget: post a Slack upload notification directly via SlackPlugin."""
     import threading
     from datetime import datetime, timezone
@@ -1666,12 +1672,15 @@ def _trigger_upload_notification(filename: str, relative_path: str, size_bytes: 
 
         uploaded_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         size_kb = size_bytes / 1024
+        location_line = ""
+        if lat is not None and lon is not None:
+            location_line = f"\n*Location:* `{lat:.6f}, {lon:.6f}` — https://maps.google.com/?q={lat:.6f},{lon:.6f}"
         text = (
             f":file_folder: *New file uploaded via Streamlit*\n"
             f"*File:* `{filename}`\n"
             f"*Size:* {size_kb:.1f} KB\n"
             f"*Path:* `media_storage/{relative_path}`\n"
-            f"*Uploaded:* {uploaded_at}\n"
+            f"*Uploaded:* {uploaded_at}{location_line}\n"
             f"*Download:* /files/download/{relative_path}"
         )
 
@@ -1700,6 +1709,7 @@ def _trigger_upload_notification(filename: str, relative_path: str, size_bytes: 
                         f"Size: {size_kb:.1f} KB\n"
                         f"Path: media_storage/{relative_path}\n"
                         f"Uploaded at: {uploaded_at}"
+                        + (f"\nGPS location: lat={lat:.6f}, lon={lon:.6f}" if lat is not None and lon is not None else "")
                     ),
                 })
                 openai_plugin._save_conversation_history(conversation_id, history)
@@ -1844,7 +1854,15 @@ def upload_file() -> Any:
     size_bytes = dest.stat().st_size
     relative = dest.relative_to(_media_storage_plugin._base).as_posix()
 
-    _trigger_upload_notification(safe_name, relative, size_bytes)
+    notify_lat: float | None = None
+    notify_lon: float | None = None
+    if has_gps:
+        try:
+            notify_lat = float(lat_raw)
+            notify_lon = float(lon_raw)
+        except ValueError:
+            pass
+    _trigger_upload_notification(safe_name, relative, size_bytes, lat=notify_lat, lon=notify_lon)
 
     return jsonify({
         "status": "success",
