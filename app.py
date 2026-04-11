@@ -431,41 +431,39 @@ def _guess_image_extension(content_type: str, fallback_name: str) -> str:
     return mapping.get(content_type.lower().strip(), ".png")
 
 
-def _resize_image_for_vision(image_bytes: bytes, mime: str, max_long_edge: int = 1024) -> bytes:
-    """Resize image bytes so the long edge is at most max_long_edge pixels.
+def _resize_image_for_vision(image_bytes: bytes, mime: str, max_long_edge: int = 1024) -> tuple[bytes, str]:
+    """Resize image bytes so the long edge is at most max_long_edge pixels and encode as JPEG.
 
-    Returns the original bytes unchanged if PIL is unavailable or resizing fails.
-    JPEG quality 85 is used for JPEG output; PNG is used for everything else.
+    Always outputs JPEG at quality 75 regardless of source format, minimising base64 size.
+    Returns (jpeg_bytes, "image/jpeg"). Falls back to (original_bytes, mime) if PIL is
+    unavailable or conversion fails.
     """
     if _PILImage is None:
-        return image_bytes
+        return image_bytes, mime
     if not isinstance(image_bytes, bytes) or not image_bytes:
-        return image_bytes
+        return image_bytes, mime
     try:
         import io as _io
         img = _PILImage.open(_io.BytesIO(image_bytes))
         w, h = img.size
-        if max(w, h) <= max_long_edge:
-            return image_bytes  # already small enough
-        scale = max_long_edge / max(w, h)
-        new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
-        img = img.resize(new_size, _PILImage.LANCZOS)
-        buf = _io.BytesIO()
-        fmt = "JPEG" if mime in {"image/jpeg", "image/jpg"} else "PNG"
-        if fmt == "JPEG":
-            img = img.convert("RGB")
-            img.save(buf, format="JPEG", quality=85, optimize=True)
+        if max(w, h) > max_long_edge:
+            scale = max_long_edge / max(w, h)
+            new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
+            img = img.resize(new_size, _PILImage.LANCZOS)
         else:
-            img.save(buf, format="PNG", optimize=True)
+            new_size = (w, h)
+        img = img.convert("RGB")
+        buf = _io.BytesIO()
+        img.save(buf, format="JPEG", quality=75, optimize=True)
         resized = buf.getvalue()
         app.logger.info(
-            "Image resized for vision: %dx%d -> %dx%d, %d -> %d bytes",
+            "Image prepared for vision: %dx%d -> %dx%d, %d -> %d bytes (JPEG q75)",
             w, h, new_size[0], new_size[1], len(image_bytes), len(resized),
         )
-        return resized
+        return resized, "image/jpeg"
     except Exception as exc:
-        app.logger.warning("Image resize failed, using original: %s", exc)
-        return image_bytes
+        app.logger.warning("Image resize/convert failed, using original: %s", exc)
+        return image_bytes, mime
 
 
 def _save_slack_image_copy(
@@ -746,7 +744,7 @@ def _render_pdf_pages_to_image_data_urls(
     return data_urls, saved_paths, rendered_count
 
 
-def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | None) -> tuple[str, str, list[str]]:
+def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | None) -> tuple[str, str, list[str], list[dict]]:
     """Build prompt/reply snippets and image data URLs from Slack files when available."""
     files = event.get("files")
     if not isinstance(files, list) or not files:
@@ -755,13 +753,14 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
             files = nested_message.get("files")
     if not isinstance(files, list) or not files:
         app.logger.info("No Slack files attached on this event")
-        return "", "", []
+        return "", "", [], []
 
     app.logger.info("Slack files detected: count=%s", len(files))
 
     file_lines: list[str] = []
     file_content_lines: list[str] = []
     image_data_urls: list[str] = []
+    image_metadata: list[dict] = []
     saved_image_paths: list[str] = []
     saved_pdf_paths: list[str] = []
     saved_docx_paths: list[str] = []
@@ -1020,6 +1019,7 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
                 except Exception as exc:
                     app.logger.warning("Failed to save Slack image locally (%s): %s", name, exc)
                     saved_path = None
+                _image_gps: dict | None = None
                 if isinstance(saved_path, str) and saved_path:
                     saved_image_paths.append(saved_path)
                     file_lines[-1] = f"{file_lines[-1]}; saved_as={saved_path}"
@@ -1054,19 +1054,26 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
                                     gps_str = f"GPS coordinates embedded in image: lat={round(_lat, 7)}, lon={round(_lon, 7)}"
                                     file_content_lines.append(f"[{name}] {gps_str}")
                                     app.logger.info("GPS EXIF extracted from Slack image %s: %s", name, gps_str)
+                                    _image_gps = {"lat": round(_lat, 7), "lon": round(_lon, 7)}
                         except Exception as exc:
                             app.logger.debug("GPS EXIF extraction skipped for %s: %s", name, exc)
 
-                vision_bytes = _resize_image_for_vision(binary_data, mime, SLACK_IMAGE_MAX_LONG_EDGE)
+                vision_bytes, vision_mime = _resize_image_for_vision(binary_data, mime, SLACK_IMAGE_MAX_LONG_EDGE)
                 encoded = base64.b64encode(vision_bytes).decode("ascii")
-                image_data_urls.append(f"data:{mime};base64,{encoded}")
+                image_data_urls.append(f"data:{vision_mime};base64,{encoded}")
+                image_metadata.append({
+                    "name": name,
+                    "saved_path": saved_path if isinstance(saved_path, str) else None,
+                    "gps": _image_gps,
+                    "vision_data_url": f"data:{vision_mime};base64,{encoded}",
+                })
                 app.logger.info("Attached image captured for OpenAI vision input: %s", name)
             else:
                 app.logger.info("Attached image could not be downloaded: %s", name)
 
     if not file_lines:
         app.logger.info("No usable Slack file metadata extracted")
-        return "", "", []
+        return "", "", [], []
 
     prompt_suffix = "\n\nSlack attached files metadata:\n" + "\n".join(f"- {line}" for line in file_lines)
     if file_content_lines:
@@ -1092,7 +1099,7 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
         prompt_suffix += "\n\nSaved local Excel copies:\n" + "\n".join(f"- {path}" for path in saved_excel_paths)
         app.logger.info("Saved %s Slack Excel file(s) under local generated_data path", len(saved_excel_paths))
     reply_suffix = "\n\nAttachments in your message: " + ", ".join(reply_items)
-    return prompt_suffix, reply_suffix, image_data_urls
+    return prompt_suffix, reply_suffix, image_data_urls, image_metadata
 
 
 if slack_event_adapter is not None:
@@ -1123,7 +1130,7 @@ if slack_event_adapter is not None:
                 channel = nested_message.get("channel")
         text = _extract_slack_message_text(event)
         slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
-        file_prompt_suffix, file_reply_suffix, image_data_urls = _extract_slack_file_context(event, slack_bot_token)
+        file_prompt_suffix, file_reply_suffix, image_data_urls, image_metadata = _extract_slack_file_context(event, slack_bot_token)
         if not isinstance(channel, str) or not channel:
             return
         if not isinstance(text, str):
@@ -1215,6 +1222,43 @@ if slack_event_adapter is not None:
                 reply_text = str(ai_result.get("text", "")).strip()
             else:
                 reply_text = str(ai_result).strip()
+
+            # Persist image analysis record (EXIF, base64 vision data, AI findings) to
+            # MongoDB asynchronously when images were actually sent to OpenAI vision.
+            if vision_urls_to_send and image_metadata:
+                def _save_image_analysis(
+                    _channel=channel,
+                    _user=event.get("user"),
+                    _ts=event.get("ts"),
+                    _query=text,
+                    _model=model_name,
+                    _findings=reply_text,
+                    _meta=list(image_metadata),
+                ) -> None:
+                    from datetime import datetime, timezone
+                    try:
+                        from plugins.mongodb_plugin import MongoDBPlugin
+                        mongo = MongoDBPlugin()
+                        mongo.create_document("slack_image_analyses", {
+                            "channel": _channel,
+                            "user": _user,
+                            "event_ts": _ts,
+                            "user_query": _query,
+                            "model": _model,
+                            "ai_findings": _findings,
+                            "image_count": len(_meta),
+                            "images": _meta,
+                            "analyzed_at": datetime.now(timezone.utc).isoformat(),
+                        })
+                        app.logger.info(
+                            "Image analysis saved to MongoDB: channel=%s images=%s",
+                            _channel,
+                            len(_meta),
+                        )
+                    except Exception as exc:
+                        app.logger.warning("Failed to save image analysis to MongoDB (non-fatal): %s", exc)
+
+                threading.Thread(target=_save_image_analysis, daemon=True).start()
         except Exception:
             app.logger.exception("Failed to generate Slack AI reply")
             reply_text = "Sorry, I couldn't generate a reply right now."
