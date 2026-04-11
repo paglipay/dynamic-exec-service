@@ -245,6 +245,8 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
     "plugins.system_tools.image_processing_plugin": {
         "class": "ImageProcessingPlugin",
         "methods": [
+            "geocode_address",
+            "reverse_geocode",
             "get_lat_lon",
             "find_nearest_site",
             "detect_objects",

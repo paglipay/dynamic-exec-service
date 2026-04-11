@@ -8,6 +8,8 @@ import math
 import os
 import re
 import shutil
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -134,6 +136,115 @@ class ImageProcessingPlugin:
         resolved_key = (openai_api_key or os.getenv("OPENAI_API_KEY") or "").strip()
         if resolved_key and OpenAI is not None:
             self._openai_client = OpenAI(api_key=resolved_key)
+
+        # Google Maps Geocoding — optional
+        self._google_api_key: str = (os.getenv("GOOGLE_MAPS_API_KEY") or "").strip()
+
+    # ---------------------------------------------------------------------------
+    # Geocoding
+    # ---------------------------------------------------------------------------
+
+    def reverse_geocode(self, lat: float, lon: float) -> dict:
+        """Convert GPS coordinates to a human-readable address using Google Maps.
+
+        Args:
+            lat: Latitude.
+            lon: Longitude.
+
+        Returns:
+            {"formatted_address": str, "place_name": str, "lat": float, "lon": float}
+
+        Raises:
+            RuntimeError: If GOOGLE_MAPS_API_KEY is not set or the API returns an error.
+        """
+        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+            raise ValueError("lat and lon must be numeric")
+
+        if not self._google_api_key:
+            raise RuntimeError("GOOGLE_MAPS_API_KEY environment variable is not set")
+
+        url = (
+            "https://maps.googleapis.com/maps/api/geocode/json?latlng="
+            + str(lat) + "," + str(lon)
+            + "&key=" + self._google_api_key
+        )
+
+        with urllib.request.urlopen(url, timeout=10) as response:  # noqa: S310
+            data = json.loads(response.read())
+
+        status = data.get("status")
+        if status != "OK":
+            raise RuntimeError(
+                f"Reverse geocoding API error: {status} — "
+                + data.get("error_message", "no details")
+            )
+
+        result = data["results"][0]
+        formatted = result.get("formatted_address", "")
+
+        # Extract the most descriptive component (premise, establishment, or route)
+        place_name = ""
+        priority = ["establishment", "premise", "route", "neighborhood", "sublocality"]
+        components: list[dict] = result.get("address_components", [])
+        for target_type in priority:
+            for comp in components:
+                if target_type in comp.get("types", []):
+                    place_name = comp.get("long_name", "")
+                    break
+            if place_name:
+                break
+
+        return {
+            "formatted_address": formatted,
+            "place_name": place_name or formatted.split(",")[0],
+            "lat": lat,
+            "lon": lon,
+        }
+
+    def geocode_address(self, address: str) -> dict:
+        """Convert a street address to GPS coordinates using Google Maps Geocoding API.
+
+        Args:
+            address: Full address string (e.g. "123 Main St, Sydney NSW 2000").
+
+        Returns:
+            {"lat": float, "lon": float, "formatted_address": str}
+
+        Raises:
+            RuntimeError: If GOOGLE_API_KEY is not set or the API returns an error.
+        """
+        if not isinstance(address, str) or not address.strip():
+            raise ValueError("address must be a non-empty string")
+
+        if not self._google_api_key:
+            raise RuntimeError(
+                "GOOGLE_MAPS_API_KEY environment variable is not set"
+            )
+
+        url = (
+            "https://maps.googleapis.com/maps/api/geocode/json?address="
+            + urllib.parse.quote(address.strip())
+            + "&key="
+            + self._google_api_key
+        )
+
+        with urllib.request.urlopen(url, timeout=10) as response:  # noqa: S310
+            data = json.loads(response.read())
+
+        status = data.get("status")
+        if status != "OK":
+            raise RuntimeError(
+                f"Geocoding API error: {status} — "
+                + data.get("error_message", "no details")
+            )
+
+        result = data["results"][0]
+        loc = result["geometry"]["location"]
+        return {
+            "lat": loc["lat"],
+            "lon": loc["lng"],
+            "formatted_address": result.get("formatted_address", ""),
+        }
 
     # ---------------------------------------------------------------------------
     # GPS helpers
