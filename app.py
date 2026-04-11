@@ -1204,7 +1204,7 @@ if slack_event_adapter is not None:
                 "generate_with_function_calls_and_history",
                 [
                     conversation_id,
-                    (text.strip() or "Please analyze attached files.") + file_prompt_suffix + f"\n[slack_channel_id: {channel}]",
+                    (text.strip() or "The user shared a file with no message. Acknowledge receipt briefly. Do NOT describe, analyze, or load any image content — wait for the user to ask.") + file_prompt_suffix + f"\n[slack_channel_id: {channel}]",
                     model_name,
                     max_tool_rounds,
                     vision_urls_to_send,
