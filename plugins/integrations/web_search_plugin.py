@@ -1,4 +1,4 @@
-"""Web search plugin using Google Custom Search JSON API."""
+"""Web search plugin using SerpApi (Google Search results)."""
 
 from __future__ import annotations
 
@@ -9,62 +9,40 @@ import urllib.request
 from typing import Any
 
 
-_GOOGLE_CSE_URL = "https://www.googleapis.com/customsearch/v1"
+_SERPAPI_URL = "https://serpapi.com/search.json"
 
 
 class WebSearchPlugin:
-    """Search the web via Google Custom Search JSON API.
+    """Search the web via SerpApi (Google Search results).
 
     Constructor args:
-        api_key (str): Google API key with Custom Search API enabled.
-                       Falls back to GOOGLE_CSE_API_KEY, then GOOGLE_MAPS_API_KEY env vars.
-        cse_id (str):  Custom Search Engine ID (cx).
-                       Falls back to GOOGLE_CSE_ID env var.
+        api_key (str): SerpApi API key.
+                       Falls back to SERPAPI_KEY env var.
 
-    Free tier: 100 queries/day. Paid: $5 per 1,000 queries after that.
+    Free tier: 100 searches/month, no credit card required.
+    Sign up at https://serpapi.com
     """
 
-    def __init__(
-        self,
-        api_key: str | None = None,
-        cse_id: str | None = None,
-    ) -> None:
-        resolved_key = (
-            api_key
-            or os.getenv("GOOGLE_CSE_API_KEY")
-            or os.getenv("GOOGLE_MAPS_API_KEY")
-            or ""
-        ).strip()
-        resolved_cse = (cse_id or os.getenv("GOOGLE_CSE_ID") or "").strip()
-
+    def __init__(self, api_key: str | None = None) -> None:
+        resolved_key = (api_key or os.getenv("SERPAPI_KEY") or "").strip()
         if not resolved_key:
             raise ValueError(
-                "api_key must be provided or set GOOGLE_CSE_API_KEY "
-                "(or GOOGLE_MAPS_API_KEY as fallback)"
+                "api_key must be provided or set SERPAPI_KEY env var"
             )
-        if not resolved_cse:
-            raise ValueError(
-                "cse_id must be provided or set GOOGLE_CSE_ID env var"
-            )
-
         self._api_key = resolved_key
-        self._cse_id = resolved_cse
 
     # ---------------------------------------------------------------------------
     # Internal
     # ---------------------------------------------------------------------------
 
     def _request(self, params: dict[str, Any]) -> dict:
-        """Execute a Custom Search API request and return parsed JSON."""
-        params = {**params, "key": self._api_key, "cx": self._cse_id}
-        url = _GOOGLE_CSE_URL + "?" + urllib.parse.urlencode(params)
+        """Execute a SerpApi request and return parsed JSON."""
+        params = {**params, "api_key": self._api_key, "engine": "google"}
+        url = _SERPAPI_URL + "?" + urllib.parse.urlencode(params)
         with urllib.request.urlopen(url, timeout=15) as response:  # noqa: S310
             data = json.loads(response.read())
         if "error" in data:
-            err = data["error"]
-            raise RuntimeError(
-                f"Google CSE API error {err.get('code')}: {err.get('message')}"
-            )
+            raise RuntimeError(f"SerpApi error: {data['error']}")
         return data
 
     @staticmethod
@@ -75,7 +53,7 @@ class WebSearchPlugin:
                 "title": item.get("title", ""),
                 "snippet": item.get("snippet", "").replace("\n", " ").strip(),
                 "url": item.get("link", ""),
-                "display_url": item.get("displayLink", ""),
+                "display_url": item.get("displayed_link", ""),
             }
             for item in items
         ]
@@ -99,7 +77,7 @@ class WebSearchPlugin:
         num_results = max(1, min(int(num_results), 10))
 
         data = self._request({"q": query.strip(), "num": num_results})
-        return self._format_items(data.get("items", []))
+        return self._format_items(data.get("organic_results", []))
 
     def search_near_address(
         self,
