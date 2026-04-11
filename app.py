@@ -1006,6 +1006,18 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
                     saved_image_paths.append(saved_path)
                     file_lines[-1] = f"{file_lines[-1]}; saved_as={saved_path}"
 
+                    # Try to read GPS EXIF from the saved JPEG and include in prompt
+                    try:
+                        from plugins.system_tools.image_processing_plugin import ImageProcessingPlugin
+                        _img_plugin = ImageProcessingPlugin()
+                        gps = _img_plugin.extract_gps_coordinates(saved_path)
+                        if gps.get("lat") is not None and gps.get("lon") is not None:
+                            gps_str = f"GPS coordinates embedded in image: lat={gps['lat']}, lon={gps['lon']}"
+                            file_content_lines.append(f"[{name}] {gps_str}")
+                            app.logger.info("GPS EXIF extracted from Slack image %s: %s", name, gps_str)
+                    except Exception as exc:
+                        app.logger.debug("GPS EXIF extraction skipped for %s: %s", name, exc)
+
                 vision_bytes = _resize_image_for_vision(binary_data, mime, SLACK_IMAGE_MAX_LONG_EDGE)
                 encoded = base64.b64encode(vision_bytes).decode("ascii")
                 image_data_urls.append(f"data:{mime};base64,{encoded}")
