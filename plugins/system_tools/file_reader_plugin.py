@@ -484,3 +484,74 @@ class FileReaderPlugin:
             "original_width": original_width,
             "original_height": original_height,
         }
+
+    def read_image_gps(self, file_path: str) -> dict[str, Any]:
+        """Read GPS EXIF coordinates from a JPEG image file.
+
+        Uses piexif to read directly from binary EXIF — no network calls, no database.
+
+        Args:
+            file_path: Path to the JPEG image (relative to base_dir or absolute).
+
+        Returns:
+            {"status": "success", "lat": float|None, "lon": float|None,
+             "has_gps": bool, "file_name": str}
+        """
+        resolved = self._resolve_path(file_path)
+        if not resolved.exists() or not resolved.is_file():
+            cwd_resolved = Path(file_path.strip()).resolve()
+            if cwd_resolved.exists() and cwd_resolved.is_file():
+                resolved = cwd_resolved
+            else:
+                raise ValueError(f"Image file does not exist: {file_path}")
+
+        if resolved.suffix.lower() not in {".jpg", ".jpeg"}:
+            return {"status": "success", "lat": None, "lon": None, "has_gps": False,
+                    "file_name": resolved.name, "note": "GPS EXIF is only supported in JPEG files"}
+
+        try:
+            import piexif
+
+            exif = piexif.load(str(resolved))
+            gps = exif.get("GPS", {})
+            if not gps:
+                return {"status": "success", "lat": None, "lon": None, "has_gps": False,
+                        "file_name": resolved.name}
+
+            def _dms_to_dec(dms: tuple, ref: bytes) -> float | None:
+                try:
+                    d = dms[0][0] / dms[0][1]
+                    m = dms[1][0] / dms[1][1]
+                    s = dms[2][0] / dms[2][1]
+                    val = d + m / 60 + s / 3600
+                    return -val if ref in (b"S", b"W") else val
+                except Exception:
+                    return None
+
+            lat = _dms_to_dec(
+                gps.get(piexif.GPSIFD.GPSLatitude, ()),
+                gps.get(piexif.GPSIFD.GPSLatitudeRef, b"N"),
+            )
+            lon = _dms_to_dec(
+                gps.get(piexif.GPSIFD.GPSLongitude, ()),
+                gps.get(piexif.GPSIFD.GPSLongitudeRef, b"E"),
+            )
+
+            if lat is not None:
+                lat = round(lat, 7)
+            if lon is not None:
+                lon = round(lon, 7)
+
+            return {
+                "status": "success",
+                "lat": lat,
+                "lon": lon,
+                "has_gps": lat is not None and lon is not None,
+                "file_name": resolved.name,
+            }
+        except ImportError:
+            return {"status": "error", "message": "piexif is not installed",
+                    "lat": None, "lon": None, "has_gps": False, "file_name": resolved.name}
+        except Exception as exc:
+            return {"status": "error", "message": f"Failed to read EXIF: {exc}",
+                    "lat": None, "lon": None, "has_gps": False, "file_name": resolved.name}

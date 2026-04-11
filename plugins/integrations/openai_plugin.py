@@ -433,6 +433,16 @@ class OpenAIFunctionCallingPlugin:
                     "Use the EXACT path from the [System event] or tool result — do not shorten or guess it. "
                     "The result contains a 'data_url' field; pass it directly to vision reasoning to describe the image."
                 )
+            if method_name == "read_image_gps":
+                return (
+                    "Read GPS coordinates from a JPEG image's EXIF metadata. "
+                    "ALWAYS use this tool first when the user asks about location, GPS, or where a photo was taken. "
+                    "No constructor_args needed. "
+                    "Use args: [file_path]. "
+                    "Use the EXACT file path from the upload notification or list_files result. "
+                    "Returns lat, lon, and has_gps. If has_gps is true, report the coordinates to the user. "
+                    "Do NOT use ImageProcessingPlugin for GPS — it is slow due to database connections."
+                )
 
         if (
             module_name == "plugins.system_tools.file_system_plugin"

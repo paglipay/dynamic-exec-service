@@ -248,6 +248,7 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "parse_csv_tsv",
             "summarize_excel",
             "read_image_for_vision",
+            "read_image_gps",
         ],
     },
     "plugins.system_tools.image_processing_plugin": {
