@@ -1214,6 +1214,7 @@ if slack_event_adapter is not None:
                     _model=model_name,
                     _findings=reply_text,
                     _meta=list(image_metadata),
+                    _conv_id=conversation_id,
                 ) -> None:
                     from datetime import datetime, timezone
                     try:
@@ -1241,10 +1242,8 @@ if slack_event_adapter is not None:
                         # Inject into conversation history so the bot knows where the record was saved.
                         try:
                             from plugins.integrations.openai_plugin import OpenAIFunctionCallingPlugin
-                            forced_conv_id = os.getenv("SLACK_CONVERSATION_ID", "").strip()
-                            conv_id = forced_conv_id if forced_conv_id else f"slack:{_channel}"
                             openai_plugin = OpenAIFunctionCallingPlugin()
-                            history = openai_plugin._load_conversation_history(conv_id)
+                            history = openai_plugin._load_conversation_history(_conv_id)
                             image_names = ", ".join(m.get("name", "unknown") for m in _meta)
                             history.append({
                                 "role": "assistant",
@@ -1256,8 +1255,8 @@ if slack_event_adapter is not None:
                                     f"Saved at: {analyzed_at}"
                                 ),
                             })
-                            openai_plugin._save_conversation_history(conv_id, history)
-                            app.logger.info("Image analysis MongoDB save injected into conversation %s", conv_id)
+                            openai_plugin._save_conversation_history(_conv_id, history)
+                            app.logger.info("Image analysis MongoDB save injected into conversation %s", _conv_id)
                         except Exception as exc:
                             app.logger.debug("History injection after image analysis save failed (non-fatal): %s", exc)
                     except Exception as exc:
