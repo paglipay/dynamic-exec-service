@@ -1205,7 +1205,8 @@ if slack_event_adapter is not None:
             # Persist image analysis record (EXIF, base64 vision data, AI findings) to
             # MongoDB asynchronously whenever images were present in this Slack event
             # (whether sent inline or analysed via read_image_for_vision tool).
-            app.logger.info("[MongoDB-save] image_metadata present=%s count=%s", bool(image_metadata), len(image_metadata))
+            print(f"[MongoDB-save] image_metadata present={bool(image_metadata)} count={len(image_metadata)}", flush=True)
+            app.logger.warning("[MongoDB-save] image_metadata present=%s count=%s", bool(image_metadata), len(image_metadata))
             if image_metadata:
                 def _save_image_analysis(
                     _channel=channel,
