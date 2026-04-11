@@ -242,4 +242,16 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "read_image_for_vision",
         ],
     },
+    "plugins.system_tools.image_processing_plugin": {
+        "class": "ImageProcessingPlugin",
+        "methods": [
+            "get_lat_lon",
+            "find_nearest_site",
+            "detect_objects",
+            "classify_project",
+            "process_and_store",
+            "tag_image",
+            "scan_folder",
+        ],
+    },
 }
