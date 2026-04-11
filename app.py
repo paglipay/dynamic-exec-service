@@ -1205,15 +1205,21 @@ if slack_event_adapter is not None:
             # For images the model loaded via read_image_for_vision (e.g. Streamlit uploads,
             # generated_data files), build metadata from the local file path so MongoDB save
             # works regardless of where the image was originally uploaded.
+            print(f"[MongoDB-save] ai_result type={type(ai_result).__name__} is_dict={isinstance(ai_result, dict)}", flush=True)
             if isinstance(ai_result, dict):
                 _analyzed_paths = ai_result.get("analyzed_image_paths") or []
                 _existing_saved_paths = {m.get("saved_path") for m in image_metadata}
+                print(f"[MongoDB-save] analyzed_image_paths={_analyzed_paths}", flush=True)
+                print(f"[MongoDB-save] existing_saved_paths={_existing_saved_paths}", flush=True)
                 for _ap in _analyzed_paths:
                     if _ap in _existing_saved_paths:
-                        continue  # already captured from Slack attachment
+                        print(f"[MongoDB-save] Skipping {_ap} (already in Slack attachment metadata)", flush=True)
+                        continue
+                    print(f"[MongoDB-save] Building metadata from path: {_ap}", flush=True)
                     try:
                         with open(_ap, "rb") as _f:
                             _ap_bytes = _f.read()
+                        print(f"[MongoDB-save] File read OK: {_ap} bytes={len(_ap_bytes)}", flush=True)
                         _ap_name = os.path.basename(_ap)
                         _ap_gps: dict | None = None
                         if _ap.lower().endswith((".jpg", ".jpeg")):
@@ -1241,8 +1247,9 @@ if slack_event_adapter is not None:
                                     )
                                     if _lat2 is not None and _lon2 is not None:
                                         _ap_gps = {"lat": round(_lat2, 7), "lon": round(_lon2, 7)}
-                            except Exception:
-                                pass
+                                        print(f"[MongoDB-save] GPS extracted: {_ap_gps}", flush=True)
+                            except Exception as _gps_exc:
+                                print(f"[MongoDB-save] GPS extraction failed (non-fatal): {_gps_exc}", flush=True)
                         _ap_mime = "image/jpeg" if _ap.lower().endswith((".jpg", ".jpeg")) else "image/png"
                         _vis_bytes, _vis_mime = _resize_image_for_vision(_ap_bytes, _ap_mime, SLACK_IMAGE_MAX_LONG_EDGE)
                         _vis_enc = base64.b64encode(_vis_bytes).decode("ascii")
@@ -1252,9 +1259,12 @@ if slack_event_adapter is not None:
                             "gps": _ap_gps,
                             "vision_data_url": f"data:{_vis_mime};base64,{_vis_enc}",
                         })
-                        app.logger.info("[MongoDB-save] Built metadata for tool-analyzed image: %s", _ap)
+                        print(f"[MongoDB-save] Appended metadata for: {_ap_name}", flush=True)
                     except Exception as _exc:
+                        print(f"[MongoDB-save] FAILED to build metadata for {_ap}: {_exc}", flush=True)
                         app.logger.warning("[MongoDB-save] Could not build metadata for %s: %s", _ap, _exc)
+            else:
+                print(f"[MongoDB-save] ai_result is not a dict — analyzed_image_paths unavailable", flush=True)
 
             # Persist image analysis record (EXIF, base64 vision data, AI findings) to
             # MongoDB asynchronously whenever images were present in this Slack event
