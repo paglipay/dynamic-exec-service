@@ -1840,35 +1840,40 @@ def upload_file() -> Any:
     else:
         f.save(str(dest))
 
-    # Write GPS EXIF data when lat/lon are provided (JPEG only)
+    # Write GPS EXIF data when lat/lon are provided and the file has no existing GPS (JPEG only)
     if has_gps and dest.suffix.lower() in _JPEG_EXTS:
         try:
             import piexif
 
-            def _to_dms_rational(degrees: float) -> tuple:
-                """Convert decimal degrees to EXIF DMS rational tuples."""
-                d = int(abs(degrees))
-                m_float = (abs(degrees) - d) * 60
-                m = int(m_float)
-                s = round((m_float - m) * 60 * 10000)
-                return ((d, 1), (m, 1), (s, 10000))
-
-            lat_val = float(lat_raw)
-            lon_val = float(lon_raw)
-            exif_dict = {"GPS": {
-                piexif.GPSIFD.GPSLatitudeRef: b"N" if lat_val >= 0 else b"S",
-                piexif.GPSIFD.GPSLatitude: _to_dms_rational(lat_val),
-                piexif.GPSIFD.GPSLongitudeRef: b"E" if lon_val >= 0 else b"W",
-                piexif.GPSIFD.GPSLongitude: _to_dms_rational(lon_val),
-            }}
             existing_bytes = dest.read_bytes()
             try:
                 existing_exif = piexif.load(existing_bytes)
-                existing_exif["GPS"] = exif_dict["GPS"]
-                exif_bytes = piexif.dump(existing_exif)
             except Exception:
-                exif_bytes = piexif.dump(exif_dict)
-            piexif.insert(exif_bytes, existing_bytes, str(dest))
+                existing_exif = {"GPS": {}}
+
+            already_has_gps = bool(existing_exif.get("GPS"))
+            if already_has_gps:
+                app.logger.info("Skipping GPS EXIF write for %s — existing GPS data found", dest.name)
+            else:
+                def _to_dms_rational(degrees: float) -> tuple:
+                    """Convert decimal degrees to EXIF DMS rational tuples."""
+                    d = int(abs(degrees))
+                    m_float = (abs(degrees) - d) * 60
+                    m = int(m_float)
+                    s = round((m_float - m) * 60 * 10000)
+                    return ((d, 1), (m, 1), (s, 10000))
+
+                lat_val = float(lat_raw)
+                lon_val = float(lon_raw)
+                existing_exif["GPS"] = {
+                    piexif.GPSIFD.GPSLatitudeRef: b"N" if lat_val >= 0 else b"S",
+                    piexif.GPSIFD.GPSLatitude: _to_dms_rational(lat_val),
+                    piexif.GPSIFD.GPSLongitudeRef: b"E" if lon_val >= 0 else b"W",
+                    piexif.GPSIFD.GPSLongitude: _to_dms_rational(lon_val),
+                }
+                exif_bytes = piexif.dump(existing_exif)
+                piexif.insert(exif_bytes, existing_bytes, str(dest))
+                app.logger.info("GPS EXIF written to %s: lat=%s, lon=%s", dest.name, lat_raw, lon_raw)
         except Exception as exc:
             app.logger.warning("Failed to write GPS EXIF to %s: %s", dest.name, exc)
 
