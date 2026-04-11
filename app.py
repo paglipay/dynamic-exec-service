@@ -1006,17 +1006,38 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
                     saved_image_paths.append(saved_path)
                     file_lines[-1] = f"{file_lines[-1]}; saved_as={saved_path}"
 
-                    # Try to read GPS EXIF from the saved JPEG and include in prompt
-                    try:
-                        from plugins.system_tools.image_processing_plugin import ImageProcessingPlugin
-                        _img_plugin = ImageProcessingPlugin()
-                        gps = _img_plugin.extract_gps_coordinates(saved_path)
-                        if gps.get("lat") is not None and gps.get("lon") is not None:
-                            gps_str = f"GPS coordinates embedded in image: lat={gps['lat']}, lon={gps['lon']}"
-                            file_content_lines.append(f"[{name}] {gps_str}")
-                            app.logger.info("GPS EXIF extracted from Slack image %s: %s", name, gps_str)
-                    except Exception as exc:
-                        app.logger.debug("GPS EXIF extraction skipped for %s: %s", name, exc)
+                    # Try to read GPS EXIF from the saved JPEG and include in prompt.
+                    # Use piexif directly to avoid the ImageProcessingPlugin constructor
+                    # which opens a MongoDB connection and adds significant latency.
+                    if saved_path.lower().endswith((".jpg", ".jpeg")):
+                        try:
+                            import piexif
+                            _exif = piexif.load(saved_path)
+                            _gps = _exif.get("GPS", {})
+                            if _gps:
+                                def _dms_to_dec(dms: tuple, ref: bytes) -> float | None:
+                                    try:
+                                        d = dms[0][0] / dms[0][1]
+                                        m = dms[1][0] / dms[1][1]
+                                        s = dms[2][0] / dms[2][1]
+                                        val = d + m / 60 + s / 3600
+                                        return -val if ref in (b"S", b"W") else val
+                                    except Exception:
+                                        return None
+                                _lat = _dms_to_dec(
+                                    _gps.get(piexif.GPSIFD.GPSLatitude, ()),
+                                    _gps.get(piexif.GPSIFD.GPSLatitudeRef, b"N"),
+                                )
+                                _lon = _dms_to_dec(
+                                    _gps.get(piexif.GPSIFD.GPSLongitude, ()),
+                                    _gps.get(piexif.GPSIFD.GPSLongitudeRef, b"E"),
+                                )
+                                if _lat is not None and _lon is not None:
+                                    gps_str = f"GPS coordinates embedded in image: lat={round(_lat, 7)}, lon={round(_lon, 7)}"
+                                    file_content_lines.append(f"[{name}] {gps_str}")
+                                    app.logger.info("GPS EXIF extracted from Slack image %s: %s", name, gps_str)
+                        except Exception as exc:
+                            app.logger.debug("GPS EXIF extraction skipped for %s: %s", name, exc)
 
                 vision_bytes = _resize_image_for_vision(binary_data, mime, SLACK_IMAGE_MAX_LONG_EDGE)
                 encoded = base64.b64encode(vision_bytes).decode("ascii")
