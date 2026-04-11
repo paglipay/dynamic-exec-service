@@ -614,6 +614,24 @@ def _is_unreadable_slack_preview_text(text: str) -> bool:
     return normalized in SLACK_UNREADABLE_PREVIEW_TEXTS
 
 
+_VISUAL_ANALYSIS_KEYWORDS = frozenset({
+    "describe", "what is", "what's in", "what does", "what do you see",
+    "show me", "look at", "analyze", "analyse", "analyse", "identify",
+    "tell me about", "what can you see", "what can you tell",
+    "summarize the image", "summarise the image", "read the image",
+    "what is shown", "what is this", "image analysis", "analyze image",
+    "analyse image", "recognize", "recognise", "detect",
+})
+
+
+def _is_visual_analysis_request(text: str) -> bool:
+    """Return True when the message is explicitly asking for visual image analysis."""
+    if not isinstance(text, str) or not text.strip():
+        return False
+    normalized = text.strip().lower()
+    return any(kw in normalized for kw in _VISUAL_ANALYSIS_KEYWORDS)
+
+
 def _parse_tsv_rows(tsv_text: str, max_rows: int = 25) -> list[dict[str, str]]:
     """Parse TSV text into row dicts using the first row as headers."""
     if not isinstance(tsv_text, str) or not tsv_text.strip():
@@ -1171,6 +1189,16 @@ if slack_event_adapter is not None:
                 "OpenAIFunctionCallingPlugin",
                 {},
             )
+            # Only send image pixels to OpenAI when the user explicitly asks for
+            # visual analysis. For all other requests (EXIF, metadata, file info,
+            # etc.) the bot can call read_image_for_vision as a tool if needed.
+            # This avoids unnecessary vision token costs on every image upload.
+            vision_urls_to_send = image_data_urls if _is_visual_analysis_request(text) else []
+            if image_data_urls and not vision_urls_to_send:
+                app.logger.info(
+                    "Suppressing %s vision image(s) — not a visual analysis request",
+                    len(image_data_urls),
+                )
             ai_result = executor.call_method(
                 "plugins.integrations.openai_plugin",
                 "generate_with_function_calls_and_history",
@@ -1179,7 +1207,7 @@ if slack_event_adapter is not None:
                     (text.strip() or "Please analyze attached files.") + file_prompt_suffix + f"\n[slack_channel_id: {channel}]",
                     model_name,
                     max_tool_rounds,
-                    image_data_urls,
+                    vision_urls_to_send,
                 ],
             )
             app.logger.info("Slack AI generation completed; result_type=%s", type(ai_result).__name__)
