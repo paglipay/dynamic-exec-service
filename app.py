@@ -612,23 +612,6 @@ def _is_unreadable_slack_preview_text(text: str) -> bool:
     return normalized in SLACK_UNREADABLE_PREVIEW_TEXTS
 
 
-_VISUAL_ANALYSIS_KEYWORDS = frozenset({
-    "describe", "what is", "what's in", "what does", "what do you see",
-    "show me", "look at", "analyze", "analyse", "analyse", "identify",
-    "tell me about", "what can you see", "what can you tell",
-    "summarize the image", "summarise the image", "read the image",
-    "what is shown", "what is this", "image analysis", "analyze image",
-    "analyse image", "recognize", "recognise", "detect",
-})
-
-
-def _is_visual_analysis_request(text: str) -> bool:
-    """Return True when the message is explicitly asking for visual image analysis."""
-    if not isinstance(text, str) or not text.strip():
-        return False
-    normalized = text.strip().lower()
-    return any(kw in normalized for kw in _VISUAL_ANALYSIS_KEYWORDS)
-
 
 def _parse_tsv_rows(tsv_text: str, max_rows: int = 25) -> list[dict[str, str]]:
     """Parse TSV text into row dicts using the first row as headers."""
@@ -1196,16 +1179,12 @@ if slack_event_adapter is not None:
                 "OpenAIFunctionCallingPlugin",
                 {},
             )
-            # Only send image pixels to OpenAI when the user explicitly asks for
-            # visual analysis. For all other requests (EXIF, metadata, file info,
-            # etc.) the bot can call read_image_for_vision as a tool if needed.
-            # This avoids unnecessary vision token costs on every image upload.
-            vision_urls_to_send = image_data_urls if _is_visual_analysis_request(text) else []
-            if image_data_urls and not vision_urls_to_send:
-                app.logger.info(
-                    "Suppressing %s vision image(s) — not a visual analysis request",
-                    len(image_data_urls),
-                )
+            # Always send image pixels inline — the model decides contextually whether to
+            # analyze them based on the system prompt and conversation. This is more reliable
+            # than keyword matching and handles typos, synonyms, and implicit intent correctly.
+            vision_urls_to_send = image_data_urls
+            if vision_urls_to_send:
+                app.logger.info("Sending %s vision image(s) inline to OpenAI", len(vision_urls_to_send))
             ai_result = executor.call_method(
                 "plugins.integrations.openai_plugin",
                 "generate_with_function_calls_and_history",
@@ -1224,8 +1203,9 @@ if slack_event_adapter is not None:
                 reply_text = str(ai_result).strip()
 
             # Persist image analysis record (EXIF, base64 vision data, AI findings) to
-            # MongoDB asynchronously when images were actually sent to OpenAI vision.
-            if vision_urls_to_send and image_metadata:
+            # MongoDB asynchronously whenever images were present in this Slack event
+            # (whether sent inline or analysed via read_image_for_vision tool).
+            if image_metadata:
                 def _save_image_analysis(
                     _channel=channel,
                     _user=event.get("user"),
