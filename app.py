@@ -1759,6 +1759,40 @@ def upload_file() -> Any:
     dest.parent.mkdir(parents=True, exist_ok=True)
     f.save(str(dest))
 
+    # Write GPS EXIF data when lat/lon are provided (JPEG only)
+    lat_raw = request.form.get("lat", "").strip()
+    lon_raw = request.form.get("lon", "").strip()
+    if lat_raw and lon_raw and dest.suffix.lower() in {".jpg", ".jpeg"}:
+        try:
+            import piexif
+
+            def _to_dms_rational(degrees: float) -> tuple:
+                """Convert decimal degrees to EXIF DMS rational tuples."""
+                d = int(abs(degrees))
+                m_float = (abs(degrees) - d) * 60
+                m = int(m_float)
+                s = round((m_float - m) * 60 * 10000)
+                return ((d, 1), (m, 1), (s, 10000))
+
+            lat_val = float(lat_raw)
+            lon_val = float(lon_raw)
+            exif_dict = {"GPS": {
+                piexif.GPSIFD.GPSLatitudeRef: b"N" if lat_val >= 0 else b"S",
+                piexif.GPSIFD.GPSLatitude: _to_dms_rational(lat_val),
+                piexif.GPSIFD.GPSLongitudeRef: b"E" if lon_val >= 0 else b"W",
+                piexif.GPSIFD.GPSLongitude: _to_dms_rational(lon_val),
+            }}
+            existing_bytes = dest.read_bytes()
+            try:
+                existing_exif = piexif.load(existing_bytes)
+                existing_exif["GPS"] = exif_dict["GPS"]
+                exif_bytes = piexif.dump(existing_exif)
+            except Exception:
+                exif_bytes = piexif.dump(exif_dict)
+            piexif.insert(exif_bytes, existing_bytes, str(dest))
+        except Exception as exc:
+            app.logger.warning("Failed to write GPS EXIF to %s: %s", dest.name, exc)
+
     size_bytes = dest.stat().st_size
     relative = dest.relative_to(_media_storage_plugin._base).as_posix()
 

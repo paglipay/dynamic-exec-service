@@ -20,3 +20,4 @@ google-auth-oauthlib
 pymongo
 Pillow
 hachoir
+piexif
