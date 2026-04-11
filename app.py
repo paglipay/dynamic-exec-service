@@ -1183,6 +1183,12 @@ def _error_response(message: str, status_code: int = 400):
     return jsonify({"status": "error", "message": message}), status_code
 
 
+@app.get("/")
+def health_check() -> Any:
+    """Health-check endpoint."""
+    return jsonify({"status": "ok"})
+
+
 @app.post("/slack/interactivity")
 def slack_interactivity() -> Any:
     """Handle Slack interactive payloads such as modal form submissions."""
