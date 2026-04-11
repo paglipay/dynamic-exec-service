@@ -1239,7 +1239,8 @@ if slack_event_adapter is not None:
                     try:
                         from plugins.mongodb_plugin import MongoDBPlugin
                         mongo = MongoDBPlugin()
-                        mongo.create_document("slack_image_analyses", {
+                        analyzed_at = datetime.now(timezone.utc).isoformat()
+                        result = mongo.create_document("slack_image_analyses", {
                             "channel": _channel,
                             "user": _user,
                             "event_ts": _ts,
@@ -1248,13 +1249,37 @@ if slack_event_adapter is not None:
                             "ai_findings": _findings,
                             "image_count": len(_meta),
                             "images": _meta,
-                            "analyzed_at": datetime.now(timezone.utc).isoformat(),
+                            "analyzed_at": analyzed_at,
                         })
+                        inserted_id = result.get("inserted_id", "unknown") if isinstance(result, dict) else "unknown"
                         app.logger.info(
-                            "Image analysis saved to MongoDB: channel=%s images=%s",
+                            "Image analysis saved to MongoDB: channel=%s images=%s id=%s",
                             _channel,
                             len(_meta),
+                            inserted_id,
                         )
+                        # Inject into conversation history so the bot knows where the record was saved.
+                        try:
+                            from plugins.integrations.openai_plugin import OpenAIFunctionCallingPlugin
+                            forced_conv_id = os.getenv("SLACK_CONVERSATION_ID", "").strip()
+                            conv_id = forced_conv_id if forced_conv_id else f"slack:{_channel}"
+                            openai_plugin = OpenAIFunctionCallingPlugin()
+                            history = openai_plugin._load_conversation_history(conv_id)
+                            image_names = ", ".join(m.get("name", "unknown") for m in _meta)
+                            history.append({
+                                "role": "assistant",
+                                "content": (
+                                    f"[System event] I saved the image analysis to MongoDB.\n"
+                                    f"Collection: slack_image_analyses\n"
+                                    f"Document ID: {inserted_id}\n"
+                                    f"Images: {image_names}\n"
+                                    f"Saved at: {analyzed_at}"
+                                ),
+                            })
+                            openai_plugin._save_conversation_history(conv_id, history)
+                            app.logger.info("Image analysis MongoDB save injected into conversation %s", conv_id)
+                        except Exception as exc:
+                            app.logger.debug("History injection after image analysis save failed (non-fatal): %s", exc)
                     except Exception as exc:
                         app.logger.warning("Failed to save image analysis to MongoDB (non-fatal): %s", exc)
 
