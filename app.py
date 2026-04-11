@@ -1205,6 +1205,7 @@ if slack_event_adapter is not None:
             # Persist image analysis record (EXIF, base64 vision data, AI findings) to
             # MongoDB asynchronously whenever images were present in this Slack event
             # (whether sent inline or analysed via read_image_for_vision tool).
+            app.logger.info("[MongoDB-save] image_metadata present=%s count=%s", bool(image_metadata), len(image_metadata))
             if image_metadata:
                 def _save_image_analysis(
                     _channel=channel,
@@ -1216,12 +1217,16 @@ if slack_event_adapter is not None:
                     _meta=list(image_metadata),
                     _conv_id=conversation_id,
                 ) -> None:
+                    print("[MongoDB-save] Thread started", flush=True)
+                    app.logger.info("[MongoDB-save] Thread started: channel=%s user=%s images=%s", _channel, _user, len(_meta))
                     from datetime import datetime, timezone
                     try:
+                        print("[MongoDB-save] Importing MongoDBPlugin", flush=True)
                         from plugins.mongodb_plugin import MongoDBPlugin
                         mongo = MongoDBPlugin()
+                        print(f"[MongoDB-save] MongoDBPlugin instantiated: {mongo}", flush=True)
                         analyzed_at = datetime.now(timezone.utc).isoformat()
-                        result = mongo.create_document("slack_image_analyses", {
+                        doc = {
                             "channel": _channel,
                             "user": _user,
                             "event_ts": _ts,
@@ -1231,10 +1236,13 @@ if slack_event_adapter is not None:
                             "image_count": len(_meta),
                             "images": _meta,
                             "analyzed_at": analyzed_at,
-                        })
+                        }
+                        print(f"[MongoDB-save] Calling create_document with {len(_meta)} image(s)", flush=True)
+                        result = mongo.create_document("slack_image_analyses", doc)
+                        print(f"[MongoDB-save] create_document result: {result}", flush=True)
                         inserted_id = result.get("inserted_id", "unknown") if isinstance(result, dict) else "unknown"
                         app.logger.info(
-                            "Image analysis saved to MongoDB: channel=%s images=%s id=%s",
+                            "[MongoDB-save] Saved: channel=%s images=%s id=%s",
                             _channel,
                             len(_meta),
                             inserted_id,
@@ -1256,12 +1264,16 @@ if slack_event_adapter is not None:
                                 ),
                             })
                             openai_plugin._save_conversation_history(_conv_id, history)
-                            app.logger.info("Image analysis MongoDB save injected into conversation %s", _conv_id)
+                            print(f"[MongoDB-save] History injected into conversation {_conv_id}", flush=True)
+                            app.logger.info("[MongoDB-save] History injected into conversation %s", _conv_id)
                         except Exception as exc:
-                            app.logger.debug("History injection after image analysis save failed (non-fatal): %s", exc)
+                            print(f"[MongoDB-save] History injection failed (non-fatal): {exc}", flush=True)
+                            app.logger.warning("[MongoDB-save] History injection failed (non-fatal): %s", exc)
                     except Exception as exc:
-                        app.logger.warning("Failed to save image analysis to MongoDB (non-fatal): %s", exc)
+                        print(f"[MongoDB-save] FAILED: {exc}", flush=True)
+                        app.logger.exception("[MongoDB-save] Failed to save image analysis to MongoDB: %s", exc)
 
+                print(f"[MongoDB-save] Starting background thread for {len(image_metadata)} image(s)", flush=True)
                 threading.Thread(target=_save_image_analysis, daemon=True).start()
         except Exception:
             app.logger.exception("Failed to generate Slack AI reply")
