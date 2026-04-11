@@ -175,6 +175,91 @@ class OpenAIFunctionCallingPlugin:
         diagnostics["message"] = "Redis connectivity and write/read checks passed"
         return diagnostics
 
+    def clear_conversation_history(self, conversation_id: str) -> dict[str, Any]:
+        """Clear stored conversation history for one conversation or all.
+
+        Args:
+            conversation_id: The conversation key to clear (e.g. "slack:C12345").
+                             Pass "*" to delete ALL conversation keys under the prefix.
+
+        Returns a dict with ``status``, ``backend``, ``cleared_count``, and
+        optionally ``cleared_keys`` listing what was removed.
+        """
+        if not isinstance(conversation_id, str) or not conversation_id.strip():
+            raise ValueError("conversation_id must be a non-empty string, or '*' to clear all")
+
+        conversation_id = conversation_id.strip()
+        redis_client = getattr(self, "_redis_client", None)
+        backend = "redis" if redis_client is not None else "memory"
+
+        if conversation_id == "*":
+            # Clear everything under this plugin's conversation prefix.
+            if redis_client is not None:
+                pattern = f"{self._conversation_redis_prefix}:*"
+                cursor = 0
+                cleared_keys: list[str] = []
+                try:
+                    while True:
+                        cursor, batch = redis_client.scan(cursor, match=pattern, count=100)
+                        if batch:
+                            redis_client.delete(*batch)
+                            cleared_keys.extend(batch)
+                        if cursor == 0:
+                            break
+                except Exception as exc:
+                    return {
+                        "status": "error",
+                        "backend": backend,
+                        "message": f"Redis scan/delete failed: {exc}",
+                    }
+                return {
+                    "status": "success",
+                    "backend": backend,
+                    "cleared_count": len(cleared_keys),
+                    "cleared_keys": cleared_keys,
+                }
+            else:
+                store = getattr(self, "_conversation_store", {})
+                count = len(store)
+                keys = list(store.keys())
+                store.clear()
+                return {
+                    "status": "success",
+                    "backend": backend,
+                    "cleared_count": count,
+                    "cleared_keys": keys,
+                }
+
+        # Clear a single specific conversation.
+        if redis_client is not None:
+            redis_key = self._conversation_history_key(conversation_id)
+            try:
+                deleted = redis_client.delete(redis_key)
+            except Exception as exc:
+                return {
+                    "status": "error",
+                    "backend": backend,
+                    "message": f"Redis delete failed: {exc}",
+                }
+            return {
+                "status": "success",
+                "backend": backend,
+                "conversation_id": conversation_id,
+                "cleared_count": int(deleted),
+                "existed": bool(deleted),
+            }
+        else:
+            store = getattr(self, "_conversation_store", {})
+            existed = conversation_id in store
+            store.pop(conversation_id, None)
+            return {
+                "status": "success",
+                "backend": backend,
+                "conversation_id": conversation_id,
+                "cleared_count": 1 if existed else 0,
+                "existed": existed,
+            }
+
     def _build_tool_mapping(self) -> dict[str, tuple[str, str, str]]:
         """Build a deterministic mapping from tool names to allowlisted targets."""
         mapping: dict[str, tuple[str, str, str]] = {}

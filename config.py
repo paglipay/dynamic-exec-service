@@ -187,6 +187,7 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "generate_with_function_calls",
             "generate_with_function_calls_and_history",
             "redis_health_check",
+            "clear_conversation_history",
         ],
     },
     "plugins.integrations.pika_plugin": {
