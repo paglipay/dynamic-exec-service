@@ -1202,6 +1202,60 @@ if slack_event_adapter is not None:
             else:
                 reply_text = str(ai_result).strip()
 
+            # For images the model loaded via read_image_for_vision (e.g. Streamlit uploads,
+            # generated_data files), build metadata from the local file path so MongoDB save
+            # works regardless of where the image was originally uploaded.
+            if isinstance(ai_result, dict):
+                _analyzed_paths = ai_result.get("analyzed_image_paths") or []
+                _existing_saved_paths = {m.get("saved_path") for m in image_metadata}
+                for _ap in _analyzed_paths:
+                    if _ap in _existing_saved_paths:
+                        continue  # already captured from Slack attachment
+                    try:
+                        with open(_ap, "rb") as _f:
+                            _ap_bytes = _f.read()
+                        _ap_name = os.path.basename(_ap)
+                        _ap_gps: dict | None = None
+                        if _ap.lower().endswith((".jpg", ".jpeg")):
+                            try:
+                                import piexif as _piexif
+                                _exif_d = _piexif.load(_ap)
+                                _gps_d = _exif_d.get("GPS", {})
+                                if _gps_d:
+                                    def _dms2dec(_dms: tuple, _ref: bytes) -> float | None:
+                                        try:
+                                            d = _dms[0][0] / _dms[0][1]
+                                            m = _dms[1][0] / _dms[1][1]
+                                            s = _dms[2][0] / _dms[2][1]
+                                            val = d + m / 60 + s / 3600
+                                            return -val if _ref in (b"S", b"W") else val
+                                        except Exception:
+                                            return None
+                                    _lat2 = _dms2dec(
+                                        _gps_d.get(_piexif.GPSIFD.GPSLatitude, ()),
+                                        _gps_d.get(_piexif.GPSIFD.GPSLatitudeRef, b"N"),
+                                    )
+                                    _lon2 = _dms2dec(
+                                        _gps_d.get(_piexif.GPSIFD.GPSLongitude, ()),
+                                        _gps_d.get(_piexif.GPSIFD.GPSLongitudeRef, b"E"),
+                                    )
+                                    if _lat2 is not None and _lon2 is not None:
+                                        _ap_gps = {"lat": round(_lat2, 7), "lon": round(_lon2, 7)}
+                            except Exception:
+                                pass
+                        _ap_mime = "image/jpeg" if _ap.lower().endswith((".jpg", ".jpeg")) else "image/png"
+                        _vis_bytes, _vis_mime = _resize_image_for_vision(_ap_bytes, _ap_mime, SLACK_IMAGE_MAX_LONG_EDGE)
+                        _vis_enc = base64.b64encode(_vis_bytes).decode("ascii")
+                        image_metadata.append({
+                            "name": _ap_name,
+                            "saved_path": _ap,
+                            "gps": _ap_gps,
+                            "vision_data_url": f"data:{_vis_mime};base64,{_vis_enc}",
+                        })
+                        app.logger.info("[MongoDB-save] Built metadata for tool-analyzed image: %s", _ap)
+                    except Exception as _exc:
+                        app.logger.warning("[MongoDB-save] Could not build metadata for %s: %s", _ap, _exc)
+
             # Persist image analysis record (EXIF, base64 vision data, AI findings) to
             # MongoDB asynchronously whenever images were present in this Slack event
             # (whether sent inline or analysed via read_image_for_vision tool).

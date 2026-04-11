@@ -674,10 +674,11 @@ class OpenAIFunctionCallingPlugin:
         messages: list[dict[str, Any]],
         model: str,
         max_tool_rounds: int,
-    ) -> tuple[str, int]:
+    ) -> tuple[str, int, list[str]]:
         """Run function-calling rounds until final assistant text is produced."""
         tools = self._build_tools()
         executed_tool_calls = 0
+        analyzed_image_paths: list[str] = []
 
         for _ in range(max_tool_rounds):
             try:
@@ -707,6 +708,16 @@ class OpenAIFunctionCallingPlugin:
                     tool_args = tool_call.function.arguments or "{}"
                     tool_output = self._execute_tool_call(tool_name, tool_args)
                     executed_tool_calls += 1
+                    # Track file paths passed to read_image_for_vision so callers can
+                    # build MongoDB metadata for images from any upload source.
+                    _tgt = self._tool_name_to_target.get(tool_name, ("", "", ""))
+                    if _tgt[2] == "read_image_for_vision":
+                        try:
+                            _targs = json.loads(tool_args).get("args", [])
+                            if _targs and isinstance(_targs[0], str) and _targs[0]:
+                                analyzed_image_paths.append(_targs[0])
+                        except Exception:
+                            pass
                     messages.append(
                         {
                             "role": "tool",
@@ -751,7 +762,7 @@ class OpenAIFunctionCallingPlugin:
                         "content": final_text.strip(),
                     }
                 )
-                return final_text.strip(), executed_tool_calls
+                return final_text.strip(), executed_tool_calls, analyzed_image_paths
 
         raise ValueError("Exceeded max tool-calling rounds without a final response")
 
@@ -855,7 +866,7 @@ class OpenAIFunctionCallingPlugin:
             self._build_user_message(prompt, image_data_urls),
         ]
 
-        final_text, executed_tool_calls = self._execute_chat_turn(
+        final_text, executed_tool_calls, _ = self._execute_chat_turn(
             messages,
             model.strip(),
             max_tool_rounds,
@@ -928,7 +939,7 @@ class OpenAIFunctionCallingPlugin:
             messages.insert(0, {"role": "system", "content": self._build_system_prompt()})
         messages.append(self._build_user_message(prompt, image_data_urls))
 
-        final_text, executed_tool_calls = self._execute_chat_turn(
+        final_text, executed_tool_calls, analyzed_image_paths = self._execute_chat_turn(
             messages,
             model.strip(),
             max_tool_rounds,
@@ -950,4 +961,5 @@ class OpenAIFunctionCallingPlugin:
                 or compaction_meta_after_turn.get("compacted")
             ),
             "history_estimated_tokens": compaction_meta_after_turn.get("after_estimated_tokens"),
+            "analyzed_image_paths": analyzed_image_paths,
         }
