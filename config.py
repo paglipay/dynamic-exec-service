@@ -219,6 +219,14 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "commit_streamlit_app",
         ],
     },
+    "plugins.integrations.web_search_plugin": {
+        "class": "WebSearchPlugin",
+        "methods": [
+            "web_search",
+            "search_near_address",
+            "search_image_context",
+        ],
+    },
     "plugins.system_tools.media_storage_plugin": {
         "class": "MediaStoragePlugin",
         "methods": [
