@@ -776,6 +776,29 @@ class OpenAIFunctionCallingPlugin:
             "tool_calls_executed": executed_tool_calls,
         }
 
+    @staticmethod
+    def _strip_image_urls_from_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Return messages with image_url content removed, keeping only text.
+
+        Prevents base64 image pixels from being persisted in conversation history,
+        which would give the model vision access on every subsequent request.
+        """
+        stripped = []
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                text_parts = [
+                    part for part in content
+                    if isinstance(part, dict) and part.get("type") == "text"
+                ]
+                if text_parts:
+                    text_only = " ".join(p.get("text", "") for p in text_parts).strip()
+                    stripped.append({**msg, "content": text_only})
+                # Skip messages that were purely image_url (no text) — they carry no useful history
+            else:
+                stripped.append(msg)
+        return stripped
+
     def generate_with_function_calls_and_history(
         self,
         conversation_id: str,
@@ -819,7 +842,7 @@ class OpenAIFunctionCallingPlugin:
             max_tool_rounds,
         )
 
-        self._save_conversation_history(key, messages)
+        self._save_conversation_history(key, self._strip_image_urls_from_messages(messages))
         stored_messages = self._load_conversation_history(key)
         _, compaction_meta_after_turn = history_manager.compact(stored_messages)
 
