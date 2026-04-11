@@ -52,6 +52,7 @@ except Exception:  # pragma: no cover - optional dependency
 
 from executor.engine import JSONExecutor
 from executor.permissions import validate_request
+from flask_cors import CORS
 
 
 
@@ -60,6 +61,17 @@ app = Flask(__name__)
 env_path = Path(".") / ".env"
 load_dotenv(dotenv_path=env_path)
 signing_secret = os.getenv("SIGNING_SECRET")
+
+# Allow cross-origin requests. Configure CORS_ALLOWED_ORIGINS in .env to
+# restrict to specific origins (comma-separated). Defaults to "*" so the
+# app works without extra config, but you can lock it down in production.
+_cors_origins_env = os.getenv("CORS_ALLOWED_ORIGINS", "*").strip()
+_cors_origins: list[str] | str = (
+    [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
+    if _cors_origins_env != "*"
+    else "*"
+)
+CORS(app, origins=_cors_origins, supports_credentials=True)
 
 # --- DEBUG WRAPPER FOR /slack/events ---
 from flask import Response
