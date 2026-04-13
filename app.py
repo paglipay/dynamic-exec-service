@@ -1846,50 +1846,86 @@ def _trigger_upload_notification(
 
         uploaded_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         size_kb = size_bytes / 1024
-        location_line = ""
-        if lat is not None and lon is not None:
-            location_line = f"\n*Location:* `{lat:.6f}, {lon:.6f}` — https://maps.google.com/?q={lat:.6f},{lon:.6f}"
-        text = (
-            f":file_folder: *New file uploaded via Streamlit*\n"
-            f"*File:* `{filename}`\n"
-            f"*Size:* {size_kb:.1f} KB\n"
-            f"*Path:* `media_storage/{relative_path}`\n"
-            f"*Uploaded:* {uploaded_at}{location_line}\n"
-            f"*Download:* /files/download/{relative_path}"
-        )
 
         print(f"[UploadNotify] Posting to channel: {SLACK_NETWORK_CHANNEL}", flush=True)
         try:
             from plugins.integrations.slack_plugin import SlackPlugin
             from plugins.integrations.openai_plugin import OpenAIFunctionCallingPlugin
             slack = SlackPlugin(bot_token=bot_token, default_channel=SLACK_NETWORK_CHANNEL)
-            result = slack.post_message(SLACK_NETWORK_CHANNEL, text)
-            print(f"[UploadNotify] post_message result: {result}", flush=True)
-            app.logger.warning("Upload notification posted to %s for file %s", SLACK_NETWORK_CHANNEL, filename)
+            upload_result: dict[str, Any] | None = None
 
-            # Inject the upload event into the channel's conversation history so the
-            # bot is aware when a user subsequently asks "what just happened?" etc.
-            channel_id = result.get("channel", SLACK_NETWORK_CHANNEL)
-            forced_conversation_id = os.getenv("SLACK_CONVERSATION_ID", "").strip()
-            conversation_id = forced_conversation_id if forced_conversation_id else f"slack:{channel_id}"
+            # Upload the actual file to Slack when available.
             try:
-                openai_plugin = OpenAIFunctionCallingPlugin()
-                history = openai_plugin._load_conversation_history(conversation_id)
-                history.append({
-                    "role": "assistant",
-                    "content": (
-                        f"[System event] A file was uploaded via the Streamlit UI and I posted a notification to this channel.\n"
-                        f"File: {filename}\n"
-                        f"Size: {size_kb:.1f} KB\n"
-                        f"Path: media_storage/{relative_path}\n"
-                        f"Uploaded at: {uploaded_at}"
-                        + (f"\nGPS location: lat={lat:.6f}, lon={lon:.6f}" if lat is not None and lon is not None else "")
-                    ),
-                })
-                openai_plugin._save_conversation_history(conversation_id, history)
-                print(f"[UploadNotify] Injected upload event into conversation {conversation_id}", flush=True)
+                absolute_path = (_MEDIA_STORAGE_PATH / relative_path).resolve()
+                absolute_path.relative_to(_MEDIA_STORAGE_PATH)
+                if absolute_path.exists() and absolute_path.is_file():
+                    upload_result = slack.upload_local_file(
+                        str(absolute_path),
+                        channel=SLACK_NETWORK_CHANNEL,
+                        initial_comment=(
+                            f":file_folder: Uploaded via Streamlit: {filename} "
+                            f"({size_kb:.1f} KB)\n"
+                            f"Path: media_storage/{relative_path}\n"
+                            f"Uploaded: {uploaded_at}"
+                            + (
+                                f"\nLocation: {lat:.6f}, {lon:.6f}"
+                                if lat is not None and lon is not None
+                                else ""
+                            )
+                        ),
+                    )
+                    print(f"[UploadNotify] upload_local_file result: {upload_result}", flush=True)
+                    app.logger.warning("Upload notification posted to %s for file %s", SLACK_NETWORK_CHANNEL, filename)
+
+                    # Keep conversation memory up to date without triggering model generation.
+                    try:
+                        channel_for_history = (
+                            upload_result.get("channel_id")
+                            if isinstance(upload_result.get("channel_id"), str)
+                            else (
+                                upload_result.get("channel")
+                                if isinstance(upload_result.get("channel"), str)
+                                else SLACK_NETWORK_CHANNEL
+                            )
+                        )
+                        forced_conversation_id = os.getenv("SLACK_CONVERSATION_ID", "").strip()
+                        conversation_id = (
+                            forced_conversation_id
+                            if forced_conversation_id
+                            else f"slack:{channel_for_history}"
+                        )
+                        openai_plugin = OpenAIFunctionCallingPlugin()
+                        history = openai_plugin._load_conversation_history(conversation_id)
+                        history.append(
+                            {
+                                "role": "assistant",
+                                "content": (
+                                    "[System event] A file was uploaded via the Streamlit UI and posted to Slack.\n"
+                                    f"File: {filename}\n"
+                                    f"Size: {size_kb:.1f} KB\n"
+                                    f"Path: media_storage/{relative_path}\n"
+                                    f"Uploaded at: {uploaded_at}"
+                                    + (
+                                        f"\nGPS location: lat={lat:.6f}, lon={lon:.6f}"
+                                        if lat is not None and lon is not None
+                                        else ""
+                                    )
+                                ),
+                            }
+                        )
+                        openai_plugin._save_conversation_history(conversation_id, history)
+                        app.logger.info("Upload notification history written for conversation %s", conversation_id)
+                    except Exception as exc:
+                        app.logger.warning("Upload notification: history write failed (non-fatal): %s", exc)
+                else:
+                    app.logger.warning(
+                        "Upload notification: local file missing for Slack upload: %s",
+                        absolute_path,
+                    )
             except Exception as exc:
-                print(f"[UploadNotify] History injection failed (non-fatal): {exc}", flush=True)
+                app.logger.warning("Upload notification: Slack file upload failed: %s", exc)
+            if upload_result is None:
+                app.logger.warning("Upload notification: Slack file upload did not complete")
 
         except Exception as exc:
             print(f"[UploadNotify] Slack post failed: {exc}", flush=True)
