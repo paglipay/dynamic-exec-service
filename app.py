@@ -1160,13 +1160,13 @@ if slack_event_adapter is not None:
             conversation_key = event.get("thread_ts") or channel
             conversation_id = f"slack:{conversation_key}"
         model_name = os.getenv("SLACK_OPENAI_MODEL", "gpt-4.1-mini")
-        max_tool_rounds_raw = os.getenv("SLACK_OPENAI_MAX_TOOL_ROUNDS", "5").strip()
+        max_tool_rounds_raw = os.getenv("SLACK_OPENAI_MAX_TOOL_ROUNDS", "10").strip()
         try:
             max_tool_rounds = int(max_tool_rounds_raw)
         except ValueError:
-            max_tool_rounds = 5
+            max_tool_rounds = 10
         if max_tool_rounds <= 0:
-            max_tool_rounds = 5
+            max_tool_rounds = 10
 
         try:
             validate_request(

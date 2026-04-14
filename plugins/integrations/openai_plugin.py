@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from typing import Any
 from uuid import uuid4
 
@@ -680,7 +681,7 @@ class OpenAIFunctionCallingPlugin:
         executed_tool_calls = 0
         analyzed_image_paths: list[str] = []
 
-        for _ in range(max_tool_rounds):
+        for round_num in range(max_tool_rounds):
             try:
                 response = self.client.chat.completions.create(
                     model=model,
@@ -694,20 +695,32 @@ class OpenAIFunctionCallingPlugin:
             choice = response.choices[0]
             message = choice.message
             tool_calls = message.tool_calls or []
+            content = message.content or ""
+
+            # Log each round for debugging
+            print(f"[OpenAI][Round {round_num+1}/{max_tool_rounds}] tools_called={len(tool_calls)}, content_len={len(content)}", file=sys.stderr)
+            if tool_calls:
+                tool_names = [tc.function.name for tc in tool_calls]
+                print(f"[OpenAI][Round {round_num+1}] tool_calls: {tool_names}", file=sys.stderr)
 
             if tool_calls:
                 messages.append(
                     {
                         "role": "assistant",
-                        "content": message.content or "",
+                        "content": content,
                         "tool_calls": [tc.model_dump() for tc in tool_calls],
                     }
                 )
                 for tool_call in tool_calls:
                     tool_name = tool_call.function.name
                     tool_args = tool_call.function.arguments or "{}"
-                    tool_output = self._execute_tool_call(tool_name, tool_args)
-                    executed_tool_calls += 1
+                    try:
+                        tool_output = self._execute_tool_call(tool_name, tool_args)
+                        executed_tool_calls += 1
+                        print(f"[OpenAI][Round {round_num+1}] {tool_name} executed successfully", file=sys.stderr)
+                    except Exception as tool_exc:
+                        print(f"[OpenAI][Round {round_num+1}] {tool_name} failed: {tool_exc}", file=sys.stderr)
+                        tool_output = json.dumps({"error": str(tool_exc)})
                     # Track file paths passed to read_image_for_vision so callers can
                     # build MongoDB metadata for images from any upload source.
                     _tgt = self._tool_name_to_target.get(tool_name, ("", "", ""))
@@ -756,6 +769,7 @@ class OpenAIFunctionCallingPlugin:
 
             final_text = message.content or ""
             if final_text.strip():
+                print(f"[OpenAI][Round {round_num+1}] Got final response: {len(final_text)} chars", file=sys.stderr)
                 messages.append(
                     {
                         "role": "assistant",
@@ -763,7 +777,13 @@ class OpenAIFunctionCallingPlugin:
                     }
                 )
                 return final_text.strip(), executed_tool_calls, analyzed_image_paths
+            else:
+                # Model returned neither tool calls nor content — nudge it to produce
+                # a final reply so the next round has new context to act on.
+                print(f"[OpenAI][Round {round_num+1}] No content and no tool_calls — injecting finalization nudge", file=sys.stderr)
+                messages.append({"role": "user", "content": "Please provide your final answer now."})
 
+        print(f"[OpenAI] Max rounds ({max_tool_rounds}) exceeded without final response", file=sys.stderr)
         raise ValueError("Exceeded max tool-calling rounds without a final response")
 
     def _build_system_prompt(self) -> str:

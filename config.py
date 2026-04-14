@@ -238,6 +238,7 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "clear_staged",
             "remove_staged_file",
             "rename_zip_from_staged",
+            "zip_files",
         ],
     },
     "plugins.system_tools.file_reader_plugin": {
