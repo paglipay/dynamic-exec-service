@@ -25,7 +25,7 @@ class OpenAIFunctionCallingPlugin:
 
     _conversation_store: dict[str, list[dict[str, Any]]] = {}
     _conversation_redis_prefix = "openai_function_calling:conversation"
-    _slack_images_root = os.getenv("BASE_DATA_DIR", "data") + "/slack_downloads"
+    _slack_images_root = os.getenv("BASE_DATA_DIR", "generated_data") + "/slack_downloads"
 
     def __init__(self, api_key: str | None = None) -> None:
         resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
@@ -306,7 +306,7 @@ class OpenAIFunctionCallingPlugin:
                 "Use args in this exact order: "
                 "[to, subject, body_text, cc_or_null, bcc_or_null, attachments_or_null]. "
                 "attachments_or_null must be null or a list of file paths, for example "
-                "['data/notes.txt']. "
+                "['generated_data/notes.txt']. "
                 "When the user asks for an attachment, include a non-empty attachments list."
             )
 
@@ -468,13 +468,13 @@ class OpenAIFunctionCallingPlugin:
             if method_name == "list_files":
                 return (
                     base +
-                    "List files in data storage. "
+                    "List files in generated_data storage. "
                     "Use args: [folder_or_empty_string]. Empty string lists the root. "
-                    "Result entries include 'relative_path' relative to data/. "
-                    "To get the full path for upload, prepend 'data/' to relative_path."
+                    "Result entries include 'relative_path' relative to generated_data/. "
+                    "To get the full path for upload, prepend 'generated_data/' to relative_path."
                 )
             if method_name == "delete_file":
-                return base + "Delete a file. Use args: [relative_path_within_data]."
+                return base + "Delete a file. Use args: [relative_path_within generated_data]."
             if method_name == "list_staged":
                 return base + "List staged files for a session. Use args: [session_id]."
             if method_name == "clear_staged":
@@ -484,7 +484,7 @@ class OpenAIFunctionCallingPlugin:
             if method_name == "zip_files":
                 return (
                     base +
-                    "Zip files already stored in data into a downloadable archive. "
+                    "Zip files already stored in generated_data into a downloadable archive. "
                     "Use this whenever the user asks to zip files. No staging session required. "
                     "Use args: [file_paths_list, zip_name_or_empty_string]. "
                     "file_paths_list is a list of relative_path values from list_files (e.g. ['01.mp4', '01A.jpg']). "
@@ -499,11 +499,11 @@ class OpenAIFunctionCallingPlugin:
             if method_name == "list_directory":
                 return (
                     base +
-                    "List files in data/. "
+                    "List files in generated_data/. "
                     "Use args: [relative_subdirectory_or_dot]. "
-                    "'.' lists the root of data. 'slack_downloads' lists Slack files. "
-                    "Result entries include 'relative_path' relative to data/. "
-                    "To get the full path for Slack upload, use 'data/' + relative_path."
+                    "'.' lists the root of generated_data. 'slack_downloads' lists Slack files. "
+                    "Result entries include 'relative_path' relative to generated_data/. "
+                    "To get the full path for Slack upload, use 'generated_data/' + relative_path."
                 )
             if method_name == "read_text_file":
                 return base + "Read a text/markdown/csv/tsv file. Use args: [file_path, max_chars_or_20000]."
@@ -521,8 +521,8 @@ class OpenAIFunctionCallingPlugin:
                     "No constructor_args needed. "
                     "Use args: [file_path, max_long_edge_or_1024]. "
                     "file_path is the path as shown in the upload notification or list_files result, e.g. "
-                    "'data/staging/<session_id>/photo.jpg' or 'data/photo.jpg' or "
-                    "'data/slack_downloads/image.png'. "
+                    "'generated_data/staging/<session_id>/photo.jpg' or 'generated_data/photo.jpg' or "
+                    "'generated_data/slack_downloads/image.png'. "
                     "Use the EXACT path from the [System event] or tool result — do not shorten or guess it. "
                     "The result contains a 'data_url' field; pass it directly to vision reasoning to describe the image."
                 )
@@ -545,7 +545,7 @@ class OpenAIFunctionCallingPlugin:
             and method_name == "list_directory"
         ):
             return (
-                "List files inside data/. "
+                "List files inside generated_data/. "
                 "Use constructor_args: {\"base_dir\": \"data\"}. "
                 "Use args: [relative_subdirectory_or_dot]. "
                 "Do NOT use this to list upload files; use MediaStoragePlugin.list_files instead."
@@ -563,9 +563,9 @@ class OpenAIFunctionCallingPlugin:
                 "do NOT pass null; pass the explicit channel ID so the bot can upload to the right place. "
                 "Example: if the message contains '[slack_channel_id: C08SH2VRPJL]', use 'C08SH2VRPJL' as channel. "
                 "file_path must be the path relative to the app working directory, e.g. "
-                "'data/photo.jpg' or 'data/device_image_proper.md'. "
+                "'generated_data/photo.jpg' or 'generated_data/device_image_proper.md'. "
                 "Obtain the path from list_files or list_directory result entries "
-                "by prepending 'data/' to the relative_path field. "
+                "by prepending 'generated_data/' to the relative_path field. "
                 "Do not invent paths; always look up the path from a prior tool result."
             )
 
@@ -825,14 +825,14 @@ class OpenAIFunctionCallingPlugin:
             "\nImage pixels are always included in context when images are attached. Whether to use them "
             "depends entirely on what the user is asking — use your judgment based on the conversation. "
             "\n\nStorage layout (relative to the app working directory):\n"
-            "- data/ : all files — uploads, staging sessions, Slack downloads, processed files, and notes. "
+            "- generated_data/ : all files — uploads, staging sessions, Slack downloads, processed files, and notes. "
             "Use MediaStoragePlugin (constructor_args: {\"base_dir\": \"data\"}) to list or manage upload files. "
-            "list_files returns entries with a 'relative_path' field; prepend 'data/' to get the full path.\n"
+            "list_files returns entries with a 'relative_path' field; prepend 'generated_data/' to get the full path.\n"
             "Use FileReaderPlugin (constructor_args: {\"base_dir\": \"data\"}) to read files here. "
-            "list_directory returns entries with a 'relative_path' field; prepend 'data/' to get the full path. "
-            "Slack image attachments are saved under 'data/slack_downloads/'.\n"
+            "list_directory returns entries with a 'relative_path' field; prepend 'generated_data/' to get the full path. "
+            "Slack image attachments are saved under 'generated_data/slack_downloads/'.\n"
             "\nWhen uploading a file to Slack with upload_local_file, the file_path arg must be the "
-            "full relative path constructed from the tool result (e.g. 'data/photo.jpg'). "
+            "full relative path constructed from the tool result (e.g. 'generated_data/photo.jpg'). "
             "Always look up the path from a prior list_files or list_directory call — never invent it. "
             "\n\nIf the user asks to send an email attachment, include attachment file paths in Gmail send_email args. "
             "Do not claim an attachment was sent unless the Gmail tool result shows attachment_count > 0. "
@@ -959,7 +959,7 @@ class OpenAIFunctionCallingPlugin:
             isinstance(message, dict)
             and message.get("role") == "system"
             and isinstance(message.get("content"), str)
-            and "data/" in message.get("content", "")
+            and "generated_data/" in message.get("content", "")
             for message in messages
         ):
             messages.insert(0, {"role": "system", "content": self._build_system_prompt()})

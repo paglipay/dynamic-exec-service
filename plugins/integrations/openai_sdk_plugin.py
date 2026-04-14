@@ -22,7 +22,7 @@ class OpenAISDKPlugin:
     _conversation_store: dict[str, list[dict[str, str]]] = {}
     _filename_pattern = re.compile(r"([\"'`]*[A-Za-z0-9][A-Za-z0-9 _\-.]*\.(?:txt|md)[\"'`]*)", re.IGNORECASE)
     _default_joke_text = "Why don't scientists trust atoms? Because they make up everything!"
-    _default_markdown_base_dir = Path(os.getenv("BASE_DATA_DIR", "data")).resolve()
+    _default_markdown_base_dir = Path(os.getenv("BASE_DATA_DIR", "generated_data")).resolve()
     _default_system_prompt_markdown = "README.md"
     _default_image_output_dir = _default_markdown_base_dir / "images"
     _safe_image_name = re.compile(r"[^A-Za-z0-9._-]+")
