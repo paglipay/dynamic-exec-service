@@ -87,7 +87,7 @@ class PluginGenerator:
             "from pathlib import Path\n\n\n"
             f"class {class_name}:\n"
             "    \"\"\"CRUD operations for .txt files within a base directory.\"\"\"\n\n"
-            "    def __init__(self, base_dir: str = \"generated_data\") -> None:\n"
+            "    def __init__(self, base_dir: str = \"data\") -> None:\n"
             "        if not isinstance(base_dir, str) or not base_dir:\n"
             "            raise ValueError(\"base_dir must be a non-empty string\")\n"
             "        self.base_dir = Path(base_dir).resolve()\n"

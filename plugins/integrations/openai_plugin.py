@@ -306,7 +306,7 @@ class OpenAIFunctionCallingPlugin:
                 "Use args in this exact order: "
                 "[to, subject, body_text, cc_or_null, bcc_or_null, attachments_or_null]. "
                 "attachments_or_null must be null or a list of file paths, for example "
-                "['generated_data/notes.txt']. "
+                "['data/notes.txt']. "
                 "When the user asks for an attachment, include a non-empty attachments list."
             )
 
@@ -563,9 +563,9 @@ class OpenAIFunctionCallingPlugin:
                 "do NOT pass null; pass the explicit channel ID so the bot can upload to the right place. "
                 "Example: if the message contains '[slack_channel_id: C08SH2VRPJL]', use 'C08SH2VRPJL' as channel. "
                 "file_path must be the path relative to the app working directory, e.g. "
-                "'media_storage/photo.jpg' or 'generated_data/device_image_proper.md'. "
+                "'data/photo.jpg' or 'data/device_image_proper.md'. "
                 "Obtain the path from list_files or list_directory result entries "
-                "by prepending the root ('media_storage/' or 'generated_data/') to the relative_path field. "
+                "by prepending 'data/' to the relative_path field. "
                 "Do not invent paths; always look up the path from a prior tool result."
             )
 
@@ -825,15 +825,14 @@ class OpenAIFunctionCallingPlugin:
             "\nImage pixels are always included in context when images are attached. Whether to use them "
             "depends entirely on what the user is asking — use your judgment based on the conversation. "
             "\n\nStorage layout (relative to the app working directory):\n"
-            "- media_storage/ : uploaded files, staging sessions, and zip outputs. "
-            "Use MediaStoragePlugin (constructor_args: {\"base_dir\": \"media_storage\"}) to list or manage these files. "
-            "list_files returns entries with a 'relative_path' field; prepend 'media_storage/' to get the full path.\n"
-            "- generated_data/ : Slack downloads, processed files, notes. "
-            "Use FileReaderPlugin (constructor_args: {\"base_dir\": \"generated_data\"}) to read files here. "
-            "list_directory returns entries with a 'relative_path' field; prepend 'generated_data/' to get the full path. "
-            "Slack image attachments are saved under 'generated_data/slack_downloads/'.\n"
+            "- data/ : all files — uploads, staging sessions, Slack downloads, processed files, and notes. "
+            "Use MediaStoragePlugin (constructor_args: {\"base_dir\": \"data\"}) to list or manage upload files. "
+            "list_files returns entries with a 'relative_path' field; prepend 'data/' to get the full path.\n"
+            "Use FileReaderPlugin (constructor_args: {\"base_dir\": \"data\"}) to read files here. "
+            "list_directory returns entries with a 'relative_path' field; prepend 'data/' to get the full path. "
+            "Slack image attachments are saved under 'data/slack_downloads/'.\n"
             "\nWhen uploading a file to Slack with upload_local_file, the file_path arg must be the "
-            "full relative path constructed from the tool result (e.g. 'media_storage/photo.jpg'). "
+            "full relative path constructed from the tool result (e.g. 'data/photo.jpg'). "
             "Always look up the path from a prior list_files or list_directory call — never invent it. "
             "\n\nIf the user asks to send an email attachment, include attachment file paths in Gmail send_email args. "
             "Do not claim an attachment was sent unless the Gmail tool result shows attachment_count > 0. "
@@ -960,7 +959,7 @@ class OpenAIFunctionCallingPlugin:
             isinstance(message, dict)
             and message.get("role") == "system"
             and isinstance(message.get("content"), str)
-            and "media_storage/" in message.get("content", "")
+            and "data/" in message.get("content", "")
             for message in messages
         ):
             messages.insert(0, {"role": "system", "content": self._build_system_prompt()})
