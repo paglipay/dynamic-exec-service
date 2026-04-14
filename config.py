@@ -236,7 +236,6 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "list_staged",
             "clear_staged",
             "remove_staged_file",
-            "rename_zip_from_staged",
             "zip_files",
         ],
     },
