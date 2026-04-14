@@ -25,7 +25,7 @@ class OpenAIFunctionCallingPlugin:
 
     _conversation_store: dict[str, list[dict[str, Any]]] = {}
     _conversation_redis_prefix = "openai_function_calling:conversation"
-    _slack_images_root = "generated_data/slack_downloads"
+    _slack_images_root = os.getenv("BASE_DATA_DIR", "data") + "/slack_downloads"
 
     def __init__(self, api_key: str | None = None) -> None:
         resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
@@ -464,17 +464,17 @@ class OpenAIFunctionCallingPlugin:
             module_name == "plugins.system_tools.media_storage_plugin"
             and class_name == "MediaStoragePlugin"
         ):
-            base = "Use constructor_args: {\"base_dir\": \"media_storage\"}. "
+            base = "Use constructor_args: {\"base_dir\": \"data\"}. "
             if method_name == "list_files":
                 return (
                     base +
-                    "List files in media storage. "
+                    "List files in data storage. "
                     "Use args: [folder_or_empty_string]. Empty string lists the root. "
-                    "Result entries include 'relative_path' relative to media_storage/. "
-                    "To get the full path for upload, prepend 'media_storage/' to relative_path."
+                    "Result entries include 'relative_path' relative to data/. "
+                    "To get the full path for upload, prepend 'data/' to relative_path."
                 )
             if method_name == "delete_file":
-                return base + "Delete a file. Use args: [relative_path_within_media_storage]."
+                return base + "Delete a file. Use args: [relative_path_within_data]."
             if method_name == "list_staged":
                 return base + "List staged files for a session. Use args: [session_id]."
             if method_name == "clear_staged":
@@ -484,7 +484,7 @@ class OpenAIFunctionCallingPlugin:
             if method_name == "zip_files":
                 return (
                     base +
-                    "Zip files already stored in media_storage into a downloadable archive. "
+                    "Zip files already stored in data into a downloadable archive. "
                     "Use this whenever the user asks to zip files. No staging session required. "
                     "Use args: [file_paths_list, zip_name_or_empty_string]. "
                     "file_paths_list is a list of relative_path values from list_files (e.g. ['01.mp4', '01A.jpg']). "
@@ -495,15 +495,15 @@ class OpenAIFunctionCallingPlugin:
             module_name == "plugins.system_tools.file_reader_plugin"
             and class_name == "FileReaderPlugin"
         ):
-            base = "Use constructor_args: {\"base_dir\": \"generated_data\"}. "
+            base = "Use constructor_args: {\"base_dir\": \"data\"}. "
             if method_name == "list_directory":
                 return (
                     base +
-                    "List files in generated_data/. "
+                    "List files in data/. "
                     "Use args: [relative_subdirectory_or_dot]. "
-                    "'.' lists the root of generated_data. 'slack_downloads' lists Slack files. "
-                    "Result entries include 'relative_path' relative to generated_data/. "
-                    "To get the full path for Slack upload, use 'generated_data/' + relative_path."
+                    "'.' lists the root of data. 'slack_downloads' lists Slack files. "
+                    "Result entries include 'relative_path' relative to data/. "
+                    "To get the full path for Slack upload, use 'data/' + relative_path."
                 )
             if method_name == "read_text_file":
                 return base + "Read a text/markdown/csv/tsv file. Use args: [file_path, max_chars_or_20000]."
@@ -521,8 +521,8 @@ class OpenAIFunctionCallingPlugin:
                     "No constructor_args needed. "
                     "Use args: [file_path, max_long_edge_or_1024]. "
                     "file_path is the path as shown in the upload notification or list_files result, e.g. "
-                    "'media_storage/staging/<session_id>/photo.jpg' or 'media_storage/photo.jpg' or "
-                    "'generated_data/slack_downloads/image.png'. "
+                    "'data/staging/<session_id>/photo.jpg' or 'data/photo.jpg' or "
+                    "'data/slack_downloads/image.png'. "
                     "Use the EXACT path from the [System event] or tool result — do not shorten or guess it. "
                     "The result contains a 'data_url' field; pass it directly to vision reasoning to describe the image."
                 )
@@ -545,10 +545,10 @@ class OpenAIFunctionCallingPlugin:
             and method_name == "list_directory"
         ):
             return (
-                "List files inside generated_data/. "
-                "Use constructor_args: {\"base_dir\": \"generated_data\"}. "
+                "List files inside data/. "
+                "Use constructor_args: {\"base_dir\": \"data\"}. "
                 "Use args: [relative_subdirectory_or_dot]. "
-                "Do NOT use this to list media_storage/; use MediaStoragePlugin.list_files instead."
+                "Do NOT use this to list upload files; use MediaStoragePlugin.list_files instead."
             )
 
         if (
