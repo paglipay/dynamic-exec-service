@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -123,4 +124,66 @@ class FileSystemPlugin:
             "target": relative_path,
             "type": "directory" if target.is_dir() else "file",
             "size_bytes": target.stat().st_size if target.is_file() else None,
+        }
+
+    def create_zip_archive(self, file_paths: list[str], output_zip_path: str) -> dict[str, Any]:
+        """Create a ZIP archive from a list of files.
+        
+        Args:
+            file_paths: List of relative paths to files/directories to include
+            output_zip_path: Relative path where the ZIP archive should be created
+            
+        Returns:
+            Status dict with the created ZIP file path
+        """
+        if not isinstance(file_paths, list):
+            raise ValueError("file_paths must be a list")
+        if not file_paths:
+            raise ValueError("file_paths list cannot be empty")
+        if not isinstance(output_zip_path, str) or not output_zip_path.strip():
+            raise ValueError("output_zip_path must be a non-empty string")
+
+        # Validate all source files exist
+        resolved_files = []
+        for file_path in file_paths:
+            try:
+                resolved = self._resolve_path(file_path)
+                if not resolved.exists():
+                    raise ValueError(f"file does not exist: {file_path}")
+                resolved_files.append(resolved)
+            except ValueError as exc:
+                raise ValueError(f"Invalid file path '{file_path}': {exc}") from exc
+
+        # Resolve output zip path
+        output_zip = self._resolve_path(output_zip_path)
+        if output_zip.exists():
+            raise ValueError("output_zip_path already exists")
+
+        # Create parent directory if needed
+        output_zip.parent.mkdir(parents=True, exist_ok=True)
+
+        # Create the ZIP archive
+        try:
+            with zipfile.ZipFile(output_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+                for resolved_path in resolved_files:
+                    if resolved_path.is_file():
+                        arcname = str(resolved_path.relative_to(self.base_dir)).replace("\\", "/")
+                        zf.write(resolved_path, arcname=arcname)
+                    elif resolved_path.is_dir():
+                        for item in resolved_path.rglob("*"):
+                            if item.is_file():
+                                arcname = str(item.relative_to(self.base_dir)).replace("\\", "/")
+                                zf.write(item, arcname=arcname)
+        except Exception as exc:
+            # Clean up if something went wrong
+            if output_zip.exists():
+                output_zip.unlink()
+            raise ValueError(f"Failed to create ZIP archive: {exc}") from exc
+
+        return {
+            "status": "success",
+            "action": "create_zip_archive",
+            "output_zip": str(output_zip.relative_to(self.base_dir)).replace("\\", "/"),
+            "files_included": len(resolved_files),
+            "size_bytes": output_zip.stat().st_size,
         }
