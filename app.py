@@ -131,7 +131,8 @@ SLACK_MAX_EXCEL_BYTES = 15 * 1024 * 1024
 SLACK_MAX_EXCEL_PREVIEW_ROWS = 5
 SLACK_MAX_DOCX_BYTES = 15 * 1024 * 1024
 SLACK_MAX_DOCX_TEXT_CHARS = 20000
-SLACK_IMAGE_SAVE_BASE_DIR = os.getenv("SLACK_IMAGE_SAVE_BASE_DIR", "generated_data")
+BASE_DATA_DIR = os.getenv("BASE_DATA_DIR", "data")
+SLACK_IMAGE_SAVE_BASE_DIR = os.getenv("SLACK_IMAGE_SAVE_BASE_DIR", BASE_DATA_DIR)
 SLACK_UNREADABLE_PREVIEW_TEXTS = {
     "[no preview available]",
     "no preview available",
@@ -145,11 +146,12 @@ _slack_form_submissions: list[dict[str, Any]] = []
 _slack_form_submissions_lock = threading.Lock()
 
 # --- File Storage Configuration ---
+# Set BASE_DATA_DIR to set the shared root for all file storage (default: "data").
 # Set FILE_UPLOAD_API_KEY in .env to require authentication for upload/download/list/delete.
-# Set MEDIA_STORAGE_DIR to override the local directory where uploads are saved.
+# Set MEDIA_STORAGE_DIR to override where uploads are saved (defaults to BASE_DATA_DIR).
 # Set FILE_MAX_UPLOAD_MB to change the per-request size cap (default 500 MB).
 # Set SLACK_NETWORK_CHANNEL to the channel name/ID where upload notifications are posted.
-MEDIA_STORAGE_DIR = os.getenv("MEDIA_STORAGE_DIR", "media_storage")
+MEDIA_STORAGE_DIR = os.getenv("MEDIA_STORAGE_DIR", BASE_DATA_DIR)
 SLACK_NETWORK_CHANNEL = os.getenv("SLACK_NETWORK_CHANNEL", "#general")
 FILE_UPLOAD_API_KEY = os.getenv("FILE_UPLOAD_API_KEY", "").strip()
 try:
