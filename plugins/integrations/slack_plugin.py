@@ -601,13 +601,30 @@ class SlackPlugin:
             raise ValueError("filename must be a non-empty string")
         if not isinstance(content, str) or not content:
             raise ValueError("content must be a non-empty string")
-        return self._upload_file_bytes(
+        result = self._upload_file_bytes(
             filename=filename.strip(),
             file_bytes=content.encode("utf-8"),
             channel=channel,
             title=title,
             initial_comment=initial_comment,
         )
+        try:
+            file_info = self._fetch_file_info(result["file_id"])
+            self._save_file_record(
+                local_file_path=filename.strip(),
+                file_id=result["file_id"],
+                filename=result["file_name"],
+                title=result["title"],
+                channel=result["channel"],
+                channel_id=result["channel_id"],
+                permalink=file_info.get("permalink"),
+                url_private=file_info.get("url_private"),
+            )
+            result["permalink"] = file_info.get("permalink")
+            result["url_private"] = file_info.get("url_private")
+        except Exception:
+            pass
+        return result
 
     def upload_local_file(
         self,
@@ -638,4 +655,176 @@ class SlackPlugin:
         )
         result["action"] = "upload_local_file"
         result["local_file_path"] = str(local_path)
+        try:
+            file_info = self._fetch_file_info(result["file_id"])
+            self._save_file_record(
+                local_file_path=str(local_path),
+                file_id=result["file_id"],
+                filename=result["file_name"],
+                title=result["title"],
+                channel=result["channel"],
+                channel_id=result["channel_id"],
+                permalink=file_info.get("permalink"),
+                url_private=file_info.get("url_private"),
+            )
+            result["permalink"] = file_info.get("permalink")
+            result["url_private"] = file_info.get("url_private")
+        except Exception:
+            pass
         return result
+
+    def _get_mongo_collection(self) -> Any:
+        """Return the slack_files MongoDB collection, or None if unavailable."""
+        try:
+            from pymongo import MongoClient as _MongoClient
+        except ImportError:
+            return None
+        mongo_uri = os.getenv("MONGODB_URI", "").strip()
+        if not mongo_uri:
+            return None
+        try:
+            client = _MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+            db_name = os.getenv("MONGODB_DATABASE", "").strip()
+            if not db_name:
+                from urllib.parse import urlparse as _urlparse
+                parsed_uri = _urlparse(mongo_uri)
+                raw_path = parsed_uri.path.lstrip("/")
+                db_name = raw_path.split("?")[0] if raw_path else ""
+            if not db_name:
+                db_name = "dynamic_exec"
+            return client[db_name]["slack_files"]
+        except Exception:
+            return None
+
+    def _fetch_file_info(self, file_id: str) -> dict[str, Any]:
+        """Call files.info and return the file object dict."""
+        if not isinstance(file_id, str) or not file_id.strip():
+            raise ValueError("file_id must be a non-empty string")
+        req = request.Request(
+            f"https://slack.com/api/files.info?file={file_id}",
+            headers={"Authorization": f"Bearer {self.bot_token}"},
+            method="GET",
+        )
+        try:
+            with request.urlopen(req, timeout=20) as response:
+                body = response.read().decode("utf-8")
+        except error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise ValueError(f"Slack files.info HTTP error {exc.code}: {body}") from exc
+        except error.URLError as exc:
+            raise ValueError(f"Failed to reach Slack files.info: {exc.reason}") from exc
+        parsed = self._parse_slack_response(body)
+        return parsed.get("file") if isinstance(parsed.get("file"), dict) else {}
+
+    def _save_file_record(
+        self,
+        local_file_path: str,
+        file_id: str,
+        filename: str,
+        title: str,
+        channel: str,
+        channel_id: str,
+        permalink: str | None,
+        url_private: str | None,
+    ) -> None:
+        """Upsert a file upload record in the MongoDB slack_files collection."""
+        collection = self._get_mongo_collection()
+        if collection is None:
+            return
+        from datetime import datetime as _datetime
+        record: dict[str, Any] = {
+            "local_file_path": local_file_path,
+            "file_id": file_id,
+            "filename": filename,
+            "title": title,
+            "channel": channel,
+            "channel_id": channel_id,
+            "permalink": permalink,
+            "url_private": url_private,
+            "uploaded_at": _datetime.utcnow().isoformat(),
+        }
+        try:
+            collection.update_one(
+                {"local_file_path": local_file_path},
+                {"$set": record},
+                upsert=True,
+            )
+        except Exception:
+            pass
+
+    def get_file(self, args: dict[str, Any]) -> dict[str, Any]:
+        """
+        Retrieve a file by its original local path.
+
+        If the file exists locally, returns immediately.
+        Otherwise, queries MongoDB for the Slack upload record, downloads the
+        file from Slack (url_private), and writes it to the original path.
+
+        Args: {"path": "/original/local/path/to/file.pdf"}
+        """
+        if not isinstance(args, dict):
+            raise ValueError("args must be a dict")
+        path = args.get("path")
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError("path must be a non-empty string")
+
+        local_path = Path(path.strip()).expanduser().resolve()
+
+        if local_path.exists() and local_path.is_file():
+            return {
+                "status": "success",
+                "path": str(local_path),
+                "source": "local",
+                "message": "File found locally",
+            }
+
+        collection = self._get_mongo_collection()
+        if collection is None:
+            raise ValueError(
+                "File does not exist locally and MongoDB is not available for lookup"
+            )
+
+        record = collection.find_one({"local_file_path": str(local_path)})
+        if record is None:
+            record = collection.find_one({"local_file_path": path.strip()})
+        if record is None:
+            raise ValueError(f"No file record found for path: {local_path}")
+
+        url_private = record.get("url_private")
+        if not isinstance(url_private, str) or not url_private.strip():
+            raise ValueError(
+                "File record found in MongoDB but has no url_private for Slack download"
+            )
+
+        dl_req = request.Request(
+            url_private,
+            headers={"Authorization": f"Bearer {self.bot_token}"},
+            method="GET",
+        )
+        try:
+            with request.urlopen(dl_req, timeout=60) as response:
+                file_bytes = response.read()
+        except error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise ValueError(
+                f"Failed to download file from Slack: HTTP {exc.code}: {body}"
+            ) from exc
+        except error.URLError as exc:
+            raise ValueError(
+                f"Failed to download file from Slack: {exc.reason}"
+            ) from exc
+
+        try:
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            local_path.write_bytes(file_bytes)
+        except OSError as exc:
+            raise ValueError(f"Failed to write file to {local_path}: {exc}") from exc
+
+        return {
+            "status": "success",
+            "path": str(local_path),
+            "source": "slack",
+            "file_id": record.get("file_id"),
+            "permalink": record.get("permalink"),
+            "message": "File retrieved from Slack and written to original path",
+        }

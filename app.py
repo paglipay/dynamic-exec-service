@@ -2111,15 +2111,116 @@ def download_file(filename: str) -> Any:
         return _error_response("Invalid file path", status_code=400)
 
     if not target.exists() or not target.is_file():
-        return _error_response("File not found", status_code=404)
+        # Transparent Slack fallback: query MongoDB for the file record and
+        # re-download from Slack so ephemeral dyno storage is fully transparent.
+        recovered = False
+        try:
+            from plugins.integrations.slack_plugin import SlackPlugin
+            bot_token = os.getenv("SLACK_BOT_TOKEN", "").strip()
+            if bot_token:
+                slack = SlackPlugin(bot_token=bot_token, default_channel=SLACK_NETWORK_CHANNEL)
+                slack.get_file({"path": str(target)})
+                if target.exists() and target.is_file():
+                    app.logger.info("File recovered from Slack for path: %s", target)
+                    recovered = True
+        except Exception as exc:
+            app.logger.warning("Slack file recovery failed for %s: %s", target, exc)
+
+        if not recovered:
+            return _error_response("File not found", status_code=404)
 
     as_attachment = request.args.get("download", "false").lower() == "true"
     return send_from_directory(str(target.parent), target.name, as_attachment=as_attachment)
 
 
+def _query_slack_files_index(folder: str) -> list[dict[str, Any]]:
+    """Query MongoDB slack_files for records whose local_file_path falls under the given folder.
+
+    Returns a list of dicts shaped like MediaStoragePlugin list_files entries,
+    with extra keys: source="slack", permalink, url_private, file_id.
+    Only returns records not already present on the local filesystem.
+    """
+    try:
+        from pymongo import MongoClient as _MongoClient
+        from urllib.parse import urlparse as _urlparse
+    except ImportError:
+        return []
+
+    mongo_uri = os.getenv("MONGODB_URI", "").strip()
+    if not mongo_uri:
+        return []
+
+    try:
+        client = _MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+        db_name = os.getenv("MONGODB_DATABASE", "").strip()
+        if not db_name:
+            parsed_uri = _urlparse(mongo_uri)
+            raw_path = parsed_uri.path.lstrip("/")
+            db_name = raw_path.split("?")[0] if raw_path else ""
+        if not db_name:
+            db_name = "dynamic_exec"
+        collection = client[db_name]["slack_files"]
+    except Exception:
+        return []
+
+    # Build a prefix filter: match records whose local_file_path starts with
+    # the resolved scan directory.
+    if folder:
+        try:
+            scan_dir = (_MEDIA_STORAGE_PATH / folder).resolve()
+            scan_dir.relative_to(_MEDIA_STORAGE_PATH)
+        except (ValueError, Exception):
+            return []
+    else:
+        scan_dir = _MEDIA_STORAGE_PATH
+
+    prefix = str(scan_dir)
+
+    try:
+        cursor = collection.find(
+            {"local_file_path": {"$regex": f"^{re.escape(prefix)}"}},
+            {"_id": 0, "local_file_path": 1, "filename": 1, "permalink": 1,
+             "url_private": 1, "file_id": 1, "title": 1},
+        )
+        records = list(cursor)
+    except Exception:
+        return []
+
+    extra: list[dict[str, Any]] = []
+    for rec in records:
+        local_path = Path(rec.get("local_file_path", ""))
+        # Skip if the file is already present locally — the local listing covers it.
+        if local_path.exists() and local_path.is_file():
+            continue
+        try:
+            relative = local_path.relative_to(_MEDIA_STORAGE_PATH).as_posix()
+        except ValueError:
+            relative = local_path.name
+
+        entry: dict[str, Any] = {
+            "name": local_path.name,
+            "path": relative,
+            "type": "file",
+            "source": "slack",
+            "download_url": f"/files/download/{relative}",
+            "permalink": rec.get("permalink"),
+            "url_private": rec.get("url_private"),
+            "file_id": rec.get("file_id"),
+            "title": rec.get("title"),
+        }
+        extra.append(entry)
+
+    return extra
+
+
 @app.get("/files/list")
 def list_files() -> Any:
     """List files and directories inside the media storage root or a subfolder.
+
+    Merges local filesystem entries with MongoDB slack_files records so that
+    files uploaded to Slack (but no longer on the ephemeral dyno disk) still
+    appear in the listing with source="slack". Accessing their download_url
+    will transparently re-fetch them from Slack on demand.
 
     Query params:
       - folder (optional): subdirectory to list, e.g. "videos/2026"
@@ -2133,11 +2234,28 @@ def list_files() -> Any:
     folder = request.args.get("folder", "").strip()
     try:
         result = _media_storage_plugin.list_files(folder)
-        return jsonify(result)
     except FileNotFoundError:
-        return _error_response("Folder not found", status_code=404)
+        # Folder may not exist locally after a dyno restart — still check MongoDB.
+        result = {"status": "success", "folder": folder or "/", "count": 0, "files": []}
     except ValueError as exc:
         return _error_response(str(exc), status_code=400)
+
+    # Tag locally-found files with source="local"
+    for entry in result.get("files", []):
+        if entry.get("type") == "file":
+            entry.setdefault("source", "local")
+
+    # Merge in any Slack-only records from MongoDB
+    slack_only = _query_slack_files_index(folder)
+    result["files"] = result.get("files", []) + slack_only
+    result["count"] = len(result["files"])
+    if slack_only:
+        result["note"] = (
+            f"{len(slack_only)} file(s) not on local disk — stored in Slack. "
+            "Access via download_url to restore automatically."
+        )
+
+    return jsonify(result)
 
 
 @app.delete("/files/delete/<path:filename>")

@@ -164,6 +164,7 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "request_modal_with_button",
             "upload_text_file",
             "upload_local_file",
+            "get_file",
         ],
     },
     "plugins.integrations.openai_http_plugin": {
