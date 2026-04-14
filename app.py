@@ -1869,6 +1869,7 @@ def _trigger_upload_notification(
                             f"Uploaded: {uploaded_at}"
                             + (
                                 f"\nLocation: {lat:.6f}, {lon:.6f}"
+                                f"\nMap: https://maps.google.com/?q={lat:.6f},{lon:.6f}"
                                 if lat is not None and lon is not None
                                 else ""
                             )
@@ -1907,6 +1908,7 @@ def _trigger_upload_notification(
                                     f"Uploaded at: {uploaded_at}"
                                     + (
                                         f"\nGPS location: lat={lat:.6f}, lon={lon:.6f}"
+                                        f"\nGoogle Maps: https://maps.google.com/?q={lat:.6f},{lon:.6f}"
                                         if lat is not None and lon is not None
                                         else ""
                                     )
