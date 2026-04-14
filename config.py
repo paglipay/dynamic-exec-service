@@ -81,7 +81,6 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "move_path",
             "delete_path",
             "path_info",
-            "create_zip_archive",
         ],
     },
     "plugins.system_tools.subprocess_plugin": {

@@ -482,7 +482,23 @@ class OpenAIFunctionCallingPlugin:
             if method_name == "remove_staged_file":
                 return base + "Remove one staged file. Use args: [session_id, filename]."
             if method_name == "rename_zip_from_staged":
-                return base + "Build rename-zip from staged session. Use args: [session_id, sort_order]."
+                return (
+                    base +
+                    "Zip and rename files from an EXISTING staging session. "
+                    "Only use this when a staging session_id already exists. "
+                    "Do NOT use this to zip files already on disk in media_storage — use zip_files instead. "
+                    "Use args: [session_id, sort_order]."
+                )
+            if method_name == "zip_files":
+                return (
+                    base +
+                    "Zip files that are ALREADY stored in media_storage into a downloadable archive. "
+                    "Use this — NOT rename_zip_from_staged — when files are already on disk and the user asks to zip or upload them. "
+                    "No staging session required. "
+                    "Use args: [file_paths_list, zip_name_or_empty_string]. "
+                    "file_paths_list is a list of relative_path values from list_files (e.g. ['01.mp4', '01A.jpg']). "
+                    "The result includes 'local_path' — pass that directly to SlackPlugin.upload_local_file as file_path."
+                )
 
         if (
             module_name == "plugins.system_tools.file_reader_plugin"
