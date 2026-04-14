@@ -146,9 +146,9 @@ _slack_form_submissions: list[dict[str, Any]] = []
 _slack_form_submissions_lock = threading.Lock()
 
 # --- File Storage Configuration ---
-# Set BASE_DATA_DIR to set the shared root for all file storage (default: "data").
+# Set BASE_DATA_DIR to set the shared root for all file storage (default: "generated_data").
 # Set FILE_UPLOAD_API_KEY in .env to require authentication for upload/download/list/delete.
-# Set MEDIA_STORAGE_DIR to override where uploads are saved (defaults to BASE_DATA_DIR).
+# Set MEDIA_STORAGE_DIR to override where uploads are saved (defaults to BASE_DATA_DIR / generated_data).
 # Set FILE_MAX_UPLOAD_MB to change the per-request size cap (default 500 MB).
 # Set SLACK_NETWORK_CHANNEL to the channel name/ID where upload notifications are posted.
 MEDIA_STORAGE_DIR = os.getenv("MEDIA_STORAGE_DIR", BASE_DATA_DIR)
@@ -1867,7 +1867,7 @@ def _trigger_upload_notification(
                         initial_comment=(
                             f":file_folder: Uploaded via Streamlit: {filename} "
                             f"({size_kb:.1f} KB)\n"
-                            f"Path: media_storage/{relative_path}\n"
+                            f"Path: {MEDIA_STORAGE_DIR}/{relative_path}\n"
                             f"Uploaded: {uploaded_at}"
                             + (
                                 f"\nLocation: {lat:.6f}, {lon:.6f}"
@@ -1906,7 +1906,7 @@ def _trigger_upload_notification(
                                     "[System event] A file was uploaded via the Streamlit UI and posted to Slack.\n"
                                     f"File: {filename}\n"
                                     f"Size: {size_kb:.1f} KB\n"
-                                    f"Path: media_storage/{relative_path}\n"
+                                    f"Path: {MEDIA_STORAGE_DIR}/{relative_path}\n"
                                     f"Uploaded at: {uploaded_at}"
                                     + (
                                         f"\nGPS location: lat={lat:.6f}, lon={lon:.6f}"
@@ -1947,11 +1947,11 @@ def _handle_request_entity_too_large(error: Any) -> Any:
 
 @app.post("/files/upload")
 def upload_file() -> Any:
-    """Accept a multipart/form-data file and store it in the media storage directory.
+    """Accept a multipart/form-data file and store it in the generated_data directory.
 
     Form fields:
       - file (required): the file to upload
-      - folder (optional): subdirectory within media_storage, e.g. "videos/2026"
+      - folder (optional): subdirectory within generated_data, e.g. "videos/2026"
 
     Headers:
       - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment

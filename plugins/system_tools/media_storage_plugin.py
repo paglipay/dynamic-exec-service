@@ -24,7 +24,7 @@ class MediaStoragePlugin:
     """Manage files in a confined media storage directory.
 
     Constructor args:
-        base_dir (str): Root storage directory. Defaults to "media_storage".
+        base_dir (str): Root storage directory. Defaults to "generated_data".
     """
 
     VIDEO_EXTS: frozenset[str] = frozenset(
@@ -34,7 +34,7 @@ class MediaStoragePlugin:
         {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff", ".webp"}
     )
 
-    def __init__(self, base_dir: str = "media_storage") -> None:
+    def __init__(self, base_dir: str = "generated_data") -> None:
         if not isinstance(base_dir, str) or not base_dir.strip():
             raise ValueError("base_dir must be a non-empty string")
         self._base = Path(base_dir).resolve()
