@@ -2080,27 +2080,40 @@ def upload_file() -> Any:
         slack = SlackPlugin(bot_token=bot_token, default_channel=SLACK_NETWORK_CHANNEL) if bot_token else None
         exif_b64 = None
         if slack:
-            file_bytes = dest.read_bytes()
-            app.logger.info(f"[EXIF-DEBUG] Read {len(file_bytes)} bytes from {dest}")
-            exif_b64 = slack._extract_exif_b64(file_bytes, dest.suffix)
-            if exif_b64:
-                app.logger.info(f"[EXIF-DEBUG] EXIF extracted for {safe_name}, length={len(exif_b64)}")
-            else:
-                app.logger.info(f"[EXIF-DEBUG] No EXIF found for {safe_name}")
-            slack._save_file_record(
-                local_file_path=str(dest),
-                file_id=None,
-                filename=safe_name,
-                title=safe_name,
-                channel=SLACK_NETWORK_CHANNEL,
-                channel_id=None,
-                permalink=None,
-                url_private=None,
-                exif_b64=exif_b64,
-            )
-            app.logger.info(f"[EXIF-DEBUG] MongoDB record written for {safe_name} (with_exif={bool(exif_b64)})")
+            try:
+                file_bytes = dest.read_bytes()
+                app.logger.info(f"[EXIF-DEBUG] Read {len(file_bytes)} bytes from {dest}")
+            except Exception as exc:
+                app.logger.error(f"[EXIF-DEBUG] Failed to read file bytes from {dest}: {exc}")
+                file_bytes = None
+            if file_bytes:
+                try:
+                    exif_b64 = slack._extract_exif_b64(file_bytes, dest.suffix)
+                    if exif_b64:
+                        app.logger.info(f"[EXIF-DEBUG] EXIF extracted for {safe_name}, length={len(exif_b64)}")
+                    else:
+                        app.logger.info(f"[EXIF-DEBUG] No EXIF found for {safe_name}")
+                except Exception as exc:
+                    app.logger.error(f"[EXIF-DEBUG] Exception during EXIF extraction for {safe_name}: {exc}")
+            try:
+                slack._save_file_record(
+                    local_file_path=str(dest),
+                    file_id=None,
+                    filename=safe_name,
+                    title=safe_name,
+                    channel=SLACK_NETWORK_CHANNEL,
+                    channel_id=None,
+                    permalink=None,
+                    url_private=None,
+                    exif_b64=exif_b64,
+                )
+                app.logger.info(f"[EXIF-DEBUG] MongoDB record written for {safe_name} (with_exif={bool(exif_b64)})")
+            except Exception as exc:
+                app.logger.error(f"[EXIF-DEBUG] Exception during MongoDB record write for {safe_name}: {exc}")
+        else:
+            app.logger.warning(f"[EXIF-DEBUG] SlackPlugin not instantiated; skipping EXIF/MongoDB write for {safe_name}")
     except Exception as exc:
-        app.logger.warning(f"[EXIF-DEBUG] Failed to write MongoDB record with EXIF for {safe_name}: {exc}")
+        app.logger.error(f"[EXIF-DEBUG] Outer exception in EXIF/MongoDB write for {safe_name}: {exc}")
 
     notify_lat: float | None = None
     notify_lon: float | None = None
