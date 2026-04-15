@@ -2081,7 +2081,12 @@ def upload_file() -> Any:
         exif_b64 = None
         if slack:
             file_bytes = dest.read_bytes()
+            app.logger.info(f"[EXIF-DEBUG] Read {len(file_bytes)} bytes from {dest}")
             exif_b64 = slack._extract_exif_b64(file_bytes, dest.suffix)
+            if exif_b64:
+                app.logger.info(f"[EXIF-DEBUG] EXIF extracted for {safe_name}, length={len(exif_b64)}")
+            else:
+                app.logger.info(f"[EXIF-DEBUG] No EXIF found for {safe_name}")
             slack._save_file_record(
                 local_file_path=str(dest),
                 file_id=None,
@@ -2093,10 +2098,9 @@ def upload_file() -> Any:
                 url_private=None,
                 exif_b64=exif_b64,
             )
-            if exif_b64:
-                app.logger.info(f"EXIF extracted and written to MongoDB for {safe_name}")
+            app.logger.info(f"[EXIF-DEBUG] MongoDB record written for {safe_name} (with_exif={bool(exif_b64)})")
     except Exception as exc:
-        app.logger.warning(f"Failed to write MongoDB record with EXIF for {safe_name}: {exc}")
+        app.logger.warning(f"[EXIF-DEBUG] Failed to write MongoDB record with EXIF for {safe_name}: {exc}")
 
     notify_lat: float | None = None
     notify_lon: float | None = None
