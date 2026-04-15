@@ -646,6 +646,8 @@ class SlackPlugin:
         except OSError as exc:
             raise ValueError(f"Failed to read local file: {exc}") from exc
 
+        exif_b64 = self._extract_exif_b64(file_bytes, local_path.suffix)
+
         result = self._upload_file_bytes(
             filename=local_path.name,
             file_bytes=file_bytes,
@@ -666,9 +668,12 @@ class SlackPlugin:
                 channel_id=result["channel_id"],
                 permalink=file_info.get("permalink"),
                 url_private=file_info.get("url_private"),
+                exif_b64=exif_b64,
             )
             result["permalink"] = file_info.get("permalink")
             result["url_private"] = file_info.get("url_private")
+            if exif_b64:
+                result["exif_preserved"] = True
         except Exception:
             pass
         return result
@@ -716,6 +721,38 @@ class SlackPlugin:
         parsed = self._parse_slack_response(body)
         return parsed.get("file") if isinstance(parsed.get("file"), dict) else {}
 
+    @staticmethod
+    def _extract_exif_b64(file_bytes: bytes, suffix: str) -> str | None:
+        """Extract the raw EXIF block from a JPEG and return it as a base64 string.
+
+        Returns None for non-JPEG files or when no EXIF is present.
+        """
+        if suffix.lower() not in (".jpg", ".jpeg"):
+            return None
+        try:
+            import base64 as _b64
+            import piexif as _piexif
+            exif_dict = _piexif.load(file_bytes)
+            # Only store if there's at least one non-empty IFD
+            if not any(exif_dict.get(ifd) for ifd in ("0th", "Exif", "GPS", "1st")):
+                return None
+            return _b64.b64encode(_piexif.dump(exif_dict)).decode("ascii")
+        except Exception:
+            return None
+
+    @staticmethod
+    def _reembed_exif(file_path: Path, exif_b64: str) -> None:
+        """Re-insert the stored EXIF block into a JPEG file on disk."""
+        if file_path.suffix.lower() not in (".jpg", ".jpeg"):
+            return
+        try:
+            import base64 as _b64
+            import piexif as _piexif
+            exif_bytes = _b64.b64decode(exif_b64)
+            _piexif.insert(exif_bytes, file_path.read_bytes(), str(file_path))
+        except Exception:
+            pass
+
     def _save_file_record(
         self,
         local_file_path: str,
@@ -726,6 +763,7 @@ class SlackPlugin:
         channel_id: str,
         permalink: str | None,
         url_private: str | None,
+        exif_b64: str | None = None,
     ) -> None:
         """Upsert a file upload record in the MongoDB slack_files collection."""
         collection = self._get_mongo_collection()
@@ -743,6 +781,8 @@ class SlackPlugin:
             "url_private": url_private,
             "uploaded_at": _datetime.utcnow().isoformat(),
         }
+        if exif_b64 is not None:
+            record["exif_b64"] = exif_b64
         try:
             collection.update_one(
                 {"local_file_path": local_file_path},
@@ -820,11 +860,19 @@ class SlackPlugin:
         except OSError as exc:
             raise ValueError(f"Failed to write file to {local_path}: {exc}") from exc
 
+        # Re-embed the original EXIF block if one was saved (Slack strips EXIF on upload)
+        exif_b64 = record.get("exif_b64")
+        exif_restored = False
+        if isinstance(exif_b64, str) and exif_b64:
+            self._reembed_exif(local_path, exif_b64)
+            exif_restored = True
+
         return {
             "status": "success",
             "path": str(local_path),
             "source": "slack",
             "file_id": record.get("file_id"),
             "permalink": record.get("permalink"),
+            "exif_restored": exif_restored,
             "message": "File retrieved from Slack and written to original path",
         }
