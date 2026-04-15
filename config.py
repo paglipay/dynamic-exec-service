@@ -166,6 +166,7 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "upload_local_file",
             "get_file",
             "get_file_exif",
+            "backfill_exif",
         ],
     },
     "plugins.integrations.openai_http_plugin": {

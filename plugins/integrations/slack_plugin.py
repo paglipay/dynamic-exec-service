@@ -908,11 +908,13 @@ class SlackPlugin:
 
         local_path = Path(path.strip()).expanduser().resolve()
         exif_dict: dict[str, Any] | None = None
+        loaded_from_disk = False
 
         # Try loading from the local file first
         if local_path.exists() and local_path.is_file():
             try:
                 exif_dict = _piexif.load(str(local_path))
+                loaded_from_disk = True
             except Exception:
                 exif_dict = None
 
@@ -929,6 +931,27 @@ class SlackPlugin:
                         exif_dict = _piexif.load(raw)
                     except Exception:
                         exif_dict = None
+
+        # If EXIF was read from disk and MongoDB record is missing exif_b64, backfill it now
+        if loaded_from_disk and exif_dict is not None:
+            try:
+                collection = self._get_mongo_collection()
+                if collection is not None:
+                    existing = collection.find_one(
+                        {"local_file_path": str(local_path)},
+                        {"_id": 1, "exif_b64": 1},
+                    )
+                    if existing is not None and not existing.get("exif_b64"):
+                        exif_b64 = self._extract_exif_b64(
+                            local_path.read_bytes(), local_path.suffix
+                        )
+                        if exif_b64:
+                            collection.update_one(
+                                {"local_file_path": str(local_path)},
+                                {"$set": {"exif_b64": exif_b64}},
+                            )
+            except Exception:
+                pass
 
         if exif_dict is None:
             return {
@@ -1036,3 +1059,62 @@ class SlackPlugin:
             },
         }
         return result
+
+    def backfill_exif(self, args: dict[str, Any] | None = None) -> dict[str, Any]:
+        """
+        Retroactively extract and save EXIF data into MongoDB for all slack_files
+        records that are missing the exif_b64 field AND whose local file is still
+        on disk.
+
+        Safe to call multiple times — skips records that already have exif_b64.
+
+        Args: {} (no arguments required)
+        Returns: counts of updated, skipped, and failed records.
+        """
+        collection = self._get_mongo_collection()
+        if collection is None:
+            raise ValueError("MongoDB is not available")
+
+        updated = 0
+        skipped_no_file = 0
+        skipped_no_exif = 0
+        skipped_already_set = 0
+        failed = 0
+
+        try:
+            cursor = collection.find(
+                {"exif_b64": {"$exists": False}},
+                {"_id": 1, "local_file_path": 1},
+            )
+            records = list(cursor)
+        except Exception as exc:
+            raise ValueError(f"Failed to query MongoDB: {exc}") from exc
+
+        for rec in records:
+            local_file_path = rec.get("local_file_path", "")
+            file_path = Path(local_file_path)
+            if not file_path.exists() or not file_path.is_file():
+                skipped_no_file += 1
+                continue
+            try:
+                file_bytes = file_path.read_bytes()
+                exif_b64 = self._extract_exif_b64(file_bytes, file_path.suffix)
+                if exif_b64 is None:
+                    skipped_no_exif += 1
+                    continue
+                collection.update_one(
+                    {"_id": rec["_id"]},
+                    {"$set": {"exif_b64": exif_b64}},
+                )
+                updated += 1
+            except Exception:
+                failed += 1
+
+        return {
+            "status": "success",
+            "updated": updated,
+            "skipped_file_not_on_disk": skipped_no_file,
+            "skipped_no_exif_in_file": skipped_no_exif,
+            "failed": failed,
+            "message": f"Backfill complete. {updated} record(s) updated.",
+        }
