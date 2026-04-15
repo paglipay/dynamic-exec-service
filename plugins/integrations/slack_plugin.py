@@ -657,25 +657,41 @@ class SlackPlugin:
         )
         result["action"] = "upload_local_file"
         result["local_file_path"] = str(local_path)
+
+        # Write the core MongoDB record immediately after a successful Slack upload.
+        # This guarantees EXIF and file identity are always persisted, independent of
+        # whether the subsequent files.info call succeeds.
+        self._save_file_record(
+            local_file_path=str(local_path),
+            file_id=result["file_id"],
+            filename=result["file_name"],
+            title=result["title"],
+            channel=result["channel"],
+            channel_id=result["channel_id"],
+            permalink=None,
+            url_private=None,
+            exif_b64=exif_b64,
+        )
+        if exif_b64:
+            result["exif_preserved"] = True
+
+        # Fetch permalink / url_private and update the record with them separately.
         try:
             file_info = self._fetch_file_info(result["file_id"])
-            self._save_file_record(
-                local_file_path=str(local_path),
-                file_id=result["file_id"],
-                filename=result["file_name"],
-                title=result["title"],
-                channel=result["channel"],
-                channel_id=result["channel_id"],
-                permalink=file_info.get("permalink"),
-                url_private=file_info.get("url_private"),
-                exif_b64=exif_b64,
-            )
-            result["permalink"] = file_info.get("permalink")
-            result["url_private"] = file_info.get("url_private")
-            if exif_b64:
-                result["exif_preserved"] = True
+            permalink = file_info.get("permalink")
+            url_private = file_info.get("url_private")
+            if permalink or url_private:
+                collection = self._get_mongo_collection()
+                if collection is not None:
+                    collection.update_one(
+                        {"local_file_path": str(local_path)},
+                        {"$set": {"permalink": permalink, "url_private": url_private}},
+                    )
+            result["permalink"] = permalink
+            result["url_private"] = url_private
         except Exception:
             pass
+
         return result
 
     def _get_mongo_collection(self) -> Any:
