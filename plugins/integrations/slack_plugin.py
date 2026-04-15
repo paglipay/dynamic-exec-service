@@ -646,7 +646,7 @@ class SlackPlugin:
         except OSError as exc:
             raise ValueError(f"Failed to read local file: {exc}") from exc
 
-        exif_b64 = self._extract_exif_b64(file_bytes, local_path.suffix)
+        exif_dict = self._extract_exif_dict(file_bytes, local_path.suffix)
 
         result = self._upload_file_bytes(
             filename=local_path.name,
@@ -670,9 +670,9 @@ class SlackPlugin:
             channel_id=result["channel_id"],
             permalink=None,
             url_private=None,
-            exif_b64=exif_b64,
+            exif_dict=exif_dict,
         )
-        if exif_b64:
+        if exif_dict:
             result["exif_preserved"] = True
 
         # Fetch permalink / url_private and update the record with them separately.
@@ -738,21 +738,31 @@ class SlackPlugin:
         return parsed.get("file") if isinstance(parsed.get("file"), dict) else {}
 
     @staticmethod
-    def _extract_exif_b64(file_bytes: bytes, suffix: str) -> str | None:
-        """Extract the raw EXIF block from a JPEG and return it as a base64 string.
-
+    def _extract_exif_dict(file_bytes: bytes, suffix: str) -> dict | None:
+        """Extract EXIF as a JSON-serializable dict from a JPEG file.
         Returns None for non-JPEG files or when no EXIF is present.
         """
         if suffix.lower() not in (".jpg", ".jpeg"):
             return None
         try:
-            import base64 as _b64
             import piexif as _piexif
             exif_dict = _piexif.load(file_bytes)
             # Only store if there's at least one non-empty IFD
             if not any(exif_dict.get(ifd) for ifd in ("0th", "Exif", "GPS", "1st")):
                 return None
-            return _b64.b64encode(_piexif.dump(exif_dict)).decode("ascii")
+            # Convert bytes to strings for JSON serialization
+            def decode_bytes(obj):
+                if isinstance(obj, dict):
+                    return {k: decode_bytes(v) for k, v in obj.items()}
+                if isinstance(obj, (list, tuple)):
+                    return [decode_bytes(x) for x in obj]
+                if isinstance(obj, bytes):
+                    try:
+                        return obj.decode("utf-8", errors="replace")
+                    except Exception:
+                        return str(obj)
+                return obj
+            return {k: decode_bytes(v) for k, v in exif_dict.items()}
         except Exception:
             return None
 
@@ -779,7 +789,7 @@ class SlackPlugin:
         channel_id: str,
         permalink: str | None,
         url_private: str | None,
-        exif_b64: str | None = None,
+        exif_dict: dict | None = None,
     ) -> None:
         """Upsert a file upload record in the MongoDB slack_files collection."""
         collection = self._get_mongo_collection()
@@ -797,8 +807,8 @@ class SlackPlugin:
             "url_private": url_private,
             "uploaded_at": _datetime.utcnow().isoformat(),
         }
-        if exif_b64 is not None:
-            record["exif_b64"] = exif_b64
+        if exif_dict is not None:
+            record["exif_dict"] = exif_dict
         try:
             collection.update_one(
                 {"local_file_path": local_file_path},
