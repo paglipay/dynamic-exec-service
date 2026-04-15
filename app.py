@@ -2073,6 +2073,31 @@ def upload_file() -> Any:
     size_bytes = dest.stat().st_size
     relative = dest.relative_to(_media_storage_plugin._base).as_posix()
 
+    # --- Write MongoDB record with EXIF immediately after upload ---
+    try:
+        from plugins.integrations.slack_plugin import SlackPlugin
+        bot_token = os.getenv("SLACK_BOT_TOKEN", "").strip()
+        slack = SlackPlugin(bot_token=bot_token, default_channel=SLACK_NETWORK_CHANNEL) if bot_token else None
+        exif_b64 = None
+        if slack:
+            file_bytes = dest.read_bytes()
+            exif_b64 = slack._extract_exif_b64(file_bytes, dest.suffix)
+            slack._save_file_record(
+                local_file_path=str(dest),
+                file_id=None,
+                filename=safe_name,
+                title=safe_name,
+                channel=SLACK_NETWORK_CHANNEL,
+                channel_id=None,
+                permalink=None,
+                url_private=None,
+                exif_b64=exif_b64,
+            )
+            if exif_b64:
+                app.logger.info(f"EXIF extracted and written to MongoDB for {safe_name}")
+    except Exception as exc:
+        app.logger.warning(f"Failed to write MongoDB record with EXIF for {safe_name}: {exc}")
+
     notify_lat: float | None = None
     notify_lon: float | None = None
     if has_gps:
