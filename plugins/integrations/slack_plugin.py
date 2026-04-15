@@ -876,3 +876,163 @@ class SlackPlugin:
             "exif_restored": exif_restored,
             "message": "File retrieved from Slack and written to original path",
         }
+
+    def get_file_exif(self, args: dict[str, Any]) -> dict[str, Any]:
+        """
+        Return parsed EXIF data for a file — from local disk or from the
+        MongoDB slack_files record (exif_b64 field) if the file is gone.
+
+        Args: {"path": "/path/to/image.jpg"}
+
+        Returns human-readable fields including:
+          - orientation (int tag + plain label, e.g. "Rotate 90 CW")
+          - gps_latitude / gps_longitude as decimal floats
+          - gps_lat_ref / gps_lon_ref (N/S, E/W)
+          - gps_altitude (metres)
+          - gps_img_direction (compass bearing 0-360)
+          - gps_img_direction_ref ("T" = True North, "M" = Magnetic)
+          - google_maps_url  (when GPS coords are available)
+          - make, model, datetime_original, software
+        """
+        if not isinstance(args, dict):
+            raise ValueError("args must be a dict")
+        path = args.get("path")
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError("path must be a non-empty string")
+
+        try:
+            import base64 as _b64
+            import piexif as _piexif
+        except ImportError:
+            raise ValueError("piexif is required for EXIF parsing")
+
+        local_path = Path(path.strip()).expanduser().resolve()
+        exif_dict: dict[str, Any] | None = None
+
+        # Try loading from the local file first
+        if local_path.exists() and local_path.is_file():
+            try:
+                exif_dict = _piexif.load(str(local_path))
+            except Exception:
+                exif_dict = None
+
+        # Fall back to the base64 blob stored in MongoDB
+        if exif_dict is None:
+            collection = self._get_mongo_collection()
+            if collection is not None:
+                record = collection.find_one({"local_file_path": str(local_path)})
+                if record is None:
+                    record = collection.find_one({"local_file_path": path.strip()})
+                if record and isinstance(record.get("exif_b64"), str):
+                    try:
+                        raw = _b64.b64decode(record["exif_b64"])
+                        exif_dict = _piexif.load(raw)
+                    except Exception:
+                        exif_dict = None
+
+        if exif_dict is None:
+            return {
+                "status": "success",
+                "path": str(local_path),
+                "exif": None,
+                "message": "No EXIF data found for this file",
+            }
+
+        def _rational_to_float(value: Any) -> float | None:
+            """Convert piexif rational (numerator, denominator) to float."""
+            if isinstance(value, (list, tuple)) and len(value) == 2:
+                num, den = value
+                return float(num) / float(den) if den else None
+            return None
+
+        def _dms_to_decimal(dms: Any, ref: bytes | str) -> float | None:
+            """Convert DMS rational tuple list to signed decimal degrees."""
+            if not isinstance(dms, (list, tuple)) or len(dms) != 3:
+                return None
+            try:
+                d = _rational_to_float(dms[0])
+                m = _rational_to_float(dms[1])
+                s = _rational_to_float(dms[2])
+                if d is None or m is None or s is None:
+                    return None
+                decimal = d + m / 60.0 + s / 3600.0
+                ref_str = ref.decode("ascii") if isinstance(ref, bytes) else str(ref)
+                if ref_str.upper() in ("S", "W"):
+                    decimal = -decimal
+                return round(decimal, 8)
+            except Exception:
+                return None
+
+        _ORIENTATION_LABELS = {
+            1: "Normal",
+            2: "Mirror horizontal",
+            3: "Rotate 180",
+            4: "Mirror vertical",
+            5: "Mirror horizontal, Rotate 270 CW",
+            6: "Rotate 90 CW",
+            7: "Mirror horizontal, Rotate 90 CW",
+            8: "Rotate 270 CW",
+        }
+
+        ifd0 = exif_dict.get("0th", {})
+        exif_ifd = exif_dict.get("Exif", {})
+        gps_ifd = exif_dict.get("GPS", {})
+
+        # --- Orientation ---
+        orientation_tag = ifd0.get(_piexif.ImageIFD.Orientation)
+        orientation_label = _ORIENTATION_LABELS.get(orientation_tag)
+
+        # --- Basic metadata ---
+        def _decode(val: Any) -> str | None:
+            if isinstance(val, bytes):
+                return val.decode("utf-8", errors="replace").strip().rstrip("\x00")
+            return str(val) if val is not None else None
+
+        make = _decode(ifd0.get(_piexif.ImageIFD.Make))
+        model = _decode(ifd0.get(_piexif.ImageIFD.Model))
+        software = _decode(ifd0.get(_piexif.ImageIFD.Software))
+        datetime_original = _decode(exif_ifd.get(_piexif.ExifIFD.DateTimeOriginal))
+
+        # --- GPS ---
+        lat_raw = gps_ifd.get(_piexif.GPSIFD.GPSLatitude)
+        lat_ref = gps_ifd.get(_piexif.GPSIFD.GPSLatitudeRef)
+        lon_raw = gps_ifd.get(_piexif.GPSIFD.GPSLongitude)
+        lon_ref = gps_ifd.get(_piexif.GPSIFD.GPSLongitudeRef)
+        alt_raw = gps_ifd.get(_piexif.GPSIFD.GPSAltitude)
+        alt_ref = gps_ifd.get(_piexif.GPSIFD.GPSAltitudeRef)  # 0=above, 1=below sea level
+        direction_raw = gps_ifd.get(_piexif.GPSIFD.GPSImgDirection)
+        direction_ref = gps_ifd.get(_piexif.GPSIFD.GPSImgDirectionRef)
+
+        lat = _dms_to_decimal(lat_raw, lat_ref or b"N") if lat_raw else None
+        lon = _dms_to_decimal(lon_raw, lon_ref or b"E") if lon_raw else None
+        alt = _rational_to_float(alt_raw)
+        if alt is not None and alt_ref == 1:
+            alt = -alt
+        direction = _rational_to_float(direction_raw)
+        direction_ref_str = direction_ref.decode("ascii").strip() if isinstance(direction_ref, bytes) else None
+
+        maps_url: str | None = None
+        if lat is not None and lon is not None:
+            maps_url = f"https://maps.google.com/?q={lat},{lon}"
+
+        result: dict[str, Any] = {
+            "status": "success",
+            "path": str(local_path),
+            "exif": {
+                "orientation": orientation_tag,
+                "orientation_label": orientation_label,
+                "make": make,
+                "model": model,
+                "software": software,
+                "datetime_original": datetime_original,
+                "gps_latitude": lat,
+                "gps_latitude_ref": _decode(lat_ref),
+                "gps_longitude": lon,
+                "gps_longitude_ref": _decode(lon_ref),
+                "gps_altitude_m": round(alt, 2) if alt is not None else None,
+                "gps_img_direction": round(direction, 2) if direction is not None else None,
+                "gps_img_direction_ref": direction_ref_str,
+                "google_maps_url": maps_url,
+            },
+        }
+        return result
