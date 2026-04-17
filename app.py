@@ -78,10 +78,8 @@ from flask import Response
 @app.before_request
 def log_slack_events():
     if request.path == "/slack/events":
-        # Debug logging for /slack/events can be enabled here if needed
         if not request.data or not request.get_data(as_text=True).strip():
             return Response("Missing or empty request body", status=400)
-        # Optionally handle Slack url_verification
         content_type = request.headers.get("Content-Type", "")
         if "application/x-www-form-urlencoded" in content_type:
             from urllib.parse import parse_qs, unquote_plus
@@ -94,7 +92,6 @@ def log_slack_events():
                 parsed_payload = json.loads(payload_json)
             except Exception:
                 return Response("Invalid payload JSON", status=400)
-            # Always return 200 OK for interactive payloads so Slack doesn't retry
             return Response("OK", status=200)
         else:
             try:
@@ -102,7 +99,6 @@ def log_slack_events():
             except Exception:
                 return Response("Invalid JSON", status=400)
 
-        # Optionally handle Slack url_verification
         if isinstance(body, dict) and body.get("type") == "url_verification":
             return jsonify({"challenge": body.get("challenge", "")})
 
@@ -118,8 +114,6 @@ WORKFLOW_REF_PATTERN = re.compile(r"^\$\{steps\.([^\.]+)\.result(?:\.(.+))?\}$")
 SLACK_EVENT_TTL_SECONDS = 300
 SLACK_MAX_IMAGE_BYTES = 5 * 1024 * 1024
 SLACK_MAX_IMAGE_COUNT = 3
-# Resize images so their long edge doesn't exceed this before sending to OpenAI vision.
-# Keeps token counts low. Override with SLACK_IMAGE_MAX_LONG_EDGE env var.
 try:
     SLACK_IMAGE_MAX_LONG_EDGE = int(os.getenv("SLACK_IMAGE_MAX_LONG_EDGE", "1024"))
 except ValueError:
@@ -145,10 +139,6 @@ _slack_form_submissions: list[dict[str, Any]] = []
 _slack_form_submissions_lock = threading.Lock()
 
 # --- File Storage Configuration ---
-# Set FILE_UPLOAD_API_KEY in .env to require authentication for upload/download/list/delete.
-# Set MEDIA_STORAGE_DIR to override the local directory where uploads are saved.
-# Set FILE_MAX_UPLOAD_MB to change the per-request size cap (default 500 MB).
-# Set SLACK_NETWORK_CHANNEL to the channel name/ID where upload notifications are posted.
 MEDIA_STORAGE_DIR = os.getenv("MEDIA_STORAGE_DIR", "media_storage")
 SLACK_NETWORK_CHANNEL = os.getenv("SLACK_NETWORK_CHANNEL", "#general")
 FILE_UPLOAD_API_KEY = os.getenv("FILE_UPLOAD_API_KEY", "").strip()
@@ -432,12 +422,7 @@ def _guess_image_extension(content_type: str, fallback_name: str) -> str:
 
 
 def _resize_image_for_vision(image_bytes: bytes, mime: str, max_long_edge: int = 1024) -> tuple[bytes, str]:
-    """Resize image bytes so the long edge is at most max_long_edge pixels and encode as JPEG.
-
-    Always outputs JPEG at quality 75 regardless of source format, minimising base64 size.
-    Returns (jpeg_bytes, "image/jpeg"). Falls back to (original_bytes, mime) if PIL is
-    unavailable or conversion fails.
-    """
+    """Resize image bytes so the long edge is at most max_long_edge pixels and encode as JPEG."""
     if _PILImage is None:
         return image_bytes, mime
     if not isinstance(image_bytes, bytes) or not image_bytes:
@@ -612,7 +597,6 @@ def _is_unreadable_slack_preview_text(text: str) -> bool:
     return normalized in SLACK_UNREADABLE_PREVIEW_TEXTS
 
 
-
 def _parse_tsv_rows(tsv_text: str, max_rows: int = 25) -> list[dict[str, str]]:
     """Parse TSV text into row dicts using the first row as headers."""
     if not isinstance(tsv_text, str) or not tsv_text.strip():
@@ -725,6 +709,66 @@ def _render_pdf_pages_to_image_data_urls(
         document.close()
 
     return data_urls, saved_paths, rendered_count
+
+
+def _extract_exif_full(image_bytes: bytes, name: str) -> dict | None:
+    """Extract full EXIF data from JPEG bytes into a JSON-serializable dict.
+
+    Returns a dict keyed by IFD name (e.g. '0th', 'Exif', 'GPS', '1st')
+    where each value is a dict of {str(tag_id): repr(value)}.
+    Returns None if piexif is unavailable or parsing fails.
+    """
+    try:
+        import piexif
+        _exif = piexif.load(image_bytes)
+        exif_full: dict = {}
+        for _ifd, _tags in _exif.items():
+            if isinstance(_tags, dict):
+                exif_full[_ifd] = {str(k): repr(v) for k, v in _tags.items()}
+        # Debug: print full EXIF to stdout immediately
+        _exif_str = json.dumps(exif_full, indent=2, ensure_ascii=False)
+        print(f"[EXIF ON RECEIVE] {name} ({len(image_bytes)} bytes):\n{_exif_str}", flush=True)
+        app.logger.debug("[EXIF ON RECEIVE] %s:\n%s", name, _exif_str)
+        return exif_full
+    except Exception as exc:
+        print(f"[EXIF ON RECEIVE] Could not read EXIF for {name}: {exc}", flush=True)
+        app.logger.debug("[EXIF ON RECEIVE] Could not read EXIF for %s: %s", name, exc)
+        return None
+
+
+def _extract_gps_from_exif(image_bytes: bytes, name: str) -> dict | None:
+    """Extract GPS lat/lon from JPEG bytes. Returns {'lat': float, 'lon': float} or None."""
+    try:
+        import piexif
+        _exif = piexif.load(image_bytes)
+        _gps = _exif.get("GPS", {})
+        if not _gps:
+            return None
+
+        def _dms_to_dec(dms: tuple, ref: bytes) -> float | None:
+            try:
+                d = dms[0][0] / dms[0][1]
+                m = dms[1][0] / dms[1][1]
+                s = dms[2][0] / dms[2][1]
+                val = d + m / 60 + s / 3600
+                return -val if ref in (b"S", b"W") else val
+            except Exception:
+                return None
+
+        _lat = _dms_to_dec(
+            _gps.get(piexif.GPSIFD.GPSLatitude, ()),
+            _gps.get(piexif.GPSIFD.GPSLatitudeRef, b"N"),
+        )
+        _lon = _dms_to_dec(
+            _gps.get(piexif.GPSIFD.GPSLongitude, ()),
+            _gps.get(piexif.GPSIFD.GPSLongitudeRef, b"E"),
+        )
+        if _lat is not None and _lon is not None:
+            return {"lat": round(_lat, 7), "lon": round(_lon, 7)}
+        return None
+    except Exception as exc:
+        app.logger.debug("GPS extraction failed for %s: %s", name, exc)
+        return None
 
 
 def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | None) -> tuple[str, str, list[str], list[dict]]:
@@ -997,49 +1041,31 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
                 if not mime.startswith("image/"):
                     mime = "image/png"
 
+                # --- Extract EXIF immediately from raw in-memory bytes (earliest possible moment) ---
+                _image_exif_full: dict | None = None
+                _image_gps: dict | None = None
+                is_jpeg = (
+                    name.lower().endswith((".jpg", ".jpeg"))
+                    or mime in ("image/jpeg", "image/jpg")
+                )
+                if is_jpeg:
+                    _image_exif_full = _extract_exif_full(binary_data, name)
+                    _image_gps = _extract_gps_from_exif(binary_data, name)
+                    if _image_gps:
+                        gps_str = f"GPS coordinates embedded in image: lat={_image_gps['lat']}, lon={_image_gps['lon']}"
+                        file_content_lines.append(f"[{name}] {gps_str}")
+                        app.logger.info("GPS EXIF extracted from Slack image %s: %s", name, gps_str)
+                # --- END EXIF extract ---
+
                 try:
                     saved_path = _save_slack_image_copy(binary_data, name, mime, channel if isinstance(channel, str) else None)
                 except Exception as exc:
                     app.logger.warning("Failed to save Slack image locally (%s): %s", name, exc)
                     saved_path = None
-                _image_gps: dict | None = None
+
                 if isinstance(saved_path, str) and saved_path:
                     saved_image_paths.append(saved_path)
                     file_lines[-1] = f"{file_lines[-1]}; saved_as={saved_path}"
-
-                    # Try to read GPS EXIF from the saved JPEG and include in prompt.
-                    # Use piexif directly to avoid the ImageProcessingPlugin constructor
-                    # which opens a MongoDB connection and adds significant latency.
-                    if saved_path.lower().endswith((".jpg", ".jpeg")):
-                        try:
-                            import piexif
-                            _exif = piexif.load(saved_path)
-                            _gps = _exif.get("GPS", {})
-                            if _gps:
-                                def _dms_to_dec(dms: tuple, ref: bytes) -> float | None:
-                                    try:
-                                        d = dms[0][0] / dms[0][1]
-                                        m = dms[1][0] / dms[1][1]
-                                        s = dms[2][0] / dms[2][1]
-                                        val = d + m / 60 + s / 3600
-                                        return -val if ref in (b"S", b"W") else val
-                                    except Exception:
-                                        return None
-                                _lat = _dms_to_dec(
-                                    _gps.get(piexif.GPSIFD.GPSLatitude, ()),
-                                    _gps.get(piexif.GPSIFD.GPSLatitudeRef, b"N"),
-                                )
-                                _lon = _dms_to_dec(
-                                    _gps.get(piexif.GPSIFD.GPSLongitude, ()),
-                                    _gps.get(piexif.GPSIFD.GPSLongitudeRef, b"E"),
-                                )
-                                if _lat is not None and _lon is not None:
-                                    gps_str = f"GPS coordinates embedded in image: lat={round(_lat, 7)}, lon={round(_lon, 7)}"
-                                    file_content_lines.append(f"[{name}] {gps_str}")
-                                    app.logger.info("GPS EXIF extracted from Slack image %s: %s", name, gps_str)
-                                    _image_gps = {"lat": round(_lat, 7), "lon": round(_lon, 7)}
-                        except Exception as exc:
-                            app.logger.debug("GPS EXIF extraction skipped for %s: %s", name, exc)
 
                 vision_bytes, vision_mime = _resize_image_for_vision(binary_data, mime, SLACK_IMAGE_MAX_LONG_EDGE)
                 encoded = base64.b64encode(vision_bytes).decode("ascii")
@@ -1048,6 +1074,7 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
                     "name": name,
                     "saved_path": saved_path if isinstance(saved_path, str) else None,
                     "gps": _image_gps,
+                    "exif_full": _image_exif_full,
                     "vision_data_url": f"data:{vision_mime};base64,{encoded}",
                 })
                 app.logger.info("Attached image captured for OpenAI vision input: %s", name)
@@ -1179,9 +1206,6 @@ if slack_event_adapter is not None:
                 "OpenAIFunctionCallingPlugin",
                 {},
             )
-            # Always send image pixels inline — the model decides contextually whether to
-            # analyze them based on the system prompt and conversation. This is more reliable
-            # than keyword matching and handles typos, synonyms, and implicit intent correctly.
             vision_urls_to_send = image_data_urls
             if vision_urls_to_send:
                 app.logger.info("Sending %s vision image(s) inline to OpenAI", len(vision_urls_to_send))
@@ -1202,9 +1226,6 @@ if slack_event_adapter is not None:
             else:
                 reply_text = str(ai_result).strip()
 
-            # For images the model loaded via read_image_for_vision (e.g. Streamlit uploads,
-            # generated_data files), build metadata from the local file path so MongoDB save
-            # works regardless of where the image was originally uploaded.
             print(f"[MongoDB-save] ai_result type={type(ai_result).__name__} is_dict={isinstance(ai_result, dict)}", flush=True)
             if isinstance(ai_result, dict):
                 _analyzed_paths = ai_result.get("analyzed_image_paths") or []
@@ -1221,35 +1242,16 @@ if slack_event_adapter is not None:
                             _ap_bytes = _f.read()
                         print(f"[MongoDB-save] File read OK: {_ap} bytes={len(_ap_bytes)}", flush=True)
                         _ap_name = os.path.basename(_ap)
+
+                        # Extract full EXIF and GPS from the analyzed image path
+                        _ap_exif_full: dict | None = None
                         _ap_gps: dict | None = None
                         if _ap.lower().endswith((".jpg", ".jpeg")):
-                            try:
-                                import piexif as _piexif
-                                _exif_d = _piexif.load(_ap)
-                                _gps_d = _exif_d.get("GPS", {})
-                                if _gps_d:
-                                    def _dms2dec(_dms: tuple, _ref: bytes) -> float | None:
-                                        try:
-                                            d = _dms[0][0] / _dms[0][1]
-                                            m = _dms[1][0] / _dms[1][1]
-                                            s = _dms[2][0] / _dms[2][1]
-                                            val = d + m / 60 + s / 3600
-                                            return -val if _ref in (b"S", b"W") else val
-                                        except Exception:
-                                            return None
-                                    _lat2 = _dms2dec(
-                                        _gps_d.get(_piexif.GPSIFD.GPSLatitude, ()),
-                                        _gps_d.get(_piexif.GPSIFD.GPSLatitudeRef, b"N"),
-                                    )
-                                    _lon2 = _dms2dec(
-                                        _gps_d.get(_piexif.GPSIFD.GPSLongitude, ()),
-                                        _gps_d.get(_piexif.GPSIFD.GPSLongitudeRef, b"E"),
-                                    )
-                                    if _lat2 is not None and _lon2 is not None:
-                                        _ap_gps = {"lat": round(_lat2, 7), "lon": round(_lon2, 7)}
-                                        print(f"[MongoDB-save] GPS extracted: {_ap_gps}", flush=True)
-                            except Exception as _gps_exc:
-                                print(f"[MongoDB-save] GPS extraction failed (non-fatal): {_gps_exc}", flush=True)
+                            _ap_exif_full = _extract_exif_full(_ap_bytes, _ap_name)
+                            _ap_gps = _extract_gps_from_exif(_ap_bytes, _ap_name)
+                            if _ap_gps:
+                                print(f"[MongoDB-save] GPS extracted: {_ap_gps}", flush=True)
+
                         _ap_mime = "image/jpeg" if _ap.lower().endswith((".jpg", ".jpeg")) else "image/png"
                         _vis_bytes, _vis_mime = _resize_image_for_vision(_ap_bytes, _ap_mime, SLACK_IMAGE_MAX_LONG_EDGE)
                         _vis_enc = base64.b64encode(_vis_bytes).decode("ascii")
@@ -1257,6 +1259,7 @@ if slack_event_adapter is not None:
                             "name": _ap_name,
                             "saved_path": _ap,
                             "gps": _ap_gps,
+                            "exif_full": _ap_exif_full,
                             "vision_data_url": f"data:{_vis_mime};base64,{_vis_enc}",
                         })
                         print(f"[MongoDB-save] Appended metadata for: {_ap_name}", flush=True)
@@ -1266,9 +1269,6 @@ if slack_event_adapter is not None:
             else:
                 print(f"[MongoDB-save] ai_result is not a dict — analyzed_image_paths unavailable", flush=True)
 
-            # Persist image analysis record (EXIF, base64 vision data, AI findings) to
-            # MongoDB asynchronously whenever images were present in this Slack event
-            # (whether sent inline or analysed via read_image_for_vision tool).
             print(f"[MongoDB-save] image_metadata present={bool(image_metadata)} count={len(image_metadata)}", flush=True)
             app.logger.warning("[MongoDB-save] image_metadata present=%s count=%s", bool(image_metadata), len(image_metadata))
             if image_metadata:
@@ -1312,7 +1312,6 @@ if slack_event_adapter is not None:
                             len(_meta),
                             inserted_id,
                         )
-                        # Inject into conversation history so the bot knows where the record was saved.
                         try:
                             from plugins.integrations.openai_plugin import OpenAIFunctionCallingPlugin
                             openai_plugin = OpenAIFunctionCallingPlugin()
@@ -1390,15 +1389,11 @@ def health_check() -> Any:
 @app.post("/slack/interactivity")
 def slack_interactivity() -> Any:
     """Handle Slack interactive payloads such as modal form submissions."""
-
-    # Debug logging for /slack/interactivity can be enabled here if needed
     if not signing_secret:
         return _error_response("SIGNING_SECRET is not configured", status_code=503)
-    # Verify signature BEFORE reading body or form
     if not _verify_slack_signed_request(request, signing_secret):
         return _error_response("Invalid Slack signature", status_code=401)
 
-    # Now it's safe to read the body/form
     raw_payload = request.form.get("payload", "")
     if not isinstance(raw_payload, str) or not raw_payload.strip():
         return _error_response("Missing Slack payload")
@@ -1450,7 +1445,6 @@ def slack_interactivity() -> Any:
         }
         _store_slack_form_submission(submission_record)
 
-        # Immediately respond to Slack to avoid timeout
         from threading import Thread
         def process_form_submission_async(user_info, channel_id, submitted_values, trigger_id, view, payload):
             try:
@@ -1554,13 +1548,10 @@ def slack_interactivity() -> Any:
             }
         )
 
-        # Immediately open a modal if the button was clicked
         trigger_id = payload.get("trigger_id")
-        # Try to get modal_view from Redis using a key in the button value
         modal_view = None
         redis_client = _slack_dedupe_redis_client
         modal_key = None
-        # 1. Check actions for a value that looks like a modal_view key
         print(f"[DEBUG] block_actions: actions received: {actions}")
         for action in actions:
             print(f"[DEBUG] Inspecting action: {action}")
@@ -1568,7 +1559,6 @@ def slack_interactivity() -> Any:
             if value and isinstance(value, str) and value.startswith("modalview:"):
                 modal_key = value[len("modalview:"):]
                 print(f"[DEBUG] Extracted modal_key: {modal_key} from action_id: {action.get('action_id')}")
-        # 2. If modal_key is found, try to fetch modal_view from Redis
         if modal_key:
             print(f"[DEBUG] modal_key is set: {modal_key}, redis_client is {'present' if redis_client is not None else 'None'}")
         if modal_key and redis_client is not None:
@@ -1579,7 +1569,6 @@ def slack_interactivity() -> Any:
                     modal_view = json.loads(modal_json)
             except Exception as exc:
                 app.logger.warning(f"Failed to fetch modal_view from Redis: {exc}")
-        # 3. Fallback to default if still not set
         if not modal_view:
             modal_view = {
                 "type": "modal",
@@ -1595,7 +1584,6 @@ def slack_interactivity() -> Any:
                     }
                 ]
             }
-        # Restore modal opening logic: call open_modal (or open_modal_form) on SlackPlugin
         if trigger_id:
             try:
                 from executor.engine import JSONExecutor
@@ -1611,7 +1599,6 @@ def slack_interactivity() -> Any:
                     "SlackPlugin",
                     {"bot_token": os.getenv("SLACK_BOT_TOKEN", ""), "default_channel": SLACK_NETWORK_CHANNEL},
                 )
-                # open_modal expects a dict with at least trigger_id and modal_view
                 result = executor.call_method(
                     "plugins.integrations.slack_plugin",
                     "open_modal",
@@ -1825,6 +1812,13 @@ def _check_file_api_key() -> bool:
 # ---------------------------------------------------------------------------
 
 @app.errorhandler(413)
+def _handle_request_entity_too_large(error: Any) -> Any:
+    return _error_response(
+        f"File exceeds the maximum allowed size of {FILE_MAX_UPLOAD_MB} MB",
+        status_code=413,
+    )
+
+
 def _trigger_upload_notification(
     filename: str,
     relative_path: str,
@@ -1867,8 +1861,6 @@ def _trigger_upload_notification(
             print(f"[UploadNotify] post_message result: {result}", flush=True)
             app.logger.warning("Upload notification posted to %s for file %s", SLACK_NETWORK_CHANNEL, filename)
 
-            # Inject the upload event into the channel's conversation history so the
-            # bot is aware when a user subsequently asks "what just happened?" etc.
             channel_id = result.get("channel", SLACK_NETWORK_CHANNEL)
             forced_conversation_id = os.getenv("SLACK_CONVERSATION_ID", "").strip()
             conversation_id = forced_conversation_id if forced_conversation_id else f"slack:{channel_id}"
@@ -1898,24 +1890,9 @@ def _trigger_upload_notification(
     threading.Thread(target=_notify, daemon=True).start()
 
 
-def _handle_request_entity_too_large(error: Any) -> Any:
-    return _error_response(
-        f"File exceeds the maximum allowed size of {FILE_MAX_UPLOAD_MB} MB",
-        status_code=413,
-    )
-
-
 @app.post("/files/upload")
 def upload_file() -> Any:
-    """Accept a multipart/form-data file and store it in the media storage directory.
-
-    Form fields:
-      - file (required): the file to upload
-      - folder (optional): subdirectory within media_storage, e.g. "videos/2026"
-
-    Headers:
-      - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment
-    """
+    """Accept a multipart/form-data file and store it in the media storage directory."""
     if not _check_file_api_key():
         return _error_response("Unauthorized", status_code=401)
 
@@ -1941,7 +1918,6 @@ def upload_file() -> Any:
     except ValueError as exc:
         return _error_response(str(exc))
 
-    # Avoid silently overwriting an existing file
     if dest.exists():
         ts = int(time.time())
         stem = Path(safe_name).stem
@@ -1954,13 +1930,10 @@ def upload_file() -> Any:
 
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    # Read GPS coords early — used to decide whether to convert to JPEG
     lat_raw = request.form.get("lat", "").strip()
     lon_raw = request.form.get("lon", "").strip()
     has_gps = bool(lat_raw and lon_raw)
 
-    # When GPS coords are present and the file is not already JPEG, convert it
-    # so piexif can embed the coordinates (EXIF requires JPEG format).
     _JPEG_EXTS = {".jpg", ".jpeg"}
     _CONVERTIBLE_EXTS = {".png", ".webp", ".gif", ".bmp", ".tiff"}
     if has_gps and dest.suffix.lower() in _CONVERTIBLE_EXTS and _PILImage is not None:
@@ -1970,7 +1943,6 @@ def upload_file() -> Any:
             img = img.convert("RGB")
             buf = _io_mod.BytesIO()
             img.save(buf, format="JPEG", quality=90, optimize=True)
-            # Re-target the destination to a .jpg filename
             stem = Path(safe_name).stem
             safe_name = f"{stem}.jpg"
             try:
@@ -1993,7 +1965,6 @@ def upload_file() -> Any:
     else:
         f.save(str(dest))
 
-    # Write GPS EXIF data when lat/lon are provided and the file has no existing GPS (JPEG only)
     if has_gps and dest.suffix.lower() in _JPEG_EXTS:
         try:
             import piexif
@@ -2009,7 +1980,6 @@ def upload_file() -> Any:
                 app.logger.info("Skipping GPS EXIF write for %s — existing GPS data found", dest.name)
             else:
                 def _to_dms_rational(degrees: float) -> tuple:
-                    """Convert decimal degrees to EXIF DMS rational tuples."""
                     d = int(abs(degrees))
                     m_float = (abs(degrees) - d) * 60
                     m = int(m_float)
@@ -2054,13 +2024,7 @@ def upload_file() -> Any:
 
 @app.get("/files/download/<path:filename>")
 def download_file(filename: str) -> Any:
-    """Stream a stored file back to the caller.
-
-    Pass ?download=true to force an attachment (browser download prompt).
-
-    Headers:
-      - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment
-    """
+    """Stream a stored file back to the caller."""
     if not _check_file_api_key():
         return _error_response("Unauthorized", status_code=401)
 
@@ -2079,14 +2043,7 @@ def download_file(filename: str) -> Any:
 
 @app.get("/files/list")
 def list_files() -> Any:
-    """List files and directories inside the media storage root or a subfolder.
-
-    Query params:
-      - folder (optional): subdirectory to list, e.g. "videos/2026"
-
-    Headers:
-      - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment
-    """
+    """List files and directories inside the media storage root or a subfolder."""
     if not _check_file_api_key():
         return _error_response("Unauthorized", status_code=401)
 
@@ -2102,11 +2059,7 @@ def list_files() -> Any:
 
 @app.delete("/files/delete/<path:filename>")
 def delete_file(filename: str) -> Any:
-    """Delete a stored file.
-
-    Headers:
-      - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment
-    """
+    """Delete a stored file."""
     if not _check_file_api_key():
         return _error_response("Unauthorized", status_code=401)
 
@@ -2123,17 +2076,9 @@ def delete_file(filename: str) -> Any:
 # Staging — routes
 # ---------------------------------------------------------------------------
 
-
 @app.post("/files/stage/<session_id>")
 def stage_file(session_id: str) -> Any:
-    """Upload a single file into a temporary staging area for a session.
-
-    Form fields:
-      - file (required): the file to stage
-
-    Headers:
-      - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment
-    """
+    """Upload a single file into a temporary staging area for a session."""
     if not _check_file_api_key():
         return _error_response("Unauthorized", status_code=401)
 
@@ -2168,11 +2113,7 @@ def stage_file(session_id: str) -> Any:
 
 @app.get("/files/stage/<session_id>")
 def list_staged_route(session_id: str) -> Any:
-    """List files currently staged for a session.
-
-    Headers:
-      - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment
-    """
+    """List files currently staged for a session."""
     if not _check_file_api_key():
         return _error_response("Unauthorized", status_code=401)
 
@@ -2185,11 +2126,7 @@ def list_staged_route(session_id: str) -> Any:
 
 @app.delete("/files/stage/<session_id>")
 def clear_staged_route(session_id: str) -> Any:
-    """Remove all staged files for a session.
-
-    Headers:
-      - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment
-    """
+    """Remove all staged files for a session."""
     if not _check_file_api_key():
         return _error_response("Unauthorized", status_code=401)
 
@@ -2202,11 +2139,7 @@ def clear_staged_route(session_id: str) -> Any:
 
 @app.delete("/files/stage/<session_id>/<filename>")
 def remove_staged_file_route(session_id: str, filename: str) -> Any:
-    """Remove a single staged file.
-
-    Headers:
-      - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment
-    """
+    """Remove a single staged file."""
     if not _check_file_api_key():
         return _error_response("Unauthorized", status_code=401)
 
@@ -2223,29 +2156,10 @@ def remove_staged_file_route(session_id: str, filename: str) -> Any:
 
 @app.post("/files/rename-zip")
 def rename_zip() -> Any:
-    """Sort, rename, and zip uploaded images and videos grouped by video markers.
-
-    Accepts multipart/form-data:
-      files       — one or more image/video files
-      sort_order  — "date_taken" (default) | "upload_order"
-
-    Returns JSON:
-      {
-        "status":         "success",
-        "filename":       "renamed_media_20260408_153000_abc123.zip",
-        "size_bytes":     123456,
-        "download_url":   "/files/download/zips/renamed_media_...zip",
-        "images_renamed": 5,
-        "video_markers":  2
-      }
-
-    Headers:
-      - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment
-    """
+    """Sort, rename, and zip uploaded images and videos grouped by video markers."""
     if not _check_file_api_key():
         return _error_response("Unauthorized", status_code=401)
 
-    # Branch: JSON body with session_id → build ZIP from staged files
     if request.is_json:
         body = request.get_json(silent=True) or {}
         session_id = body.get("session_id", "")
@@ -2261,7 +2175,6 @@ def rename_zip() -> Any:
             app.logger.exception("rename_zip (staged) processing failed")
             return _error_response("Processing failed", status_code=500)
 
-    # Branch: multipart/form-data with inline file bytes
     uploaded = request.files.getlist("files")
     if not uploaded:
         return _error_response("No files provided")
