@@ -767,6 +767,21 @@ class SlackPlugin:
             return None
 
     @staticmethod
+    def _extract_exif_b64(file_bytes: bytes, suffix: str) -> str | None:
+        """Return the raw EXIF block from a JPEG as a base64 string, or None."""
+        if suffix.lower() not in (".jpg", ".jpeg"):
+            return None
+        try:
+            import base64 as _b64
+            import piexif as _piexif
+            exif_dict = _piexif.load(file_bytes)
+            if not any(exif_dict.get(ifd) for ifd in ("0th", "Exif", "GPS", "1st")):
+                return None
+            return _b64.b64encode(_piexif.dump(exif_dict)).decode("ascii")
+        except Exception:
+            return None
+
+    @staticmethod
     def _reembed_exif(file_path: Path, exif_b64: str) -> None:
         """Re-insert the stored EXIF block into a JPEG file on disk."""
         if file_path.suffix.lower() not in (".jpg", ".jpeg"):
@@ -782,14 +797,16 @@ class SlackPlugin:
     def _save_file_record(
         self,
         local_file_path: str,
-        file_id: str,
+        file_id: str | None,
         filename: str,
         title: str,
         channel: str,
-        channel_id: str,
+        channel_id: str | None,
         permalink: str | None,
         url_private: str | None,
         exif_dict: dict | None = None,
+        exif_b64: str | None = None,
+        gps: dict | None = None,
     ) -> None:
         """Upsert a file upload record in the MongoDB slack_files collection."""
         collection = self._get_mongo_collection()
@@ -798,17 +815,25 @@ class SlackPlugin:
         from datetime import datetime as _datetime
         record: dict[str, Any] = {
             "local_file_path": local_file_path,
-            "file_id": file_id,
             "filename": filename,
             "title": title,
             "channel": channel,
-            "channel_id": channel_id,
-            "permalink": permalink,
-            "url_private": url_private,
             "uploaded_at": _datetime.utcnow().isoformat(),
         }
+        if file_id is not None:
+            record["file_id"] = file_id
+        if channel_id is not None:
+            record["channel_id"] = channel_id
+        if permalink is not None:
+            record["permalink"] = permalink
+        if url_private is not None:
+            record["url_private"] = url_private
         if exif_dict is not None:
             record["exif_dict"] = exif_dict
+        if exif_b64 is not None:
+            record["exif_b64"] = exif_b64
+        if gps is not None:
+            record["gps"] = gps
         try:
             collection.update_one(
                 {"local_file_path": local_file_path},

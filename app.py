@@ -171,70 +171,6 @@ _media_storage_plugin = MediaStoragePlugin(base_dir=MEDIA_STORAGE_DIR)
 from plugins.system_tools.file_reader_plugin import FileReaderPlugin  # noqa: E402
 _file_reader_plugin = FileReaderPlugin(base_dir=SLACK_IMAGE_SAVE_BASE_DIR)
 
-def _serialize_exif(exif_dict: dict) -> dict:
-    """Convert piexif tag values to JSON-serializable types."""
-    def _convert(value: Any) -> Any:
-        if isinstance(value, bytes):
-            try:
-                return value.decode("utf-8", errors="replace")
-            except Exception:
-                return value.hex()
-        if isinstance(value, tuple) and len(value) == 2 and all(isinstance(v, int) for v in value):
-            return value[0] / value[1] if value[1] != 0 else None
-        if isinstance(value, tuple):
-            return [_convert(v) for v in value]
-        if isinstance(value, dict):
-            return {str(k): _convert(v) for k, v in value.items()}
-        return value
-
-    return {ifd: _convert(tags) for ifd, tags in exif_dict.items()}
-
-
-def _save_exif_to_mongo(
-    filename: str,
-    relative_path: str,
-    size_bytes: int,
-    exif_dict: dict,
-    lat: float | None = None,
-    lon: float | None = None,
-) -> None:
-    """Create an initial slack_files record with EXIF data at upload time.
-
-    Slack-specific fields (file_id, permalink, url_private, channel) are left
-    absent here and filled in later when upload_local_file runs in the
-    notification thread.
-    """
-    try:
-        import pymongo  # type: ignore[import-not-found]
-        uri = os.getenv("MONGODB_URI", "").strip()
-        if not uri:
-            return
-        client = pymongo.MongoClient(uri, serverSelectionTimeoutMS=3000)
-        collection = client.get_default_database()["slack_files"]
-    except Exception:
-        return
-
-    local_file_path = str((_MEDIA_STORAGE_PATH / relative_path).resolve())
-    try:
-        doc: dict[str, Any] = {
-            "local_file_path": local_file_path,
-            "filename": filename,
-            "size_bytes": size_bytes,
-            "exif_dict": _serialize_exif(exif_dict),
-        }
-        if lat is not None and lon is not None:
-            doc["gps"] = {"lat": lat, "lon": lon}
-        collection.update_one(
-            {"local_file_path": local_file_path},
-            {
-                "$set": doc,
-                "$setOnInsert": {"uploaded_at": datetime.now(timezone.utc).isoformat()},
-            },
-            upsert=True,
-        )
-        app.logger.info("EXIF metadata saved to slack_files for %s", filename)
-    except Exception as exc:
-        app.logger.warning("Failed to save EXIF to slack_files for %s: %s", filename, exc)
 
 
 def _build_redis_client() -> Any | None:
@@ -2122,48 +2058,6 @@ def upload_file() -> Any:
     size_bytes = dest.stat().st_size
     relative = dest.relative_to(_media_storage_plugin._base).as_posix()
 
-    # --- Write MongoDB record with EXIF immediately after upload ---
-    try:
-        from plugins.integrations.slack_plugin import SlackPlugin
-        bot_token = os.getenv("SLACK_BOT_TOKEN", "").strip()
-        slack = SlackPlugin(bot_token=bot_token, default_channel=SLACK_NETWORK_CHANNEL) if bot_token else None
-        exif_b64 = None
-        if slack:
-            try:
-                file_bytes = dest.read_bytes()
-                app.logger.info(f"[EXIF-DEBUG] Read {len(file_bytes)} bytes from {dest}")
-            except Exception as exc:
-                app.logger.error(f"[EXIF-DEBUG] Failed to read file bytes from {dest}: {exc}")
-                file_bytes = None
-            if file_bytes:
-                try:
-                    exif_b64 = slack._extract_exif_b64(file_bytes, dest.suffix)
-                    if exif_b64:
-                        app.logger.info(f"[EXIF-DEBUG] EXIF extracted for {safe_name}, length={len(exif_b64)}")
-                    else:
-                        app.logger.info(f"[EXIF-DEBUG] No EXIF found for {safe_name}")
-                except Exception as exc:
-                    app.logger.error(f"[EXIF-DEBUG] Exception during EXIF extraction for {safe_name}: {exc}")
-            try:
-                slack._save_file_record(
-                    local_file_path=str(dest),
-                    file_id=None,
-                    filename=safe_name,
-                    title=safe_name,
-                    channel=SLACK_NETWORK_CHANNEL,
-                    channel_id=None,
-                    permalink=None,
-                    url_private=None,
-                    exif_b64=exif_b64,
-                )
-                app.logger.info(f"[EXIF-DEBUG] MongoDB record written for {safe_name} (with_exif={bool(exif_b64)})")
-            except Exception as exc:
-                app.logger.error(f"[EXIF-DEBUG] Exception during MongoDB record write for {safe_name}: {exc}")
-        else:
-            app.logger.warning(f"[EXIF-DEBUG] SlackPlugin not instantiated; skipping EXIF/MongoDB write for {safe_name}")
-    except Exception as exc:
-        app.logger.error(f"[EXIF-DEBUG] Outer exception in EXIF/MongoDB write for {safe_name}: {exc}")
-
     notify_lat: float | None = None
     notify_lon: float | None = None
     if has_gps:
@@ -2172,16 +2066,38 @@ def upload_file() -> Any:
             notify_lon = float(lon_raw)
         except ValueError:
             pass
-    _trigger_upload_notification(safe_name, relative, size_bytes, lat=notify_lat, lon=notify_lon)
 
-    if dest.suffix.lower() in {".jpg", ".jpeg"}:
-        try:
-            import piexif as _piexif_mod
-            exif_data = _piexif_mod.load(dest.read_bytes())
-            if any(exif_data.get(ifd) for ifd in ("GPS", "Exif", "0th", "1st")):
-                _save_exif_to_mongo(safe_name, relative, size_bytes, exif_data, lat=notify_lat, lon=notify_lon)
-        except Exception as exc:
-            app.logger.warning("EXIF read for MongoDB skipped for %s: %s", safe_name, exc)
+    # Write initial slack_files record with EXIF so the file is recoverable
+    # after a Heroku restart even before it has been uploaded to Slack.
+    # Slack-specific fields (file_id, permalink, url_private) are absent here
+    # and filled in by upload_local_file when the notification thread runs.
+    try:
+        from plugins.integrations.slack_plugin import SlackPlugin
+        bot_token = os.getenv("SLACK_BOT_TOKEN", "").strip()
+        slack = SlackPlugin(bot_token=bot_token, default_channel=SLACK_NETWORK_CHANNEL) if bot_token else None
+        if slack:
+            file_bytes = dest.read_bytes()
+            exif_b64 = SlackPlugin._extract_exif_b64(file_bytes, dest.suffix)
+            gps = {"lat": notify_lat, "lon": notify_lon} if notify_lat is not None and notify_lon is not None else None
+            slack._save_file_record(
+                local_file_path=str(dest),
+                file_id=None,
+                filename=safe_name,
+                title=safe_name,
+                channel=SLACK_NETWORK_CHANNEL,
+                channel_id=None,
+                permalink=None,
+                url_private=None,
+                exif_b64=exif_b64,
+                gps=gps,
+            )
+            app.logger.info("slack_files record written for %s (exif=%s)", safe_name, bool(exif_b64))
+        else:
+            app.logger.warning("SLACK_BOT_TOKEN not set; skipping initial slack_files record for %s", safe_name)
+    except Exception as exc:
+        app.logger.warning("Failed to write initial slack_files record for %s: %s", safe_name, exc)
+
+    _trigger_upload_notification(safe_name, relative, size_bytes, lat=notify_lat, lon=notify_lon)
 
     return jsonify({
         "status": "success",
