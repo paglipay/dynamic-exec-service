@@ -125,7 +125,8 @@ SLACK_MAX_EXCEL_BYTES = 15 * 1024 * 1024
 SLACK_MAX_EXCEL_PREVIEW_ROWS = 5
 SLACK_MAX_DOCX_BYTES = 15 * 1024 * 1024
 SLACK_MAX_DOCX_TEXT_CHARS = 20000
-SLACK_IMAGE_SAVE_BASE_DIR = os.getenv("SLACK_IMAGE_SAVE_BASE_DIR", "generated_data")
+BASE_DATA_DIR = os.getenv("BASE_DATA_DIR", "generated_data")
+SLACK_IMAGE_SAVE_BASE_DIR = os.getenv("SLACK_IMAGE_SAVE_BASE_DIR", BASE_DATA_DIR)
 SLACK_UNREADABLE_PREVIEW_TEXTS = {
     "[no preview available]",
     "no preview available",
@@ -139,7 +140,12 @@ _slack_form_submissions: list[dict[str, Any]] = []
 _slack_form_submissions_lock = threading.Lock()
 
 # --- File Storage Configuration ---
-MEDIA_STORAGE_DIR = os.getenv("MEDIA_STORAGE_DIR", "media_storage")
+# Set BASE_DATA_DIR to set the shared root for all file storage (default: "generated_data").
+# Set FILE_UPLOAD_API_KEY in .env to require authentication for upload/download/list/delete.
+# Set MEDIA_STORAGE_DIR to override where uploads are saved (defaults to BASE_DATA_DIR / generated_data).
+# Set FILE_MAX_UPLOAD_MB to change the per-request size cap (default 500 MB).
+# Set SLACK_NETWORK_CHANNEL to the channel name/ID where upload notifications are posted.
+MEDIA_STORAGE_DIR = os.getenv("MEDIA_STORAGE_DIR", BASE_DATA_DIR)
 SLACK_NETWORK_CHANNEL = os.getenv("SLACK_NETWORK_CHANNEL", "#general")
 FILE_UPLOAD_API_KEY = os.getenv("FILE_UPLOAD_API_KEY", "").strip()
 try:
@@ -164,24 +170,6 @@ _media_storage_plugin = MediaStoragePlugin(base_dir=MEDIA_STORAGE_DIR)
 
 from plugins.system_tools.file_reader_plugin import FileReaderPlugin  # noqa: E402
 _file_reader_plugin = FileReaderPlugin(base_dir=SLACK_IMAGE_SAVE_BASE_DIR)
-
-MONGO_EXIF_COLLECTION = os.getenv("MONGO_EXIF_COLLECTION", "image_exif")
-
-
-def _get_mongo_exif_collection() -> Any | None:
-    """Return a pymongo Collection for image EXIF storage, or None if unconfigured."""
-    try:
-        import pymongo  # type: ignore[import-not-found]
-        uri = os.getenv("MONGODB_URI", "").strip()
-        if not uri:
-            return None
-        client = pymongo.MongoClient(uri, serverSelectionTimeoutMS=3000)
-        db_name = os.getenv("MONGO_DB_NAME", "").strip()
-        db = client[db_name] if db_name else client.get_default_database()
-        return db[MONGO_EXIF_COLLECTION]
-    except Exception:
-        return None
-
 
 def _serialize_exif(exif_dict: dict) -> dict:
     """Convert piexif tag values to JSON-serializable types."""
@@ -210,28 +198,43 @@ def _save_exif_to_mongo(
     lat: float | None = None,
     lon: float | None = None,
 ) -> None:
-    """Persist image EXIF metadata to MongoDB. Non-fatal if MongoDB is unavailable."""
-    collection = _get_mongo_exif_collection()
-    if collection is None:
+    """Create an initial slack_files record with EXIF data at upload time.
+
+    Slack-specific fields (file_id, permalink, url_private, channel) are left
+    absent here and filled in later when upload_local_file runs in the
+    notification thread.
+    """
+    try:
+        import pymongo  # type: ignore[import-not-found]
+        uri = os.getenv("MONGODB_URI", "").strip()
+        if not uri:
+            return
+        client = pymongo.MongoClient(uri, serverSelectionTimeoutMS=3000)
+        collection = client.get_default_database()["slack_files"]
+    except Exception:
         return
+
+    local_file_path = str((_MEDIA_STORAGE_PATH / relative_path).resolve())
     try:
         doc: dict[str, Any] = {
+            "local_file_path": local_file_path,
             "filename": filename,
-            "path": relative_path,
             "size_bytes": size_bytes,
-            "uploaded_at": datetime.now(timezone.utc),
-            "exif": _serialize_exif(exif_dict),
+            "exif_dict": _serialize_exif(exif_dict),
         }
         if lat is not None and lon is not None:
             doc["gps"] = {"lat": lat, "lon": lon}
         collection.update_one(
-            {"path": relative_path},
-            {"$set": doc},
+            {"local_file_path": local_file_path},
+            {
+                "$set": doc,
+                "$setOnInsert": {"uploaded_at": datetime.now(timezone.utc).isoformat()},
+            },
             upsert=True,
         )
-        app.logger.info("EXIF metadata saved to MongoDB for %s", filename)
+        app.logger.info("EXIF metadata saved to slack_files for %s", filename)
     except Exception as exc:
-        app.logger.warning("Failed to save EXIF to MongoDB for %s: %s", filename, exc)
+        app.logger.warning("Failed to save EXIF to slack_files for %s: %s", filename, exc)
 
 
 def _build_redis_client() -> Any | None:
@@ -1255,13 +1258,13 @@ if slack_event_adapter is not None:
             conversation_key = event.get("thread_ts") or channel
             conversation_id = f"slack:{conversation_key}"
         model_name = os.getenv("SLACK_OPENAI_MODEL", "gpt-4.1-mini")
-        max_tool_rounds_raw = os.getenv("SLACK_OPENAI_MAX_TOOL_ROUNDS", "5").strip()
+        max_tool_rounds_raw = os.getenv("SLACK_OPENAI_MAX_TOOL_ROUNDS", "10").strip()
         try:
             max_tool_rounds = int(max_tool_rounds_raw)
         except ValueError:
-            max_tool_rounds = 5
+            max_tool_rounds = 10
         if max_tool_rounds <= 0:
-            max_tool_rounds = 5
+            max_tool_rounds = 10
 
         try:
             validate_request(
@@ -1908,48 +1911,88 @@ def _trigger_upload_notification(
 
         uploaded_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         size_kb = size_bytes / 1024
-        location_line = ""
-        if lat is not None and lon is not None:
-            location_line = f"\n*Location:* `{lat:.6f}, {lon:.6f}` — https://maps.google.com/?q={lat:.6f},{lon:.6f}"
-        text = (
-            f":file_folder: *New file uploaded via Streamlit*\n"
-            f"*File:* `{filename}`\n"
-            f"*Size:* {size_kb:.1f} KB\n"
-            f"*Path:* `media_storage/{relative_path}`\n"
-            f"*Uploaded:* {uploaded_at}{location_line}\n"
-            f"*Download:* /files/download/{relative_path}"
-        )
 
         print(f"[UploadNotify] Posting to channel: {SLACK_NETWORK_CHANNEL}", flush=True)
         try:
             from plugins.integrations.slack_plugin import SlackPlugin
             from plugins.integrations.openai_plugin import OpenAIFunctionCallingPlugin
             slack = SlackPlugin(bot_token=bot_token, default_channel=SLACK_NETWORK_CHANNEL)
-            result = slack.post_message(SLACK_NETWORK_CHANNEL, text)
-            print(f"[UploadNotify] post_message result: {result}", flush=True)
-            app.logger.warning("Upload notification posted to %s for file %s", SLACK_NETWORK_CHANNEL, filename)
+            upload_result: dict[str, Any] | None = None
 
-            channel_id = result.get("channel", SLACK_NETWORK_CHANNEL)
-            forced_conversation_id = os.getenv("SLACK_CONVERSATION_ID", "").strip()
-            conversation_id = forced_conversation_id if forced_conversation_id else f"slack:{channel_id}"
+            # Upload the actual file to Slack when available.
             try:
-                openai_plugin = OpenAIFunctionCallingPlugin()
-                history = openai_plugin._load_conversation_history(conversation_id)
-                history.append({
-                    "role": "assistant",
-                    "content": (
-                        f"[System event] A file was uploaded via the Streamlit UI and I posted a notification to this channel.\n"
-                        f"File: {filename}\n"
-                        f"Size: {size_kb:.1f} KB\n"
-                        f"Path: media_storage/{relative_path}\n"
-                        f"Uploaded at: {uploaded_at}"
-                        + (f"\nGPS location: lat={lat:.6f}, lon={lon:.6f}" if lat is not None and lon is not None else "")
-                    ),
-                })
-                openai_plugin._save_conversation_history(conversation_id, history)
-                print(f"[UploadNotify] Injected upload event into conversation {conversation_id}", flush=True)
+                absolute_path = (_MEDIA_STORAGE_PATH / relative_path).resolve()
+                absolute_path.relative_to(_MEDIA_STORAGE_PATH)
+                if absolute_path.exists() and absolute_path.is_file():
+                    upload_result = slack.upload_local_file(
+                        str(absolute_path),
+                        channel=SLACK_NETWORK_CHANNEL,
+                        initial_comment=(
+                            f":file_folder: Uploaded via Streamlit: {filename} "
+                            f"({size_kb:.1f} KB)\n"
+                            f"Path: {MEDIA_STORAGE_DIR}/{relative_path}\n"
+                            f"Uploaded: {uploaded_at}"
+                            + (
+                                f"\nLocation: {lat:.6f}, {lon:.6f}"
+                                f"\nMap: https://maps.google.com/?q={lat:.6f},{lon:.6f}"
+                                if lat is not None and lon is not None
+                                else ""
+                            )
+                        ),
+                    )
+                    print(f"[UploadNotify] upload_local_file result: {upload_result}", flush=True)
+                    app.logger.warning("Upload notification posted to %s for file %s", SLACK_NETWORK_CHANNEL, filename)
+
+                    # Keep conversation memory up to date without triggering model generation.
+                    try:
+                        channel_for_history = (
+                            upload_result.get("channel_id")
+                            if isinstance(upload_result.get("channel_id"), str)
+                            else (
+                                upload_result.get("channel")
+                                if isinstance(upload_result.get("channel"), str)
+                                else SLACK_NETWORK_CHANNEL
+                            )
+                        )
+                        forced_conversation_id = os.getenv("SLACK_CONVERSATION_ID", "").strip()
+                        conversation_id = (
+                            forced_conversation_id
+                            if forced_conversation_id
+                            else f"slack:{channel_for_history}"
+                        )
+                        openai_plugin = OpenAIFunctionCallingPlugin()
+                        history = openai_plugin._load_conversation_history(conversation_id)
+                        history.append(
+                            {
+                                "role": "assistant",
+                                "content": (
+                                    "[System event] A file was uploaded via the Streamlit UI and posted to Slack.\n"
+                                    f"File: {filename}\n"
+                                    f"Size: {size_kb:.1f} KB\n"
+                                    f"Path: {MEDIA_STORAGE_DIR}/{relative_path}\n"
+                                    f"Uploaded at: {uploaded_at}"
+                                    + (
+                                        f"\nGPS location: lat={lat:.6f}, lon={lon:.6f}"
+                                        f"\nGoogle Maps: https://maps.google.com/?q={lat:.6f},{lon:.6f}"
+                                        if lat is not None and lon is not None
+                                        else ""
+                                    )
+                                ),
+                            }
+                        )
+                        openai_plugin._save_conversation_history(conversation_id, history)
+                        app.logger.info("Upload notification history written for conversation %s", conversation_id)
+                    except Exception as exc:
+                        app.logger.warning("Upload notification: history write failed (non-fatal): %s", exc)
+                else:
+                    app.logger.warning(
+                        "Upload notification: local file missing for Slack upload: %s",
+                        absolute_path,
+                    )
             except Exception as exc:
-                print(f"[UploadNotify] History injection failed (non-fatal): {exc}", flush=True)
+                app.logger.warning("Upload notification: Slack file upload failed: %s", exc)
+            if upload_result is None:
+                app.logger.warning("Upload notification: Slack file upload did not complete")
 
         except Exception as exc:
             print(f"[UploadNotify] Slack post failed: {exc}", flush=True)
@@ -1960,7 +2003,15 @@ def _trigger_upload_notification(
 
 @app.post("/files/upload")
 def upload_file() -> Any:
-    """Accept a multipart/form-data file and store it in the media storage directory."""
+    """Accept a multipart/form-data file and store it in the generated_data directory.
+
+    Form fields:
+      - file (required): the file to upload
+      - folder (optional): subdirectory within generated_data, e.g. "videos/2026"
+
+    Headers:
+      - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment
+    """
     if not _check_file_api_key():
         return _error_response("Unauthorized", status_code=401)
 
@@ -2071,6 +2122,48 @@ def upload_file() -> Any:
     size_bytes = dest.stat().st_size
     relative = dest.relative_to(_media_storage_plugin._base).as_posix()
 
+    # --- Write MongoDB record with EXIF immediately after upload ---
+    try:
+        from plugins.integrations.slack_plugin import SlackPlugin
+        bot_token = os.getenv("SLACK_BOT_TOKEN", "").strip()
+        slack = SlackPlugin(bot_token=bot_token, default_channel=SLACK_NETWORK_CHANNEL) if bot_token else None
+        exif_b64 = None
+        if slack:
+            try:
+                file_bytes = dest.read_bytes()
+                app.logger.info(f"[EXIF-DEBUG] Read {len(file_bytes)} bytes from {dest}")
+            except Exception as exc:
+                app.logger.error(f"[EXIF-DEBUG] Failed to read file bytes from {dest}: {exc}")
+                file_bytes = None
+            if file_bytes:
+                try:
+                    exif_b64 = slack._extract_exif_b64(file_bytes, dest.suffix)
+                    if exif_b64:
+                        app.logger.info(f"[EXIF-DEBUG] EXIF extracted for {safe_name}, length={len(exif_b64)}")
+                    else:
+                        app.logger.info(f"[EXIF-DEBUG] No EXIF found for {safe_name}")
+                except Exception as exc:
+                    app.logger.error(f"[EXIF-DEBUG] Exception during EXIF extraction for {safe_name}: {exc}")
+            try:
+                slack._save_file_record(
+                    local_file_path=str(dest),
+                    file_id=None,
+                    filename=safe_name,
+                    title=safe_name,
+                    channel=SLACK_NETWORK_CHANNEL,
+                    channel_id=None,
+                    permalink=None,
+                    url_private=None,
+                    exif_b64=exif_b64,
+                )
+                app.logger.info(f"[EXIF-DEBUG] MongoDB record written for {safe_name} (with_exif={bool(exif_b64)})")
+            except Exception as exc:
+                app.logger.error(f"[EXIF-DEBUG] Exception during MongoDB record write for {safe_name}: {exc}")
+        else:
+            app.logger.warning(f"[EXIF-DEBUG] SlackPlugin not instantiated; skipping EXIF/MongoDB write for {safe_name}")
+    except Exception as exc:
+        app.logger.error(f"[EXIF-DEBUG] Outer exception in EXIF/MongoDB write for {safe_name}: {exc}")
+
     notify_lat: float | None = None
     notify_lon: float | None = None
     if has_gps:
@@ -2112,26 +2205,151 @@ def download_file(filename: str) -> Any:
         return _error_response("Invalid file path", status_code=400)
 
     if not target.exists() or not target.is_file():
-        return _error_response("File not found", status_code=404)
+        # Transparent Slack fallback: query MongoDB for the file record and
+        # re-download from Slack so ephemeral dyno storage is fully transparent.
+        recovered = False
+        try:
+            from plugins.integrations.slack_plugin import SlackPlugin
+            bot_token = os.getenv("SLACK_BOT_TOKEN", "").strip()
+            if bot_token:
+                slack = SlackPlugin(bot_token=bot_token, default_channel=SLACK_NETWORK_CHANNEL)
+                slack.get_file({"path": str(target)})
+                if target.exists() and target.is_file():
+                    app.logger.info("File recovered from Slack for path: %s", target)
+                    recovered = True
+        except Exception as exc:
+            app.logger.warning("Slack file recovery failed for %s: %s", target, exc)
+
+        if not recovered:
+            return _error_response("File not found", status_code=404)
 
     as_attachment = request.args.get("download", "false").lower() == "true"
     return send_from_directory(str(target.parent), target.name, as_attachment=as_attachment)
 
 
+def _query_slack_files_index(folder: str) -> list[dict[str, Any]]:
+    """Query MongoDB slack_files for records whose local_file_path falls under the given folder.
+
+    Returns a list of dicts shaped like MediaStoragePlugin list_files entries,
+    with extra keys: source="slack", permalink, url_private, file_id.
+    Only returns records not already present on the local filesystem.
+    """
+    try:
+        from pymongo import MongoClient as _MongoClient
+        from urllib.parse import urlparse as _urlparse
+    except ImportError:
+        return []
+
+    mongo_uri = os.getenv("MONGODB_URI", "").strip()
+    if not mongo_uri:
+        return []
+
+    try:
+        client = _MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+        db_name = os.getenv("MONGODB_DATABASE", "").strip()
+        if not db_name:
+            parsed_uri = _urlparse(mongo_uri)
+            raw_path = parsed_uri.path.lstrip("/")
+            db_name = raw_path.split("?")[0] if raw_path else ""
+        if not db_name:
+            db_name = "dynamic_exec"
+        collection = client[db_name]["slack_files"]
+    except Exception:
+        return []
+
+    # Build a prefix filter: match records whose local_file_path starts with
+    # the resolved scan directory.
+    if folder:
+        try:
+            scan_dir = (_MEDIA_STORAGE_PATH / folder).resolve()
+            scan_dir.relative_to(_MEDIA_STORAGE_PATH)
+        except (ValueError, Exception):
+            return []
+    else:
+        scan_dir = _MEDIA_STORAGE_PATH
+
+    prefix = str(scan_dir)
+
+    try:
+        cursor = collection.find(
+            {"local_file_path": {"$regex": f"^{re.escape(prefix)}"}},
+            {"_id": 0, "local_file_path": 1, "filename": 1, "permalink": 1,
+             "url_private": 1, "file_id": 1, "title": 1},
+        )
+        records = list(cursor)
+    except Exception:
+        return []
+
+    extra: list[dict[str, Any]] = []
+    for rec in records:
+        local_path = Path(rec.get("local_file_path", ""))
+        # Skip if the file is already present locally — the local listing covers it.
+        if local_path.exists() and local_path.is_file():
+            continue
+        try:
+            relative = local_path.relative_to(_MEDIA_STORAGE_PATH).as_posix()
+        except ValueError:
+            relative = local_path.name
+
+        entry: dict[str, Any] = {
+            "name": local_path.name,
+            "path": relative,
+            "type": "file",
+            "source": "slack",
+            "download_url": f"/files/download/{relative}",
+            "permalink": rec.get("permalink"),
+            "url_private": rec.get("url_private"),
+            "file_id": rec.get("file_id"),
+            "title": rec.get("title"),
+        }
+        extra.append(entry)
+
+    return extra
+
+
 @app.get("/files/list")
 def list_files() -> Any:
-    """List files and directories inside the media storage root or a subfolder."""
+    """List files and directories inside the media storage root or a subfolder.
+
+    Merges local filesystem entries with MongoDB slack_files records so that
+    files uploaded to Slack (but no longer on the ephemeral dyno disk) still
+    appear in the listing with source="slack". Accessing their download_url
+    will transparently re-fetch them from Slack on demand.
+
+    Query params:
+      - folder (optional): subdirectory to list, e.g. "videos/2026"
+
+    Headers:
+      - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment
+    """
     if not _check_file_api_key():
         return _error_response("Unauthorized", status_code=401)
 
     folder = request.args.get("folder", "").strip()
     try:
         result = _media_storage_plugin.list_files(folder)
-        return jsonify(result)
     except FileNotFoundError:
-        return _error_response("Folder not found", status_code=404)
+        # Folder may not exist locally after a dyno restart — still check MongoDB.
+        result = {"status": "success", "folder": folder or "/", "count": 0, "files": []}
     except ValueError as exc:
         return _error_response(str(exc), status_code=400)
+
+    # Tag locally-found files with source="local"
+    for entry in result.get("files", []):
+        if entry.get("type") == "file":
+            entry.setdefault("source", "local")
+
+    # Merge in any Slack-only records from MongoDB
+    slack_only = _query_slack_files_index(folder)
+    result["files"] = result.get("files", []) + slack_only
+    result["count"] = len(result["files"])
+    if slack_only:
+        result["note"] = (
+            f"{len(slack_only)} file(s) not on local disk — stored in Slack. "
+            "Access via download_url to restore automatically."
+        )
+
+    return jsonify(result)
 
 
 @app.delete("/files/delete/<path:filename>")

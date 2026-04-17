@@ -164,6 +164,9 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "request_modal_with_button",
             "upload_text_file",
             "upload_local_file",
+            "get_file",
+            "get_file_exif",
+            "backfill_exif",
         ],
     },
     "plugins.integrations.openai_http_plugin": {
@@ -236,7 +239,7 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "list_staged",
             "clear_staged",
             "remove_staged_file",
-            "rename_zip_from_staged",
+            "zip_files",
         ],
     },
     "plugins.system_tools.file_reader_plugin": {

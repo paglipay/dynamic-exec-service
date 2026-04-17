@@ -24,7 +24,7 @@ class MediaStoragePlugin:
     """Manage files in a confined media storage directory.
 
     Constructor args:
-        base_dir (str): Root storage directory. Defaults to "media_storage".
+        base_dir (str): Root storage directory. Defaults to "generated_data".
     """
 
     VIDEO_EXTS: frozenset[str] = frozenset(
@@ -34,7 +34,7 @@ class MediaStoragePlugin:
         {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff", ".webp"}
     )
 
-    def __init__(self, base_dir: str = "media_storage") -> None:
+    def __init__(self, base_dir: str = "generated_data") -> None:
         if not isinstance(base_dir, str) or not base_dir.strip():
             raise ValueError("base_dir must be a non-empty string")
         self._base = Path(base_dir).resolve()
@@ -442,4 +442,69 @@ class MediaStoragePlugin:
             "download_url": f"/files/download/{relative}",
             "images_renamed": n_images,
             "video_markers": n_videos,
+        }
+
+    def zip_files(
+        self,
+        file_paths: list[str],
+        zip_name: str = "",
+    ) -> dict[str, Any]:
+        """Zip existing files already on disk in media_storage into an archive.
+
+        Use this when files are already stored in media_storage and you want to
+        bundle them without renaming. The resulting ZIP is saved under zips/.
+
+        Args:
+            file_paths: List of relative paths within media_storage (e.g. ["01.mp4", "01A.jpg"]).
+            zip_name: Optional custom ZIP filename (without .zip). Defaults to timestamped name.
+
+        Returns:
+            dict with status, filename, size_bytes, download_url, and local_path
+            (local_path is the full relative path for upload_local_file).
+        """
+        if not isinstance(file_paths, list) or not file_paths:
+            raise ValueError("file_paths must be a non-empty list")
+
+        # Validate and resolve all paths before touching the filesystem
+        resolved: list[tuple[str, Path]] = []
+        for rel in file_paths:
+            if not isinstance(rel, str) or not rel.strip():
+                raise ValueError(f"Invalid entry in file_paths: {rel!r}")
+            candidate = (self._base / rel).resolve()
+            try:
+                candidate.relative_to(self._base)
+            except ValueError:
+                raise ValueError(f"Path escapes base directory: {rel!r}")
+            if not candidate.is_file():
+                raise FileNotFoundError(f"File not found in media_storage: {rel}")
+            resolved.append((rel, candidate))
+
+        # Build the zip in memory
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for arcname, abs_path in resolved:
+                zf.write(abs_path, arcname=Path(arcname).name)
+        zip_bytes = buf.getvalue()
+
+        # Persist using existing _save_zip helper (saves under media_storage/zips/)
+        if zip_name and isinstance(zip_name, str) and zip_name.strip():
+            safe_stem = re.sub(r"[^A-Za-z0-9_\-]", "_", zip_name.strip())
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            zip_filename = f"{safe_stem}_{ts}.zip"
+            zip_dir = (self._base / "zips").resolve()
+            zip_dir.mkdir(parents=True, exist_ok=True)
+            zip_path = zip_dir / zip_filename
+            zip_path.write_bytes(zip_bytes)
+            relative = zip_path.relative_to(self._base).as_posix()
+        else:
+            zip_filename, relative = self._save_zip(zip_bytes)
+
+        local_path = f"{self._base.name}/{relative}"
+        return {
+            "status": "success",
+            "filename": zip_filename,
+            "size_bytes": len(zip_bytes),
+            "download_url": f"/files/download/{relative}",
+            "local_path": local_path,
+            "files_zipped": len(resolved),
         }

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
 class TextFileCRUDPlugin:
     """CRUD operations for .txt/.md/.json files within a base directory."""
 
-    def __init__(self, base_dir: str = "generated_data") -> None:
+    def __init__(self, base_dir: str = os.getenv("BASE_DATA_DIR", "generated_data")) -> None:
         if not isinstance(base_dir, str) or not base_dir:
             raise ValueError("base_dir must be a non-empty string")
         self.base_dir = Path(base_dir).resolve()
