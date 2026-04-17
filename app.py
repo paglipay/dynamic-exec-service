@@ -165,6 +165,74 @@ _media_storage_plugin = MediaStoragePlugin(base_dir=MEDIA_STORAGE_DIR)
 from plugins.system_tools.file_reader_plugin import FileReaderPlugin  # noqa: E402
 _file_reader_plugin = FileReaderPlugin(base_dir=SLACK_IMAGE_SAVE_BASE_DIR)
 
+MONGO_EXIF_COLLECTION = os.getenv("MONGO_EXIF_COLLECTION", "image_exif")
+
+
+def _get_mongo_exif_collection() -> Any | None:
+    """Return a pymongo Collection for image EXIF storage, or None if unconfigured."""
+    try:
+        import pymongo  # type: ignore[import-not-found]
+        uri = os.getenv("MONGODB_URI", "").strip()
+        if not uri:
+            return None
+        client = pymongo.MongoClient(uri, serverSelectionTimeoutMS=3000)
+        db_name = os.getenv("MONGO_DB_NAME", "").strip()
+        db = client[db_name] if db_name else client.get_default_database()
+        return db[MONGO_EXIF_COLLECTION]
+    except Exception:
+        return None
+
+
+def _serialize_exif(exif_dict: dict) -> dict:
+    """Convert piexif tag values to JSON-serializable types."""
+    def _convert(value: Any) -> Any:
+        if isinstance(value, bytes):
+            try:
+                return value.decode("utf-8", errors="replace")
+            except Exception:
+                return value.hex()
+        if isinstance(value, tuple) and len(value) == 2 and all(isinstance(v, int) for v in value):
+            return value[0] / value[1] if value[1] != 0 else None
+        if isinstance(value, tuple):
+            return [_convert(v) for v in value]
+        if isinstance(value, dict):
+            return {str(k): _convert(v) for k, v in value.items()}
+        return value
+
+    return {ifd: _convert(tags) for ifd, tags in exif_dict.items()}
+
+
+def _save_exif_to_mongo(
+    filename: str,
+    relative_path: str,
+    size_bytes: int,
+    exif_dict: dict,
+    lat: float | None = None,
+    lon: float | None = None,
+) -> None:
+    """Persist image EXIF metadata to MongoDB. Non-fatal if MongoDB is unavailable."""
+    collection = _get_mongo_exif_collection()
+    if collection is None:
+        return
+    try:
+        doc: dict[str, Any] = {
+            "filename": filename,
+            "path": relative_path,
+            "size_bytes": size_bytes,
+            "uploaded_at": datetime.now(timezone.utc),
+            "exif": _serialize_exif(exif_dict),
+        }
+        if lat is not None and lon is not None:
+            doc["gps"] = {"lat": lat, "lon": lon}
+        collection.update_one(
+            {"path": relative_path},
+            {"$set": doc},
+            upsert=True,
+        )
+        app.logger.info("EXIF metadata saved to MongoDB for %s", filename)
+    except Exception as exc:
+        app.logger.warning("Failed to save EXIF to MongoDB for %s: %s", filename, exc)
+
 
 def _build_redis_client() -> Any | None:
     """Build Redis client from REDIS_URL when available."""
@@ -2012,6 +2080,15 @@ def upload_file() -> Any:
         except ValueError:
             pass
     _trigger_upload_notification(safe_name, relative, size_bytes, lat=notify_lat, lon=notify_lon)
+
+    if dest.suffix.lower() in {".jpg", ".jpeg"}:
+        try:
+            import piexif as _piexif_mod
+            exif_data = _piexif_mod.load(dest.read_bytes())
+            if any(exif_data.get(ifd) for ifd in ("GPS", "Exif", "0th", "1st")):
+                _save_exif_to_mongo(safe_name, relative, size_bytes, exif_data, lat=notify_lat, lon=notify_lon)
+        except Exception as exc:
+            app.logger.warning("EXIF read for MongoDB skipped for %s: %s", safe_name, exc)
 
     return jsonify({
         "status": "success",
