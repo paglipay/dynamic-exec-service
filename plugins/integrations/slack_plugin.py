@@ -701,8 +701,6 @@ class SlackPlugin:
 
     def _get_mongo_collection(self) -> Any:
         """Return the slack_files MongoDB collection, or None if unavailable."""
-        import logging as _logging
-        _log = _logging.getLogger(__name__)
         try:
             from pymongo import MongoClient as _MongoClient
         except ImportError:
@@ -720,7 +718,7 @@ class SlackPlugin:
                 raw_path = parsed_uri.path.lstrip("/")
                 db_name = raw_path.split("?")[0].strip() if raw_path else ""
             if not db_name:
-                _log.error(
+                logger.error(
                     "MONGODB_DATABASE is not set and could not be extracted from MONGODB_URI. "
                     "Set MONGODB_DATABASE in your .env to ensure slack_files records go to the "
                     "correct database. Falling back to 'dynamic_exec' — records may be lost."
@@ -728,7 +726,7 @@ class SlackPlugin:
                 db_name = "dynamic_exec"
             return client[db_name]["slack_files"]
         except Exception as exc:
-            _log.warning("SlackPlugin: failed to connect to MongoDB: %s", exc)
+            logger.warning("SlackPlugin: failed to connect to MongoDB: %s", exc)
             return None
 
     def _fetch_file_info(self, file_id: str) -> dict[str, Any]:

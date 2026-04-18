@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from typing import Any
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 from openai import OpenAI
 try:
@@ -262,9 +265,13 @@ class OpenAIFunctionCallingPlugin:
             }
 
     def _build_tool_mapping(self) -> dict[str, tuple[str, str, str]]:
-        """Build a deterministic mapping from tool names to allowlisted targets."""
+        """Build a stable semantic mapping from tool names to allowlisted targets.
+
+        Tool names are derived from the module's short name and method name so they
+        remain stable across config changes and give the model mnemonic signal —
+        e.g. ``slack_plugin__post_message`` or ``mongodb_plugin__find_documents``.
+        """
         mapping: dict[str, tuple[str, str, str]] = {}
-        counter = 1
         for module_name in sorted(ALLOWED_MODULES):
             module_config = ALLOWED_MODULES[module_name]
             class_name = module_config["class"]
@@ -280,9 +287,9 @@ class OpenAIFunctionCallingPlugin:
                 ):
                     continue
 
-                tool_name = f"plugin_tool_{counter:03d}"
+                module_short = module_name.split(".")[-1]
+                tool_name = f"{module_short}__{method_name}"
                 mapping[tool_name] = (module_name, class_name, method_name)
-                counter += 1
 
         if not mapping:
             raise ValueError("No allowlisted plugin tools available")
@@ -510,7 +517,7 @@ class OpenAIFunctionCallingPlugin:
                     "To get the full path for Slack upload, use 'generated_data/' + relative_path."
                 )
             if method_name == "read_text_file":
-                return base + "Read a text/markdown/csv/tsv file. Use args: [file_path, max_chars_or_20000]."
+                return base + "Read a .txt, .md, .text, or .log file as a raw string. Use args: [file_path, max_chars_or_20000]. For .csv or .tsv files use parse_csv_tsv instead — read_text_file will reject them."
             if method_name == "read_pdf_text":
                 return base + "Extract text from a PDF file. Use args: [file_path, max_chars_or_20000]."
             if method_name == "read_docx_text":
@@ -558,6 +565,42 @@ class OpenAIFunctionCallingPlugin:
         if (
             module_name == "plugins.integrations.slack_plugin"
             and class_name == "SlackPlugin"
+            and method_name == "open_modal"
+        ):
+            return (
+                "Open a Slack modal dialog. Requires a trigger_id from a button-click action event — "
+                "trigger_ids are NOT available from regular message events and expire in 3 seconds. "
+                "Use args: [args_dict] where args_dict is: "
+                "{'trigger_id': '<id from action event>', 'modal_view': { "
+                "'title': {'type': 'plain_text', 'text': '<max 24 chars>'}, "
+                "'submit': {'type': 'plain_text', 'text': 'Submit'}, "
+                "'close': {'type': 'plain_text', 'text': 'Cancel'}, "
+                "'blocks': [<Block Kit input blocks>], "
+                "'callback_id': '<optional string to identify submission>', "
+                "'private_metadata': '<optional string passed back on submit>'}}. "
+                "Call this immediately upon receiving a block_action event — do not delay."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
+            and method_name == "request_modal_with_button"
+        ):
+            return (
+                "Post a Slack message containing a button that, when clicked, opens a modal. "
+                "Use this to initiate a form when you do NOT already have a trigger_id. "
+                "Use args: [args_dict] where args_dict contains: "
+                "'channel' (channel ID or name, required), "
+                "'message_text' (text shown above the button), "
+                "'button_text' (label on the button), "
+                "'callback_id' (action_id for the button — must match your block_action handler), "
+                "'modal_view' (optional dict: if provided, the modal definition is stored in Redis "
+                "and automatically opened when the button is clicked)."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
             and method_name == "upload_local_file"
         ):
             return (
@@ -582,7 +625,7 @@ class OpenAIFunctionCallingPlugin:
                 "Upload a string (text content) as a file to a Slack channel. "
                 "Use this when you have generated content in memory (e.g. a report, CSV, JSON, markdown string) "
                 "that you want to post as a file attachment — NOT for files already on disk (use upload_local_file instead). "
-                "Use args: [content, filename, channel, title_or_null, initial_comment_or_null]. "
+                "Use args: [filename, content, channel, title_or_null, initial_comment_or_null]. "
                 "'content' is the raw string to upload. "
                 "'filename' is the name Slack will display, e.g. 'report.md' or 'data.csv'. "
                 "For 'channel', always use the channel ID from [slack_channel_id: ...] in the current message — "
@@ -593,12 +636,106 @@ class OpenAIFunctionCallingPlugin:
         if (
             module_name == "plugins.integrations.slack_plugin"
             and class_name == "SlackPlugin"
+            and method_name == "get_file"
+        ):
+            return (
+                "Retrieve a previously uploaded file — returns it from local disk or re-downloads it from Slack if missing. "
+                "Use args: [lookup_dict] where lookup_dict is EXACTLY ONE of: "
+                "{'path': 'generated_data/photo.jpg'} — look up by the file's recorded local path, OR "
+                "{'filename': 'photo.jpg'} — find the most recent file with that name, OR "
+                "{'filename': 'photo.jpg', 'channel': 'C123ABC'} — narrow to a specific channel. "
+                "Returns 'path' (usable local path) and 'source' ('local' if already on disk, 'slack' if re-downloaded). "
+                "Use this when a user asks to retrieve, re-download, or access a file previously shared in Slack."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
+            and method_name == "get_file_exif"
+        ):
+            return (
+                "Return parsed EXIF metadata for a JPEG — reads from disk or falls back to the MongoDB backup "
+                "if the file no longer exists locally. "
+                "Use args: [args_dict] where args_dict is {'path': 'generated_data/photo.jpg'}. "
+                "Returns orientation, GPS latitude/longitude, Google Maps URL, camera make/model, datetime_original. "
+                "Use this when you need EXIF for a file the bot previously uploaded that may not be on disk. "
+                "If the file IS confirmed to be on disk, FileReaderPlugin.read_image_gps is faster."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
+            and method_name == "backfill_exif"
+        ):
+            return (
+                "Maintenance tool: scan all MongoDB slack_files records and save EXIF data for any record "
+                "that is missing it but whose file is still on disk. "
+                "Use args: [] (no arguments needed). "
+                "Safe to call multiple times — skips records that already have EXIF saved. "
+                "Only call this when a user explicitly asks to fix or backfill EXIF records, "
+                "not during normal operation."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
             and method_name == "post_message"
         ):
             return (
-                "Post a text message to a Slack channel. "
-                "Use args: [channel, text]. "
-                "channel can be a channel name like '#network' or a channel ID like 'C123ABC'."
+                "Post a message to a Slack channel. "
+                "Use args: [channel, text] for plain text, or [channel, text, blocks] for rich Block Kit messages. "
+                "channel can be a channel name like '#network' or a channel ID like 'C123ABC'. "
+                "text is always required — it serves as the notification fallback even when blocks are used. "
+                "blocks is an optional list of Slack Block Kit block dicts (sections, actions, inputs, etc.). "
+                "Omit blocks when a plain text reply is sufficient."
+            )
+
+        if (
+            module_name == "plugins.integrations.web_search_plugin"
+            and class_name == "WebSearchPlugin"
+        ):
+            if method_name == "web_search":
+                return (
+                    "Search the web using Google (via SerpApi) and return the top results. "
+                    "No constructor_args needed (API key is read from env). "
+                    "Use args: [query, num_results_or_5]. "
+                    "num_results is 1–10; default 5. "
+                    "Each result has: title, snippet, url, display_url. "
+                    "Use for general lookups, news, documentation, or any public information question."
+                )
+            if method_name == "search_near_address":
+                return (
+                    "Search for something near a specific street address using Google. "
+                    "No constructor_args needed. "
+                    "Use args: [address, query, num_results_or_5]. "
+                    "address: street address or place name (e.g. '123 Main St, Springfield'). "
+                    "query: what to find near that address (e.g. 'locksmith', 'CCTV installer'). "
+                    "Returns the same result format as web_search."
+                )
+            if method_name == "search_image_context":
+                return (
+                    "Search for business context using image analysis results and a reverse-geocoded address. "
+                    "No constructor_args needed. "
+                    "Use args: [formatted_address, objects_found, num_results_or_5]. "
+                    "formatted_address: string from ImageProcessingPlugin.reverse_geocode(). "
+                    "objects_found: list of detected object labels from detect_objects(). "
+                    "Use this after classify_project to get background context about a site."
+                )
+
+        if (
+            module_name == "plugins.system_tools.subprocess_plugin"
+            and class_name == "SubprocessPlugin"
+            and method_name == "run_python_script"
+        ):
+            return (
+                "Run a Python .py file and return its stdout, stderr, and exit_code. "
+                "Use constructor_args: {} (defaults to app working directory). "
+                "Use args: [script_path, args_or_null, cwd_or_null, timeout_seconds_or_60]. "
+                "script_path must point to an existing .py file — write it to disk first "
+                "(use TextFileCRUDPlugin.create_text or FileSystemPlugin), then call this. "
+                "Example path: 'generated_data/my_script.py'. "
+                "args is a list of strings passed as command-line arguments (sys.argv[1:]). "
+                "Check exit_code == 0 before reporting success; stdout/stderr contain the output."
             )
 
         return (
@@ -726,10 +863,10 @@ class OpenAIFunctionCallingPlugin:
             content = message.content or ""
 
             # Log each round for debugging
-            print(f"[OpenAI][Round {round_num+1}/{max_tool_rounds}] tools_called={len(tool_calls)}, content_len={len(content)}", file=sys.stderr)
+            logger.debug("[OpenAI][Round %d/%d] tools_called=%d, content_len=%d", round_num + 1, max_tool_rounds, len(tool_calls), len(content))
             if tool_calls:
                 tool_names = [tc.function.name for tc in tool_calls]
-                print(f"[OpenAI][Round {round_num+1}] tool_calls: {tool_names}", file=sys.stderr)
+                logger.debug("[OpenAI][Round %d] tool_calls: %s", round_num + 1, tool_names)
 
             if tool_calls:
                 messages.append(
@@ -745,9 +882,9 @@ class OpenAIFunctionCallingPlugin:
                     try:
                         tool_output = self._execute_tool_call(tool_name, tool_args)
                         executed_tool_calls += 1
-                        print(f"[OpenAI][Round {round_num+1}] {tool_name} executed successfully", file=sys.stderr)
+                        logger.debug("[OpenAI][Round %d] %s executed successfully", round_num + 1, tool_name)
                     except Exception as tool_exc:
-                        print(f"[OpenAI][Round {round_num+1}] {tool_name} failed: {tool_exc}", file=sys.stderr)
+                        logger.warning("[OpenAI][Round %d] %s failed: %s", round_num + 1, tool_name, tool_exc)
                         tool_output = json.dumps({"error": str(tool_exc)})
                     # Track file paths passed to read_image_for_vision so callers can
                     # build MongoDB metadata for images from any upload source.
@@ -797,7 +934,7 @@ class OpenAIFunctionCallingPlugin:
 
             final_text = message.content or ""
             if final_text.strip():
-                print(f"[OpenAI][Round {round_num+1}] Got final response: {len(final_text)} chars", file=sys.stderr)
+                logger.debug("[OpenAI][Round %d] Got final response: %d chars", round_num + 1, len(final_text))
                 messages.append(
                     {
                         "role": "assistant",
@@ -808,10 +945,10 @@ class OpenAIFunctionCallingPlugin:
             else:
                 # Model returned neither tool calls nor content — nudge it to produce
                 # a final reply so the next round has new context to act on.
-                print(f"[OpenAI][Round {round_num+1}] No content and no tool_calls — injecting finalization nudge", file=sys.stderr)
+                logger.debug("[OpenAI][Round %d] No content and no tool_calls — injecting finalization nudge", round_num + 1)
                 messages.append({"role": "user", "content": "Please provide your final answer now."})
 
-        print(f"[OpenAI] Max rounds ({max_tool_rounds}) exceeded without final response", file=sys.stderr)
+        logger.warning("[OpenAI] Max rounds (%d) exceeded without final response", max_tool_rounds)
         raise ValueError("Exceeded max tool-calling rounds without a final response")
 
     def _build_system_prompt(self) -> str:
