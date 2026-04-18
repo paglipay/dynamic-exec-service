@@ -334,28 +334,41 @@ def rename_zip():
         return auth_err
 
     body = request.get_json(silent=True) or {}
-    session_id = body.get("session_id", "")
+    file_paths = body.get("file_paths")
     sort_order = body.get("sort_order", "date_taken")
-
-    if not _valid_session_id(session_id):
-        return jsonify({"error": "Invalid or missing session_id"}), 400
-
-    session_dir = _safe_stage_path(session_id)
-    if session_dir is None or not os.path.isdir(session_dir):
-        return jsonify({"error": "No staged files found for this session"}), 404
-
+    files_list = []
     use_upload_order = sort_order == "upload_order"
 
-    # Load all staged files in sorted order
-    files_list = []
-    for name in sorted(os.listdir(session_dir)):
-        path = os.path.join(session_dir, name)
-        if os.path.isfile(path):
-            with open(path, "rb") as fh:
-                files_list.append((name, fh.read()))
+    if file_paths:
+        # Accept a list of arbitrary file paths to zip
+        if not isinstance(file_paths, list) or not all(isinstance(p, str) for p in file_paths):
+            return jsonify({"error": "file_paths must be a list of strings"}), 400
+        for path in file_paths:
+            # Security: Only allow files under allowed base directories
+            abs_path = os.path.realpath(path)
+            allowed_roots = [os.path.realpath("media_storage"), os.path.realpath("generated_data")]
+            if not any(abs_path.startswith(root) for root in allowed_roots):
+                return jsonify({"error": f"File path not allowed: {path}"}), 403
+            if not os.path.isfile(abs_path):
+                return jsonify({"error": f"File not found: {path}"}), 404
+            with open(abs_path, "rb") as fh:
+                files_list.append((os.path.basename(abs_path), fh.read()))
+    else:
+        # Fallback to session-based staging logic
+        session_id = body.get("session_id", "")
+        if not _valid_session_id(session_id):
+            return jsonify({"error": "Invalid or missing session_id"}), 400
+        session_dir = _safe_stage_path(session_id)
+        if session_dir is None or not os.path.isdir(session_dir):
+            return jsonify({"error": "No staged files found for this session"}), 404
+        for name in sorted(os.listdir(session_dir)):
+            path = os.path.join(session_dir, name)
+            if os.path.isfile(path):
+                with open(path, "rb") as fh:
+                    files_list.append((name, fh.read()))
 
     if not files_list:
-        return jsonify({"error": "No staged files found for this session"}), 404
+        return jsonify({"error": "No files found to zip"}), 404
 
     try:
         zip_bytes, n_images, n_videos = _build_plan_and_zip(files_list, use_upload_order)
@@ -380,8 +393,9 @@ def rename_zip():
     with open(zip_path, "wb") as fh:
         fh.write(zip_bytes)
 
-    # Clean up staging dir now that the ZIP is built
-    shutil.rmtree(session_dir, ignore_errors=True)
+    # Clean up staging dir if used
+    if not file_paths:
+        shutil.rmtree(session_dir, ignore_errors=True)
 
     return jsonify({
         "filename": zip_filename,
