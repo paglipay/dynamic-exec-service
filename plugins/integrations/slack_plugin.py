@@ -794,6 +794,53 @@ class SlackPlugin:
             return None
 
     @staticmethod
+    def _exif_dict_mongo_to_b64(mongo_exif: dict[str, Any]) -> str | None:
+        """Reconstruct exif_b64 from a MongoDB repr-format exif_dict.
+
+        MongoDB stores EXIF as {ifd_name: {str(tag_id): repr(value)}} written by
+        _extract_exif_full().  This method reverses that encoding:
+          1. Parses each repr value back to its original Python type via ast.literal_eval
+             (handles bytes literals, tuples, ints correctly).
+          2. Converts string keys back to integer tag IDs.
+          3. Calls piexif.dump() to produce the binary EXIF block.
+          4. Returns it base64-encoded, ready for _reembed_exif().
+
+        Returns None if conversion fails or produces no usable EXIF.
+        """
+        try:
+            import ast as _ast
+            import base64 as _b64
+            import piexif as _piexif
+
+            converted: dict[str, dict[int, Any]] = {}
+            for ifd_name, tags in mongo_exif.items():
+                if not isinstance(tags, dict):
+                    continue
+                parsed_ifd: dict[int, Any] = {}
+                for key_str, val_repr in tags.items():
+                    try:
+                        parsed_ifd[int(key_str)] = _ast.literal_eval(str(val_repr))
+                    except Exception:
+                        pass
+                if parsed_ifd:
+                    converted[ifd_name] = parsed_ifd
+
+            if not converted:
+                return None
+
+            # piexif.dump expects all standard IFD keys even if empty
+            for ifd in ("0th", "Exif", "GPS", "1st"):
+                if ifd not in converted:
+                    converted[ifd] = {}
+
+            exif_bytes = _piexif.dump(converted)
+            if not exif_bytes:
+                return None
+            return _b64.b64encode(exif_bytes).decode("ascii")
+        except Exception:
+            return None
+
+    @staticmethod
     def _reembed_exif(file_path: Path, exif_b64: str) -> None:
         """Re-insert the stored EXIF block into a JPEG file on disk."""
         if file_path.suffix.lower() not in (".jpg", ".jpeg"):
@@ -1151,16 +1198,14 @@ class SlackPlugin:
 
                 relative_path = self._to_relative_path(local_path, base)
 
-                # Promote or extract EXIF
-                exif_b64 = rec.get("exif_b64")
-                exif_typed: dict[str, Any] | None = None
+                # Promote or extract EXIF — priority order:
+                # 1. Extract from raw bytes on disk (most reliable)
+                # 2. Existing exif_b64 from record
+                # 3. Reconstruct from repr-format exif_dict via ast + piexif.dump
+                exif_b64, exif_typed = self._extract_exif_intake(raw_bytes, local_path.suffix)
                 if not exif_b64:
-                    exif_b64, exif_typed = self._extract_exif_intake(
-                        raw_bytes, local_path.suffix
-                    )
-                else:
-                    _, exif_typed = self._extract_exif_intake(
-                        raw_bytes, local_path.suffix
+                    exif_b64 = rec.get("exif_b64") or self._exif_dict_mongo_to_b64(
+                        rec.get("exif_dict") or {}
                     )
 
                 new_rec: dict[str, Any] = {
@@ -1810,24 +1855,29 @@ class SlackPlugin:
                 count_errors += 1
                 continue
 
-            # --- Step 2: backfill exif_b64 if the file is on disk but the record lacks it ---
-            # This captures EXIF before it is ever lost (e.g. for files received from Slack
-            # whose records were written before exif_b64 storage was added).
-            if (
-                source == "local"
-                and not exif_b64
-                and local_path.suffix.lower() in (".jpg", ".jpeg")
-            ):
+            # --- Step 2: backfill exif_b64 if the record lacks it ---
+            # Priority order:
+            #   a) File is on disk (local) and has EXIF → extract from raw bytes (best quality)
+            #   b) Record has exif_dict (repr format) → reconstruct via ast.literal_eval + piexif.dump
+            # In either case, write back to MongoDB so future syncs skip this step.
+            active_col = media_col if using_media else legacy_col
+            if not exif_b64 and local_path.suffix.lower() in (".jpg", ".jpeg"):
+                _new_exif_b64: str | None = None
                 try:
-                    _raw_bytes = local_path.read_bytes()
-                    _new_exif_b64 = self._extract_exif_b64(_raw_bytes, local_path.suffix)
-                    if _new_exif_b64:
-                        collection.update_one(
+                    if source == "local":
+                        # File was already on disk — extract directly (Slack hasn't touched it)
+                        _raw_bytes = local_path.read_bytes()
+                        _new_exif_b64 = self._extract_exif_b64(_raw_bytes, local_path.suffix)
+                    if not _new_exif_b64 and isinstance(rec.get("exif_dict"), dict):
+                        # Fall back: reconstruct from repr-format exif_dict stored in MongoDB
+                        _new_exif_b64 = self._exif_dict_mongo_to_b64(rec["exif_dict"])
+                    if _new_exif_b64 and active_col is not None:
+                        active_col.update_one(
                             {"_id": rec["_id"]},
                             {"$set": {"exif_b64": _new_exif_b64}},
                         )
                         exif_b64 = _new_exif_b64
-                        logger.debug("sync_files: backfilled exif_b64 for %s", filename)
+                        logger.debug("sync_files: backfilled exif_b64 for %s (source=%s)", filename, source)
                 except Exception as exc:
                     logger.warning("sync_files: exif_b64 backfill failed for %s: %s", filename, exc)
 
