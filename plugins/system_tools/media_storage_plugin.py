@@ -453,35 +453,46 @@ class MediaStoragePlugin:
         file_paths: list[str],
         zip_name: str = "",
     ) -> dict[str, Any]:
-        """Zip existing files already on disk in media_storage into an archive.
+        """Zip files from anywhere under generated_data into a downloadable archive.
 
-        Use this when files are already stored in media_storage and you want to
-        bundle them without renaming. The resulting ZIP is saved under zips/.
+        Accepts absolute paths or paths relative to the app working directory
+        (e.g. "generated_data/slack_downloads/photo.jpg"). This means paths
+        returned directly from sync_files, list_files, or list_directory all
+        work without any conversion.
 
         Args:
-            file_paths: List of relative paths within media_storage (e.g. ["01.mp4", "01A.jpg"]).
+            file_paths: List of file paths — absolute or relative to CWD.
+                        Examples: "/app/generated_data/slack_downloads/photo.jpg"
+                                  "generated_data/photo.jpg"
+                                  "generated_data/slack_downloads/doc.pdf"
             zip_name: Optional custom ZIP filename (without .zip). Defaults to timestamped name.
 
         Returns:
             dict with status, filename, size_bytes, download_url, and local_path
-            (local_path is the full relative path for upload_local_file).
+            (local_path can be passed directly to SlackPlugin.upload_local_file).
         """
         if not isinstance(file_paths, list) or not file_paths:
             raise ValueError("file_paths must be a non-empty list")
 
-        # Validate and resolve all paths before touching the filesystem
+        cwd = Path.cwd()
         resolved: list[tuple[str, Path]] = []
-        for rel in file_paths:
-            if not isinstance(rel, str) or not rel.strip():
-                raise ValueError(f"Invalid entry in file_paths: {rel!r}")
-            candidate = (self._base / rel).resolve()
-            try:
-                candidate.relative_to(self._base)
-            except ValueError:
-                raise ValueError(f"Path escapes base directory: {rel!r}")
+        for p in file_paths:
+            if not isinstance(p, str) or not p.strip():
+                raise ValueError(f"Invalid entry in file_paths: {p!r}")
+
+            raw = Path(p.strip())
+            if raw.is_absolute():
+                candidate = raw.resolve()
+            else:
+                # Try CWD-relative first (e.g. "generated_data/photo.jpg")
+                candidate = (cwd / raw).resolve()
+                if not candidate.is_file():
+                    # Fall back to base-relative (e.g. "photo.jpg" → base/photo.jpg)
+                    candidate = (self._base / raw).resolve()
+
             if not candidate.is_file():
-                raise FileNotFoundError(f"File not found in media_storage: {rel}")
-            resolved.append((rel, candidate))
+                raise FileNotFoundError(f"File not found: {p!r}")
+            resolved.append((candidate.name, candidate))
 
         # Build the zip in memory
         buf = io.BytesIO()

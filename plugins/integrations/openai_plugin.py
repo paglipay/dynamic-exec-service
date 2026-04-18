@@ -497,12 +497,13 @@ class OpenAIFunctionCallingPlugin:
                     base +
                     "Zip files into a downloadable archive without renaming them. "
                     "Use args: [file_paths_list, zip_name_or_empty_string]. "
-                    "file_paths_list is a list of full relative paths from the app working directory "
-                    "(e.g. ['generated_data/photo.jpg', 'generated_data/slack_downloads/doc.pdf']). "
-                    "IMPORTANT: every file in the list must already be on disk before calling this. "
-                    "If files came from Slack, call SlackPlugin.get_file for each one first — "
-                    "only proceed to zip_files once all get_file calls have returned status='success'. "
-                    "The result includes 'local_path' — pass that directly to SlackPlugin.upload_local_file as file_path."
+                    "file_paths_list accepts any of: "
+                    "absolute paths (e.g. from sync_files result 'path' field), "
+                    "CWD-relative paths (e.g. 'generated_data/slack_downloads/photo.jpg'), "
+                    "or base-relative paths (e.g. 'slack_downloads/photo.jpg'). "
+                    "All three formats work — use the 'path' values from sync_files directly. "
+                    "Every file must exist on disk before calling this; run sync_files first for Slack files. "
+                    "The result includes 'local_path' — pass that directly to SlackPlugin.upload_local_file."
                 )
 
         if (
