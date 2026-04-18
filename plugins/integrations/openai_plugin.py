@@ -421,7 +421,10 @@ class OpenAIFunctionCallingPlugin:
                 "Use args in this exact order: "
                 "[collection, filter_query_or_null, projection_or_null, sort_or_null, limit, skip]. "
                 "sort_or_null should be an array like [{field: 'created_at', direction: 'desc'}]. "
-                "Do NOT use this just to count documents — call count_documents instead."
+                "Do NOT use this just to count documents — call count_documents instead. "
+                "IMPORTANT: the [slack_channel_id: ...] tag in the user's message is for Slack posting only. "
+                "Do NOT apply it as a MongoDB filter unless the user explicitly says to filter by channel. "
+                "When the user asks to 'list' or 'query' a collection, pass null as the filter to return all documents."
             )
 
         if (
@@ -1253,6 +1256,11 @@ class OpenAIFunctionCallingPlugin:
             "\nWhen uploading a file to Slack with upload_local_file, the file_path arg must be the "
             "full relative path constructed from the tool result (e.g. 'generated_data/photo.jpg'). "
             "Always look up the path from a prior list_files or list_directory call — never invent it. "
+            "\n\n[slack_channel_id:] scope rule: every Slack message includes a [slack_channel_id: <ID>] tag. "
+            "This ID is ONLY for Slack operations that need a target channel (post_message, upload_local_file, upload_content). "
+            "Do NOT use it to filter MongoDB queries unless the user explicitly asks to filter by channel. "
+            "When a user says 'list the slack_files collection' or 'query the database', "
+            "call find_documents with a null filter — return ALL documents regardless of channel. "
             "\n\nIf the user asks to send an email attachment, include attachment file paths in Gmail send_email args. "
             "Do not claim an attachment was sent unless the Gmail tool result shows attachment_count > 0. "
             "For MongoDB write tools, do not claim a document was created/updated/replaced unless the tool result proves it. "
