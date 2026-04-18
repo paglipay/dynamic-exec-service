@@ -1229,3 +1229,156 @@ class SlackPlugin:
             "failed": failed,
             "message": f"Backfill complete. {updated} record(s) updated.",
         }
+
+    def sync_files(
+        self,
+        query: dict[str, Any] | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Query slack_files records and ensure every matched file is on local disk.
+
+        For each record this method:
+          1. Checks whether the file already exists at its recorded local path.
+          2. If not, downloads it from Slack using the stored url_private.
+          3. If the file is a JPEG and the record has an exif_b64 blob, re-embeds
+             the original EXIF into the downloaded file so metadata is restored.
+
+        This collapses the find → get_file → EXIF-restore loop into a single call.
+        The returned file list is ready to pass directly to zip_files or any other
+        tool that works with local paths.
+
+        Args:
+            query: MongoDB filter dict applied to slack_files (e.g.
+                   {"channel": "C123ABC"} or {"filename": {"$regex": "\\.jpg$"}}).
+                   Pass None or {} to match all records.
+            limit: Maximum number of records to process (default 50).
+
+        Returns a dict with:
+            "files"   — list of result dicts, each with:
+                          "path"          local file path (ready to use)
+                          "filename"      original filename
+                          "source"        "local" | "slack" | "error"
+                          "exif_restored" True if EXIF was re-embedded
+                          "error"         error message when source is "error"
+            "total"      number of records matched
+            "on_disk"    count already on disk
+            "downloaded" count fetched from Slack
+            "exif_restored" count of files that had EXIF re-embedded
+            "errors"     count of files that could not be retrieved
+        """
+        collection = self._get_mongo_collection()
+        if collection is None:
+            raise ValueError("MongoDB is not available for slack_files lookup")
+
+        effective_query: dict[str, Any] = query if isinstance(query, dict) else {}
+        try:
+            records = list(
+                collection.find(effective_query).sort("uploaded_at", -1).limit(limit)
+            )
+        except Exception as exc:
+            raise ValueError(f"Failed to query slack_files: {exc}") from exc
+
+        files: list[dict[str, Any]] = []
+        count_on_disk = 0
+        count_downloaded = 0
+        count_exif_restored = 0
+        count_errors = 0
+
+        for rec in records:
+            stored_path = rec.get("local_file_path", "")
+            filename = rec.get("filename", Path(stored_path).name if stored_path else "unknown")
+            url_private = rec.get("url_private", "")
+            exif_b64 = rec.get("exif_b64", "")
+
+            if not stored_path:
+                files.append({
+                    "path": None,
+                    "filename": filename,
+                    "source": "error",
+                    "exif_restored": False,
+                    "error": "Record has no local_file_path",
+                })
+                count_errors += 1
+                continue
+
+            local_path = Path(stored_path).expanduser().resolve()
+
+            # --- Step 1: ensure file is on disk ---
+            source = "local"
+            if local_path.exists() and local_path.is_file():
+                count_on_disk += 1
+            elif isinstance(url_private, str) and url_private.strip():
+                # Download from Slack
+                dl_req = request.Request(
+                    url_private,
+                    headers={"Authorization": f"Bearer {self.bot_token}"},
+                    method="GET",
+                )
+                try:
+                    with request.urlopen(dl_req, timeout=60) as resp:
+                        file_bytes = resp.read()
+                    local_path.parent.mkdir(parents=True, exist_ok=True)
+                    local_path.write_bytes(file_bytes)
+                    source = "slack"
+                    count_downloaded += 1
+                    logger.debug("sync_files: downloaded %s from Slack", filename)
+                except (error.HTTPError, error.URLError, OSError) as exc:
+                    logger.warning("sync_files: failed to download %s: %s", filename, exc)
+                    files.append({
+                        "path": None,
+                        "filename": filename,
+                        "source": "error",
+                        "exif_restored": False,
+                        "error": str(exc),
+                    })
+                    count_errors += 1
+                    continue
+            else:
+                files.append({
+                    "path": None,
+                    "filename": filename,
+                    "source": "error",
+                    "exif_restored": False,
+                    "error": "File not on disk and no url_private for download",
+                })
+                count_errors += 1
+                continue
+
+            # --- Step 2: re-embed EXIF into JPEG if we have the blob ---
+            exif_restored = False
+            if (
+                isinstance(exif_b64, str)
+                and exif_b64
+                and local_path.suffix.lower() in (".jpg", ".jpeg")
+            ):
+                try:
+                    self._reembed_exif(local_path, exif_b64)
+                    exif_restored = True
+                    count_exif_restored += 1
+                    logger.debug("sync_files: EXIF re-embedded into %s", filename)
+                except Exception as exc:
+                    logger.warning("sync_files: EXIF re-embed failed for %s: %s", filename, exc)
+
+            files.append({
+                "path": str(local_path),
+                "filename": filename,
+                "source": source,
+                "exif_restored": exif_restored,
+            })
+
+        return {
+            "status": "success",
+            "files": files,
+            "total": len(records),
+            "on_disk": count_on_disk,
+            "downloaded": count_downloaded,
+            "exif_restored": count_exif_restored,
+            "errors": count_errors,
+            "message": (
+                f"{len(records)} record(s) processed: "
+                f"{count_on_disk} already local, "
+                f"{count_downloaded} downloaded from Slack, "
+                f"{count_exif_restored} EXIF restored, "
+                f"{count_errors} error(s)."
+            ),
+        }
