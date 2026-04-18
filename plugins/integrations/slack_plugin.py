@@ -646,6 +646,7 @@ class SlackPlugin:
             raise ValueError(f"Failed to read local file: {exc}") from exc
 
         exif_dict = self._extract_exif_dict(file_bytes, local_path.suffix)
+        exif_b64 = self._extract_exif_b64(file_bytes, local_path.suffix)
 
         result = self._upload_file_bytes(
             filename=local_path.name,
@@ -658,8 +659,8 @@ class SlackPlugin:
         result["local_file_path"] = str(local_path)
 
         # Write the core MongoDB record immediately after a successful Slack upload.
-        # This guarantees EXIF and file identity are always persisted, independent of
-        # whether the subsequent files.info call succeeds.
+        # Both exif_dict (human-readable) and exif_b64 (raw block for re-embedding) are stored
+        # so that sync_files can restore EXIF to files downloaded from Slack.
         self._save_file_record(
             local_file_path=str(local_path),
             file_id=result["file_id"],
@@ -670,8 +671,9 @@ class SlackPlugin:
             permalink=None,
             url_private=None,
             exif_dict=exif_dict,
+            exif_b64=exif_b64,
         )
-        if exif_dict:
+        if exif_b64:
             result["exif_preserved"] = True
 
         # Fetch permalink / url_private and update the record with them separately.
