@@ -420,7 +420,20 @@ class OpenAIFunctionCallingPlugin:
                 "Find MongoDB documents with filtering, projection, sorting, and pagination. "
                 "Use args in this exact order: "
                 "[collection, filter_query_or_null, projection_or_null, sort_or_null, limit, skip]. "
-                "sort_or_null should be an array like [{field: 'created_at', direction: 'desc'}]."
+                "sort_or_null should be an array like [{field: 'created_at', direction: 'desc'}]. "
+                "Do NOT use this just to count documents — call count_documents instead."
+            )
+
+        if (
+            module_name == "plugins.mongodb_plugin"
+            and class_name == "MongoDBPlugin"
+            and method_name == "count_documents"
+        ):
+            return (
+                "Count MongoDB documents matching a filter without fetching them. "
+                "Use args in this exact order: [collection, filter_query_or_null]. "
+                "Pass null or {} to count all documents in the collection. "
+                "Use this whenever the user asks how many records exist — do NOT call find_documents with a large limit just to count."
             )
 
         if (
@@ -471,7 +484,7 @@ class OpenAIFunctionCallingPlugin:
             module_name == "plugins.system_tools.media_storage_plugin"
             and class_name == "MediaStoragePlugin"
         ):
-            base = "Use constructor_args: {\"base_dir\": \"data\"}. "
+            base = "Use constructor_args: {\"base_dir\": \"generated_data\"}. "
             if method_name == "list_files":
                 return (
                     base +
@@ -510,7 +523,7 @@ class OpenAIFunctionCallingPlugin:
             module_name == "plugins.system_tools.file_reader_plugin"
             and class_name == "FileReaderPlugin"
         ):
-            base = "Use constructor_args: {\"base_dir\": \"data\"}. "
+            base = "Use constructor_args: {\"base_dir\": \"generated_data\"}. "
             if method_name == "list_directory":
                 return (
                     base +
@@ -539,7 +552,8 @@ class OpenAIFunctionCallingPlugin:
                     "'generated_data/staging/<session_id>/photo.jpg' or 'generated_data/photo.jpg' or "
                     "'generated_data/slack_downloads/image.png'. "
                     "Use the EXACT path from the [System event] or tool result — do not shorten or guess it. "
-                    "The result contains a 'data_url' field; pass it directly to vision reasoning to describe the image."
+                    "The result contains a 'data_url' field; pass it directly to vision reasoning to describe the image. "
+                    "For EXIF, GPS, location, camera info, or 'when was this taken' questions, use read_image_gps instead — it is self-contained and faster."
                 )
             if method_name == "read_image_gps":
                 return (
@@ -561,7 +575,7 @@ class OpenAIFunctionCallingPlugin:
         ):
             return (
                 "List files inside generated_data/. "
-                "Use constructor_args: {\"base_dir\": \"data\"}. "
+                "Use constructor_args: {\"base_dir\": \"generated_data\"}. "
                 "Use args: [relative_subdirectory_or_dot]. "
                 "Do NOT use this to list upload files; use MediaStoragePlugin.list_files instead."
             )
@@ -766,6 +780,205 @@ class OpenAIFunctionCallingPlugin:
                 "args is a list of strings passed as command-line arguments (sys.argv[1:]). "
                 "Check exit_code == 0 before reporting success; stdout/stderr contain the output."
             )
+
+        if (
+            module_name == "plugins.system_tools.word_plugin"
+            and class_name == "WordPlugin"
+        ):
+            base = "Use constructor_args: {\"base_dir\": \"generated_data\"}. "
+            if method_name == "create_document":
+                return (
+                    base +
+                    "Create a new DOCX file with an optional heading and paragraph list. "
+                    "Use args: [args_dict] where args_dict contains: "
+                    "'output_path' (required, e.g. 'reports/summary.docx'), "
+                    "'title' (optional heading string), "
+                    "'paragraphs' (optional list of paragraph strings). "
+                    "output_path is resolved relative to generated_data/. "
+                    "Returns 'output_path' (absolute path)."
+                )
+            if method_name == "inspect_document":
+                return (
+                    base +
+                    "Preview the paragraph and table contents of an existing DOCX file without modifying it. "
+                    "Use args: [args_dict] where args_dict contains: "
+                    "'file_path' (required), 'max_paragraphs' (default 10), 'max_table_rows' (default 5). "
+                    "Use this before replace_text or add_table to understand the document structure."
+                )
+            if method_name == "replace_text":
+                return (
+                    base +
+                    "Find-and-replace text tokens inside a DOCX file (paragraphs and table cells) and write the result to a new file. "
+                    "Use args: [args_dict] where args_dict contains: "
+                    "'file_path' (path to source .docx), "
+                    "'output_path' (path to save the modified copy), "
+                    "'replacements' (list of {\"find\": \"{{TOKEN}}\", \"replace\": \"value\"} objects). "
+                    "Both file_path and output_path are resolved relative to generated_data/. "
+                    "The source file is not modified — a new copy is always written to output_path."
+                )
+            if method_name == "add_table":
+                return (
+                    base +
+                    "Append a table to the end of an existing DOCX file and save the result. "
+                    "Use args: [args_dict] where args_dict contains: "
+                    "'file_path' (source .docx), 'output_path' (destination .docx), "
+                    "'headers' (list of column header strings), "
+                    "'rows' (list of lists — each inner list must have the same length as headers). "
+                    "All cell values are converted to strings automatically."
+                )
+            if method_name == "export_pdf":
+                return (
+                    base +
+                    "Convert a DOCX file to PDF using the best available local converter "
+                    "(tries docx2pdf, then win32com, then LibreOffice/soffice). "
+                    "Use args: [args_dict] where args_dict contains: "
+                    "'file_path' (required, path to .docx), "
+                    "'output_path' (optional, defaults to same name with .pdf extension). "
+                    "Check that LibreOffice is installed if this fails on Linux."
+                )
+            if method_name == "generate_documents":
+                return (
+                    base +
+                    "Bulk-generate DOCX files from a template + per-document data rows. "
+                    "Use args: [args_dict] where args_dict contains: "
+                    "'input_docx' (path to the template .docx with {{TOKEN}} placeholders), "
+                    "'output_dir' (folder to write generated files into), "
+                    "'filename_template' (e.g. '{document_name_sanitized}_report.docx'), "
+                    "'documents_json' (list of dicts — each dict is one document's token/value map), "
+                    "'replacements_json' (optional list of global {find, replace} pairs applied to every document), "
+                    "'table_updates' (optional list of table expansion configs), "
+                    "'export_pdf' (optional bool, default false — also export each generated .docx to PDF). "
+                    "Each document dict must contain 'document_name' (used in filename_template). "
+                    "Returns 'generated_documents' list with 'output_path' for each file."
+                )
+
+        if (
+            module_name == "plugins.system_tools.markdown_pdf_plugin"
+            and class_name == "MarkdownPDFPlugin"
+            and method_name == "markdown_to_pdf"
+        ):
+            return (
+                "Convert a Markdown (.md) file to a PDF using ReportLab. "
+                "Use constructor_args: {\"base_dir\": \"generated_data\"}. "
+                "Use args: [file_path, output_path_or_null, title_or_null]. "
+                "file_path must be a .md file (absolute or relative to generated_data/). "
+                "output_path defaults to the same directory as the .md file with a .pdf extension. "
+                "title adds a large heading at the top of the PDF. "
+                "Supports headings (#–######), bold, italic, code blocks, bullet lists, numbered lists, "
+                "inline images (local file paths only — not HTTP URLs), and Markdown tables. "
+                "Returns 'output_path' (absolute path to the generated PDF)."
+            )
+
+        if (
+            module_name == "plugins.system_tools.apscheduler_plugin"
+            and class_name == "APSchedulerPlugin"
+        ):
+            if method_name == "health":
+                return (
+                    "Check whether the APScheduler scheduler is running. "
+                    "Use args: [] (no arguments). "
+                    "Returns 'running' (bool) and 'job_count'. "
+                    "Call this before adding jobs if you are unsure the scheduler is started."
+                )
+            if method_name == "list_jobs":
+                return (
+                    "List all scheduled jobs in the APScheduler instance. "
+                    "Use args: [] (no arguments). "
+                    "Each job includes: id, name, next_run_time, trigger."
+                )
+            if method_name == "run_workflow_now":
+                return (
+                    "Execute a workflow immediately (one-shot, not scheduled). "
+                    "Use args: [workflow]. "
+                    "workflow is a dict: "
+                    "{\"steps\": [{\"id\": \"step1\", \"module\": \"plugins.mongodb_plugin\", "
+                    "\"class\": \"MongoDBPlugin\", \"method\": \"find_documents\", "
+                    "\"constructor_args\": {}, \"args\": [\"my_collection\", null, null, null, 10, 0]}], "
+                    "\"stop_on_error\": true}. "
+                    "Step results can reference prior steps via ${steps.<step_id>.result.<path>}. "
+                    "Use this for ad-hoc tasks that should run once right now."
+                )
+            if method_name == "add_interval_workflow_job":
+                return (
+                    "Schedule a workflow to run on a fixed time interval. "
+                    "Use args: [job_id, workflow, interval_seconds, replace_existing]. "
+                    "job_id: unique string identifier for the job. "
+                    "workflow: same format as run_workflow_now. "
+                    "interval_seconds: how often to repeat (default 60). "
+                    "replace_existing: true to overwrite a job with the same id (default true). "
+                    "Returns 'job' with the next_run_time."
+                )
+            if method_name == "add_cron_workflow_job":
+                return (
+                    "Schedule a workflow using a cron expression. "
+                    "Use args: [args_dict] where args_dict contains: "
+                    "'job_id' (required string), 'workflow' (required, same format as run_workflow_now), "
+                    "'minute' (default '*'), 'hour' (default '*'), 'day' (default '*'), "
+                    "'month' (default '*'), 'day_of_week' (default '*'), 'second' (default '0'). "
+                    "Example for 9 AM every weekday: hour='9', minute='0', day_of_week='mon-fri'. "
+                    "All cron fields accept standard cron syntax strings."
+                )
+            if method_name == "add_date_workflow_job":
+                return (
+                    "Schedule a workflow to run once at a specific date and time. "
+                    "Use args: [job_id, workflow, run_at_iso, replace_existing]. "
+                    "run_at_iso: ISO 8601 datetime string, e.g. '2026-05-01T09:00:00'. "
+                    "The job is removed automatically after it runs once."
+                )
+            if method_name == "remove_job":
+                return (
+                    "Remove a scheduled job by its job_id. "
+                    "Use args: [job_id]. "
+                    "Call list_jobs first if you need to find the job_id."
+                )
+            if method_name == "get_last_run":
+                return (
+                    "Get the result of the most recent execution of a scheduled job. "
+                    "Use args: [job_id]. "
+                    "Returns the stored result dict from the last workflow execution, or null if never run."
+                )
+
+        if (
+            module_name == "plugins.system_tools.streamlit_plugin"
+            and class_name == "StreamlitPlugin"
+        ):
+            if method_name == "create_app_file":
+                return (
+                    "Create a Streamlit app .py file from a template or custom content. "
+                    "Use args: [args_dict] where args_dict contains: "
+                    "'file_path' (required, path to the .py file to create), "
+                    "'title' (page title, default 'Dynamic Streamlit App'), "
+                    "'template' (one of: 'basic', 'simple_submit_form'; default 'basic'), "
+                    "'description' (optional subtitle text), "
+                    "'app_content' (optional: raw Python source code — overrides template entirely), "
+                    "'overwrite_existing' (bool, default false), "
+                    "'auto_start' (bool: also call start_app after writing the file, default false). "
+                    "file_path is resolved relative to the plugin's base_dir. "
+                    "Returns 'file_path' (absolute path of the created file). "
+                    "Use constructor_args: {} (base_dir defaults to '.')."
+                )
+            if method_name == "start_app":
+                return (
+                    "Start a Streamlit app as a background process. "
+                    "Only one app can run at a time — call stop_app first if one is already running. "
+                    "Use args: [script_path, port_or_null, host_or_null, headless_or_true]. "
+                    "script_path must be an existing .py file. "
+                    "Returns 'pid', 'url' (e.g. 'http://127.0.0.1:8501'), and 'port'. "
+                    "Use constructor_args: {} (defaults to port 8501, host 127.0.0.1)."
+                )
+            if method_name == "status":
+                return (
+                    "Check whether a Streamlit app process is currently running. "
+                    "Use args: [] (no arguments). "
+                    "Returns 'running' (bool), 'pid', and 'script' (path of active app)."
+                )
+            if method_name == "stop_app":
+                return (
+                    "Stop the active Streamlit app process. "
+                    "Use args: [force_or_false, timeout_seconds_or_10]. "
+                    "force=true sends SIGKILL; false sends SIGTERM first (graceful). "
+                    "Returns 'stopped' (bool) and 'exit_code'."
+                )
 
         return (
             f"Call plugin method {module_name}::{class_name}.{method_name}. "
@@ -997,7 +1210,7 @@ class OpenAIFunctionCallingPlugin:
             "Examples of the wrong pattern: "
             "'Yes, I can download those files — please confirm you want to proceed.' "
             "'The files appear to be stored in the database. Would you like me to retrieve them?' "
-            "Examples of the correct pattern: call get_file, report what was retrieved, continue. "
+            "Examples of the correct pattern: call sync_files, report which files were retrieved, continue. "
             "\n\nSlack file retrieval workflow — use sync_files, not a manual loop: "
             "When the user wants to work with files from Slack (zip, read, analyze, etc.), "
             "call SlackPlugin.sync_files in a single tool call. "
@@ -1032,9 +1245,9 @@ class OpenAIFunctionCallingPlugin:
             "depends entirely on what the user is asking — use your judgment based on the conversation. "
             "\n\nStorage layout (relative to the app working directory):\n"
             "- generated_data/ : all files — uploads, staging sessions, Slack downloads, processed files, and notes. "
-            "Use MediaStoragePlugin (constructor_args: {\"base_dir\": \"data\"}) to list or manage upload files. "
+            "Use MediaStoragePlugin (constructor_args: {\"base_dir\": \"generated_data\"}) to list or manage upload files. "
             "list_files returns entries with a 'relative_path' field; prepend 'generated_data/' to get the full path.\n"
-            "Use FileReaderPlugin (constructor_args: {\"base_dir\": \"data\"}) to read files here. "
+            "Use FileReaderPlugin (constructor_args: {\"base_dir\": \"generated_data\"}) to read files here. "
             "list_directory returns entries with a 'relative_path' field; prepend 'generated_data/' to get the full path. "
             "Slack image attachments are saved under 'generated_data/slack_downloads/'.\n"
             "\nWhen uploading a file to Slack with upload_local_file, the file_path arg must be the "
