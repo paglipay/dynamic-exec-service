@@ -1174,6 +1174,31 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
                     saved_image_paths.append(saved_path)
                     file_lines[-1] = f"{file_lines[-1]}; saved_as={saved_path}"
 
+                    # Write a slack_files record for this incoming file so EXIF and
+                    # url_private are permanently recoverable via get_file / get_file_exif.
+                    # This is the only point where we have the raw pre-Slack-strip bytes.
+                    if is_jpeg and isinstance(slack_bot_token, str) and slack_bot_token.strip():
+                        try:
+                            from plugins.integrations.slack_plugin import SlackPlugin as _SP
+                            _exif_b64_incoming = _SP._extract_exif_b64(binary_data, Path(name).suffix)
+                            _sp_instance = _SP(bot_token=slack_bot_token)
+                            _sp_instance._save_slack_file(
+                                local_file_path=saved_path,
+                                filename=name,
+                                channel=channel if isinstance(channel, str) else None,
+                                url_private=url_private if isinstance(url_private, str) else None,
+                                exif_b64=_exif_b64_incoming,
+                                gps=_image_gps,
+                            )
+                            app.logger.info(
+                                "slack_files record written for incoming file_share %s (exif=%s)",
+                                name, bool(_exif_b64_incoming),
+                            )
+                        except Exception as _exc:
+                            app.logger.warning(
+                                "Failed to write slack_files record for incoming %s: %s", name, _exc
+                            )
+
                 vision_bytes, vision_mime = _resize_image_for_vision(binary_data, mime, SLACK_IMAGE_MAX_LONG_EDGE)
                 encoded = base64.b64encode(vision_bytes).decode("ascii")
                 image_data_urls.append(f"data:{vision_mime};base64,{encoded}")

@@ -1008,8 +1008,11 @@ class SlackPlugin:
         if not isinstance(args, dict):
             raise ValueError("args must be a dict")
         path = args.get("path")
-        if not isinstance(path, str) or not path.strip():
-            raise ValueError("path must be a non-empty string")
+        filename = args.get("filename")
+
+        # Accept either path or filename — at least one is required
+        if not (isinstance(path, str) and path.strip()) and not (isinstance(filename, str) and filename.strip()):
+            raise ValueError("args must include either 'path' or 'filename'")
 
         try:
             import base64 as _b64
@@ -1017,31 +1020,68 @@ class SlackPlugin:
         except ImportError:
             raise ValueError("piexif is required for EXIF parsing")
 
-        local_path = Path(path.strip()).expanduser().resolve()
+        local_path: Path | None = None
         exif_dict: dict[str, Any] | None = None
         loaded_from_disk = False
+        record: dict[str, Any] | None = None
 
-        # Try loading from the local file first
-        if local_path.exists() and local_path.is_file():
-            try:
-                exif_dict = _piexif.load(str(local_path))
-                loaded_from_disk = True
-            except Exception:
-                exif_dict = None
+        # If a path was given, try loading EXIF from disk first
+        if isinstance(path, str) and path.strip():
+            local_path = Path(path.strip()).expanduser().resolve()
+            if local_path.exists() and local_path.is_file():
+                try:
+                    exif_dict = _piexif.load(str(local_path))
+                    loaded_from_disk = True
+                except Exception:
+                    exif_dict = None
 
         # Fall back to the base64 blob stored in MongoDB
         if exif_dict is None:
             collection = self._get_mongo_collection()
             if collection is not None:
-                record = collection.find_one({"local_file_path": str(local_path)})
-                if record is None:
-                    record = collection.find_one({"local_file_path": path.strip()})
+                if local_path is not None:
+                    # Path-based lookup
+                    record = collection.find_one({"local_file_path": str(local_path)})
+                    if record is None:
+                        record = collection.find_one({"local_file_path": path.strip() if path else ""})
+                else:
+                    # Filename-based lookup — most recent matching record
+                    record = collection.find_one(
+                        {"filename": filename.strip()},
+                        sort=[("uploaded_at", -1)],
+                    )
+                    if record is not None:
+                        stored_path = record.get("local_file_path", "")
+                        if stored_path:
+                            local_path = Path(stored_path).expanduser().resolve()
                 if record and isinstance(record.get("exif_b64"), str):
                     try:
                         raw = _b64.b64decode(record["exif_b64"])
                         exif_dict = _piexif.load(raw)
                     except Exception:
                         exif_dict = None
+
+                # Fallback: MongoDB has exif_dict (repr-format from _extract_exif_full)
+                # but no exif_b64. Convert repr strings back to Python values via ast.
+                if exif_dict is None and record and isinstance(record.get("exif_dict"), dict):
+                    try:
+                        import ast as _ast
+                        converted: dict[str, dict[int, Any]] = {}
+                        for ifd_name, tags in record["exif_dict"].items():
+                            if not isinstance(tags, dict):
+                                continue
+                            parsed_ifd: dict[int, Any] = {}
+                            for key_str, val_repr in tags.items():
+                                try:
+                                    parsed_ifd[int(key_str)] = _ast.literal_eval(str(val_repr))
+                                except Exception:
+                                    pass
+                            if parsed_ifd:
+                                converted[ifd_name] = parsed_ifd
+                        if converted:
+                            exif_dict = converted
+                    except Exception:
+                        pass
 
         # If EXIF was read from disk and MongoDB record is missing exif_b64, backfill it now
         if loaded_from_disk and exif_dict is not None:
@@ -1067,7 +1107,7 @@ class SlackPlugin:
         if exif_dict is None:
             return {
                 "status": "success",
-                "path": str(local_path),
+                "path": str(local_path) if local_path is not None else None,
                 "exif": None,
                 "message": "No EXIF data found for this file",
             }
@@ -1151,7 +1191,7 @@ class SlackPlugin:
 
         result: dict[str, Any] = {
             "status": "success",
-            "path": str(local_path),
+            "path": str(local_path) if local_path is not None else None,
             "exif": {
                 "orientation": orientation_tag,
                 "orientation_label": orientation_label,
@@ -1344,7 +1384,28 @@ class SlackPlugin:
                 count_errors += 1
                 continue
 
-            # --- Step 2: re-embed EXIF into JPEG if we have the blob ---
+            # --- Step 2: backfill exif_b64 if the file is on disk but the record lacks it ---
+            # This captures EXIF before it is ever lost (e.g. for files received from Slack
+            # whose records were written before exif_b64 storage was added).
+            if (
+                source == "local"
+                and not exif_b64
+                and local_path.suffix.lower() in (".jpg", ".jpeg")
+            ):
+                try:
+                    _raw_bytes = local_path.read_bytes()
+                    _new_exif_b64 = self._extract_exif_b64(_raw_bytes, local_path.suffix)
+                    if _new_exif_b64:
+                        collection.update_one(
+                            {"_id": rec["_id"]},
+                            {"$set": {"exif_b64": _new_exif_b64}},
+                        )
+                        exif_b64 = _new_exif_b64
+                        logger.debug("sync_files: backfilled exif_b64 for %s", filename)
+                except Exception as exc:
+                    logger.warning("sync_files: exif_b64 backfill failed for %s: %s", filename, exc)
+
+            # --- Step 3: re-embed EXIF into JPEG if we have the blob ---
             exif_restored = False
             if (
                 isinstance(exif_b64, str)
