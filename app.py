@@ -2187,73 +2187,27 @@ def upload_file() -> Any:
         except ValueError:
             pass
 
-    # Write media_files record with EXIF using unified intake.
-    # File is already on disk at dest; we read bytes once to extract EXIF and compute hash.
-    # Slack-specific fields (url_private, permalink) are filled in later by upload_local_file.
-    _intake_file_hash: str | None = None
+    # Write slack_files record with EXIF extracted directly from the saved file.
     gps = {"lat": notify_lat, "lon": notify_lon} if notify_lat is not None and notify_lon is not None else None
 
-    # Step 1: Always read bytes and extract exif_b64 directly — this is our fallback
-    # so _save_file_record always has EXIF even if intake_media fails.
-    _file_bytes: bytes | None = None
-    _exif_b64_fallback: str | None = None
-    try:
-        _file_bytes = dest.read_bytes()
-        if _file_bytes and dest.suffix.lower() in (".jpg", ".jpeg", ".tiff", ".tif"):
+    # Step 1: Extract exif_b64 directly from disk — independent of any Slack/plugin calls.
+    _exif_b64: str | None = None
+    if dest.suffix.lower() in (".jpg", ".jpeg", ".tiff", ".tif"):
+        try:
             import piexif as _piexif_upload, base64 as _b64_upload
-            try:
-                _raw_exif = _piexif_upload.load(_file_bytes)
-                _exif_b64_fallback = _b64_upload.b64encode(_piexif_upload.dump(_raw_exif)).decode("ascii")
-            except Exception:
-                pass
-    except Exception as _read_exc:
-        app.logger.warning("Could not read bytes from %s: %s", safe_name, _read_exc)
+            _raw_bytes = dest.read_bytes()
+            _raw_exif = _piexif_upload.load(_raw_bytes)
+            _exif_b64 = _b64_upload.b64encode(_piexif_upload.dump(_raw_exif)).decode("ascii")
+        except Exception as _exif_exc:
+            app.logger.warning("Could not extract EXIF from %s: %s", safe_name, _exif_exc)
 
-    # Step 2: Try intake_media (writes to media_files collection with dedup + EXIF).
-    # If this fails for any reason, we fall through to _save_file_record with the fallback exif_b64.
-    _intake_exif_b64: str | None = None
+    # Step 2: Always write the slack_files MongoDB record (this is the source of truth).
     try:
         from plugins.integrations.slack_plugin import SlackPlugin
-        bot_token = os.getenv("SLACK_BOT_TOKEN", "").strip()
-        slack = SlackPlugin(bot_token=bot_token, default_channel=SLACK_NETWORK_CHANNEL) if bot_token else None
-        if slack and _file_bytes is not None:
-            # Safe subfolder calculation — never raises
-            _base_resolved = Path(BASE_DATA_DIR).resolve()
-            try:
-                _subfolder = str(dest.parent.relative_to(_base_resolved)) if dest.parent != _base_resolved else ""
-            except ValueError:
-                _subfolder = ""
-            _intake = slack.intake_media(
-                raw_bytes=_file_bytes,
-                filename=safe_name,
-                base_dir=BASE_DATA_DIR,
-                channel=SLACK_NETWORK_CHANNEL,
-                url_private=None,
-                subfolder=_subfolder,
-                source="upload",
-            )
-            _intake_file_hash = _intake.get("file_hash")
-            _intake_exif_b64 = _intake.get("exif_b64")
-            app.logger.info(
-                "media_files record written for %s (hash=%s exif=%s)",
-                safe_name,
-                (_intake_file_hash or "")[:16],
-                bool(_intake_exif_b64),
-            )
-        elif not bot_token:
-            app.logger.warning("SLACK_BOT_TOKEN not set; skipping media_files record for %s", safe_name)
-    except Exception as exc:
-        app.logger.warning("intake_media failed for %s: %s — falling back to legacy record", safe_name, exc)
-
-    # Step 3: Always write legacy slack_files record so EXIF is always in MongoDB.
-    # Prefer EXIF from intake_media; fall back to directly-extracted bytes.
-    _final_exif_b64 = _intake_exif_b64 or _exif_b64_fallback
-    try:
-        from plugins.integrations.slack_plugin import SlackPlugin as _SlackPluginLegacy
         _bot_token = os.getenv("SLACK_BOT_TOKEN", "").strip()
-        _slack_legacy = _SlackPluginLegacy(bot_token=_bot_token, default_channel=SLACK_NETWORK_CHANNEL) if _bot_token else None
-        if _slack_legacy:
-            _slack_legacy._save_file_record(
+        _slack = SlackPlugin(bot_token=_bot_token, default_channel=SLACK_NETWORK_CHANNEL) if _bot_token else None
+        if _slack:
+            _slack._save_file_record(
                 local_file_path=str(dest),
                 file_id=None,
                 filename=safe_name,
@@ -2262,14 +2216,12 @@ def upload_file() -> Any:
                 channel_id=None,
                 permalink=None,
                 url_private=None,
-                exif_b64=_final_exif_b64,
+                exif_b64=_exif_b64,
                 gps=gps,
             )
-            app.logger.info(
-                "slack_files record written for %s (exif=%s)",
-                safe_name,
-                bool(_final_exif_b64),
-            )
+            app.logger.info("slack_files record written for %s (exif=%s)", safe_name, bool(_exif_b64))
+        else:
+            app.logger.warning("SLACK_BOT_TOKEN not set; skipping slack_files record for %s", safe_name)
     except Exception as exc:
         app.logger.warning("Failed to write slack_files record for %s: %s", safe_name, exc)
 
