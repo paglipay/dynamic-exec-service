@@ -495,10 +495,13 @@ class OpenAIFunctionCallingPlugin:
             if method_name == "zip_files":
                 return (
                     base +
-                    "Zip files already stored in generated_data into a downloadable archive without renaming. "
-                    "Use this when files are already on disk and you just want to bundle them. "
+                    "Zip files into a downloadable archive without renaming them. "
                     "Use args: [file_paths_list, zip_name_or_empty_string]. "
-                    "file_paths_list is a list of relative_path values from list_files (e.g. ['01.mp4', '01A.jpg']). "
+                    "file_paths_list is a list of full relative paths from the app working directory "
+                    "(e.g. ['generated_data/photo.jpg', 'generated_data/slack_downloads/doc.pdf']). "
+                    "IMPORTANT: every file in the list must already be on disk before calling this. "
+                    "If files came from Slack, call SlackPlugin.get_file for each one first — "
+                    "only proceed to zip_files once all get_file calls have returned status='success'. "
                     "The result includes 'local_path' — pass that directly to SlackPlugin.upload_local_file as file_path."
                 )
 
@@ -644,8 +647,11 @@ class OpenAIFunctionCallingPlugin:
                 "{'path': 'generated_data/photo.jpg'} — look up by the file's recorded local path, OR "
                 "{'filename': 'photo.jpg'} — find the most recent file with that name, OR "
                 "{'filename': 'photo.jpg', 'channel': 'C123ABC'} — narrow to a specific channel. "
-                "Returns 'path' (usable local path) and 'source' ('local' if already on disk, 'slack' if re-downloaded). "
-                "Use this when a user asks to retrieve, re-download, or access a file previously shared in Slack."
+                "Returns 'path' (usable local path) and 'source' ('local' if on disk already, 'slack' if re-downloaded). "
+                "IMPORTANT: if you have already called find_documents on slack_files and have records, "
+                "call this immediately for each record using its local_file_path — "
+                "do NOT ask the user for URLs or file IDs, and do NOT use list_files to pre-check existence. "
+                "get_file checks disk and falls back to Slack automatically."
             )
 
         if (
@@ -960,6 +966,26 @@ class OpenAIFunctionCallingPlugin:
             "If a user provides a local file path, do not claim you cannot access local files; call the appropriate tool instead. "
             "For plugin tool calls, put method inputs inside 'args' as positional arguments; "
             "when a plugin method accepts a payload object, pass it as args[0]. "
+            "\n\nAction mandate — bias toward action, not narration: "
+            "When the user gives a directive and you already have sufficient information to act, "
+            "call the tool immediately. Do NOT describe what you could do. Do NOT ask for confirmation. "
+            "Do NOT summarize a plan and wait. A response that describes a capability without calling "
+            "a tool is a failure when the information needed to act is already in hand. "
+            "Examples of the wrong pattern: "
+            "'Yes, I can download those files — please confirm you want to proceed.' "
+            "'The files appear to be stored in the database. Would you like me to retrieve them?' "
+            "Examples of the correct pattern: call get_file, report what was retrieved, continue. "
+            "\n\nSlack file retrieval workflow — follow these steps in order without stopping: "
+            "(1) Call MongoDBPlugin.find_documents on collection 'slack_files' to get stored records. "
+            "(2) For each record, call SlackPlugin.get_file with {'path': record['local_file_path']} — "
+            "this returns the file to disk if it is not already there. "
+            "Do NOT ask the user for URLs or file IDs when slack_files records exist; "
+            "the database record contains everything needed. "
+            "(3) Once all files are confirmed on disk (source='local' or source='slack' in the result), "
+            "proceed immediately with whatever the user asked next — zip, read, analyze, upload, etc. "
+            "Never use MediaStoragePlugin.list_files to verify existence before calling get_file; "
+            "list_files only sees the managed media root and will not find Slack downloads. "
+            "Use get_file — it checks disk and falls back to Slack automatically. "
             "\nImage handling rules:"
             "\n  0. FILE SHARED WITH NO EXPLICIT REQUEST: if the user uploaded or shared a file without "
             "asking for analysis, EXIF data, or a description — acknowledge receipt briefly "
