@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from pathlib import Path
 from typing import Any
 from urllib import error, request
 from urllib.parse import urlencode
+
+logger = logging.getLogger(__name__)
 
 
 class SlackPlugin:
@@ -22,7 +25,7 @@ class SlackPlugin:
             raise ValueError("trigger_id must be a non-empty string")
         if not isinstance(modal_view, dict):
             raise ValueError("modal_view must be a dict")
-        # Map modal_view fields to open_modal_form signature
+        # Map modal_view fields to _open_modal_form signature
         form = {
             "trigger_id": trigger_id,
             "title": modal_view.get("title", {}).get("text", "Modal"),
@@ -34,29 +37,25 @@ class SlackPlugin:
             form["callback_id"] = modal_view["callback_id"]
         if "private_metadata" in modal_view:
             form["private_metadata"] = modal_view["private_metadata"]
-        return self.open_modal_form(form)
+        return self._open_modal_form(form)
 
     def request_modal_with_button(self, args: dict[str, Any]) -> dict[str, Any]:
         """Post a message with a button to trigger a modal. Args: channel, button_text, message_text, callback_id, modal_view (optional)."""
         import traceback
-        print("[SlackPlugin][DEBUG] request_modal_with_button called with args:", args)
+        logger.debug("request_modal_with_button called with args: %s", args)
         channel = args.get("channel", self.default_channel)
         button_text = args.get("button_text", "Open Modal")
         message_text = args.get("message_text", "Click the button to open a modal.")
         callback_id = args.get("callback_id", "open_modal_button")
         modal_view = args.get("modal_view")
-        print(f"[SlackPlugin][DEBUG] channel={channel}, button_text={button_text}, message_text={message_text}, callback_id={callback_id}")
+        logger.debug("channel=%s button_text=%s message_text=%s callback_id=%s", channel, button_text, message_text, callback_id)
         if not isinstance(channel, str) or not channel.strip():
-            print("[SlackPlugin][ERROR] channel must be a non-empty string")
             raise ValueError("channel must be a non-empty string")
         if not isinstance(button_text, str) or not button_text.strip():
-            print("[SlackPlugin][ERROR] button_text must be a non-empty string")
             raise ValueError("button_text must be a non-empty string")
         if not isinstance(message_text, str) or not message_text.strip():
-            print("[SlackPlugin][ERROR] message_text must be a non-empty string")
             raise ValueError("message_text must be a non-empty string")
         if not isinstance(callback_id, str) or not callback_id.strip():
-            print("[SlackPlugin][ERROR] callback_id must be a non-empty string")
             raise ValueError("callback_id must be a non-empty string")
         # If modal_view is provided, store it in Redis and set button value to modalview:<key>
         button_value = "open_modal"
@@ -72,7 +71,7 @@ class SlackPlugin:
                 try:
                     redis_client = redis_mod.from_url(redis_url, decode_responses=True)
                 except Exception as exc:
-                    print(f"[SlackPlugin][ERROR] Failed to connect to Redis: {exc}")
+                    logger.warning("Failed to connect to Redis: %s", exc)
                     redis_client = None
             import uuid
             modal_id = str(uuid.uuid4())
@@ -82,7 +81,7 @@ class SlackPlugin:
                     button_value = f"modalview:{modal_id}"
                     redis_key = modal_id
                 except Exception as exc:
-                    print(f"[SlackPlugin][ERROR] Failed to store modal_view in Redis: {exc}")
+                    logger.warning("Failed to store modal_view in Redis: %s", exc)
         button_element = {
             "type": "button",
             "text": {"type": "plain_text", "text": button_text},
@@ -106,13 +105,11 @@ class SlackPlugin:
             "text": message_text,
             "blocks": blocks,
         }
-        print("[SlackPlugin][DEBUG] Sending chat.postMessage payload:")
-        print(json.dumps(payload, indent=2))
+        logger.debug("Sending chat.postMessage payload: %s", json.dumps(payload))
         try:
             response = self._post_json(self.api_url, payload)
         except Exception as exc:
-            print("[SlackPlugin][ERROR] Exception in _post_json:", exc)
-            traceback.print_exc()
+            logger.error("Exception in _post_json: %s", exc, exc_info=True)
             return {
                 "status": "error",
                 "action": "request_modal_with_button",
@@ -120,7 +117,7 @@ class SlackPlugin:
                 "traceback": traceback.format_exc(),
                 "message": "Failed to post message with modal trigger button",
             }
-        print("[SlackPlugin][DEBUG] chat.postMessage response:", response)
+        logger.debug("chat.postMessage response: %s", response)
         return {
             "status": "success",
             "action": "request_modal_with_button",
@@ -312,10 +309,8 @@ class SlackPlugin:
         return parsed
 
     def _post_json(self, api_url: str, payload: dict[str, Any]) -> dict[str, Any]:
-        import traceback
-        print(f"[SlackPlugin][DEBUG] _post_json called: api_url={api_url}")
-        print(f"[SlackPlugin][DEBUG] bot_token={self.bot_token[:8]}... (length={len(self.bot_token)})")
-        print(f"[SlackPlugin][DEBUG] payload: {json.dumps(payload, indent=2)}")
+        logger.debug("_post_json called: api_url=%s token_prefix=%s...", api_url, self.bot_token[:8])
+        logger.debug("_post_json payload: %s", json.dumps(payload))
         data = json.dumps(payload).encode("utf-8")
         req = request.Request(
             api_url,
@@ -331,14 +326,12 @@ class SlackPlugin:
                 body = response.read().decode("utf-8")
         except error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
-            print(f"[SlackPlugin][ERROR] HTTPError: {exc.code} {body}")
-            traceback.print_exc()
+            logger.error("_post_json HTTPError: %s %s", exc.code, body)
             raise ValueError(f"Slack HTTP error {exc.code}: {body}") from exc
         except error.URLError as exc:
-            print(f"[SlackPlugin][ERROR] URLError: {exc.reason}")
-            traceback.print_exc()
+            logger.error("_post_json URLError: %s", exc.reason)
             raise ValueError(f"Failed to reach Slack API: {exc.reason}") from exc
-        print(f"[SlackPlugin][DEBUG] _post_json response body: {body}")
+        logger.debug("_post_json response body: %s", body)
         return self._parse_slack_response(body)
 
     def _post_form(self, api_url: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -364,14 +357,32 @@ class SlackPlugin:
 
         return self._parse_slack_response(body)
 
-    def post_message(self, channel: str, text: str) -> dict[str, Any]:
-        """Send a plain text message to a Slack channel."""
+    def post_message(
+        self,
+        channel: str,
+        text: str,
+        blocks: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Send a message to a Slack channel.
+
+        For plain text replies, pass only channel and text.
+        For rich interactive content (buttons, inputs, sections), also pass blocks —
+        a list of Slack Block Kit block objects.
+
+        Args:
+            channel: Channel name (e.g. "#general") or ID (e.g. "C123ABC").
+            text:    Fallback text shown in notifications and plain-text clients.
+            blocks:  Optional list of Block Kit block dicts for rich formatting.
+        """
         if not isinstance(channel, str) or not channel.strip():
             raise ValueError("channel must be a non-empty string")
         if not isinstance(text, str) or not text.strip():
             raise ValueError("text must be a non-empty string")
 
-        payload = {"channel": channel.strip(), "text": text.strip()}
+        payload: dict[str, Any] = {"channel": channel.strip(), "text": text.strip()}
+        if blocks is not None:
+            payload["blocks"] = self._validate_blocks(blocks)
+
         parsed = self._post_json(self.api_url, payload)
 
         return {
@@ -381,43 +392,11 @@ class SlackPlugin:
             "message": "Message sent to Slack",
         }
 
-    def post_form_message(
+    def _open_modal_form(
         self,
         form: dict[str, Any],
     ) -> dict[str, Any]:
-        """Send a Slack message with Block Kit content that can act as a lightweight form."""
-        if not isinstance(form, dict):
-            raise ValueError("form must be an object")
-
-        channel = form.get("channel", self.default_channel)
-        text = form.get("text", "Please complete this form.")
-        blocks = form.get("blocks")
-
-        if not isinstance(channel, str) or not channel.strip():
-            raise ValueError("channel must be a non-empty string")
-        if not isinstance(text, str) or not text.strip():
-            raise ValueError("text must be a non-empty string")
-
-        payload = {
-            "channel": channel.strip(),
-            "text": text.strip(),
-            "blocks": self._validate_blocks(blocks),
-        }
-        parsed = self._post_json(self.api_url, payload)
-
-        return {
-            "status": "success",
-            "action": "post_form_message",
-            "channel": parsed.get("channel", channel.strip()),
-            "ts": parsed.get("ts"),
-            "message": "Slack form message posted",
-        }
-
-    def open_modal_form(
-        self,
-        form: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Open a Slack modal with input blocks."""
+        """Internal: open a Slack modal from a flat form dict. Use open_modal() instead."""
         if not isinstance(form, dict):
             raise ValueError("form must be an object")
 
@@ -478,7 +457,7 @@ class SlackPlugin:
         )
         return {
             "status": "success",
-            "action": "open_modal_form",
+            "action": "open_modal",
             "view_id": view_payload.get("id"),
             "external_id": view_payload.get("external_id"),
             "callback_id": view_payload.get(
@@ -588,7 +567,7 @@ class SlackPlugin:
             "message": "File uploaded to Slack",
         }
 
-    def upload_text_file(
+    def upload_content(
         self,
         filename: str,
         content: str,
@@ -596,7 +575,21 @@ class SlackPlugin:
         title: str | None = None,
         initial_comment: str | None = None,
     ) -> dict[str, Any]:
-        """Upload a text file to Slack using files.getUploadURLExternal + files.completeUploadExternal."""
+        """Upload generated text content as a file to Slack.
+
+        Use this when you have a string (a report, markdown, JSON, etc.) that you
+        want to post as a file.  The content is encoded to UTF-8 bytes and uploaded
+        directly — no file needs to exist on disk first.
+
+        For uploading a file that already exists on disk, use upload_local_file instead.
+
+        Args:
+            filename:        Name to give the file in Slack (e.g. "report.md").
+            content:         The text content of the file.
+            channel:         Target channel name or ID. Defaults to the plugin's default_channel.
+            title:           Display title in Slack. Defaults to filename.
+            initial_comment: Optional message to accompany the file.
+        """
         if not isinstance(filename, str) or not filename.strip():
             raise ValueError("filename must be a non-empty string")
         if not isinstance(content, str) or not content:
@@ -622,8 +615,14 @@ class SlackPlugin:
             )
             result["permalink"] = file_info.get("permalink")
             result["url_private"] = file_info.get("url_private")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "upload_content: failed to fetch file info or save MongoDB record "
+                "for %s (file_id=%s): %s",
+                filename,
+                result.get("file_id"),
+                exc,
+            )
         return result
 
     def upload_local_file(
@@ -689,13 +688,21 @@ class SlackPlugin:
                     )
             result["permalink"] = permalink
             result["url_private"] = url_private
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "upload_local_file: failed to fetch file info or update permalink/url_private "
+                "for %s (file_id=%s): %s — file was uploaded but download recovery may not work",
+                local_path,
+                result.get("file_id"),
+                exc,
+            )
 
         return result
 
     def _get_mongo_collection(self) -> Any:
         """Return the slack_files MongoDB collection, or None if unavailable."""
+        import logging as _logging
+        _log = _logging.getLogger(__name__)
         try:
             from pymongo import MongoClient as _MongoClient
         except ImportError:
@@ -705,16 +712,23 @@ class SlackPlugin:
             return None
         try:
             client = _MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+            # Resolve DB name: explicit env var wins, then URI path, then logged error.
             db_name = os.getenv("MONGODB_DATABASE", "").strip()
             if not db_name:
                 from urllib.parse import urlparse as _urlparse
                 parsed_uri = _urlparse(mongo_uri)
                 raw_path = parsed_uri.path.lstrip("/")
-                db_name = raw_path.split("?")[0] if raw_path else ""
+                db_name = raw_path.split("?")[0].strip() if raw_path else ""
             if not db_name:
+                _log.error(
+                    "MONGODB_DATABASE is not set and could not be extracted from MONGODB_URI. "
+                    "Set MONGODB_DATABASE in your .env to ensure slack_files records go to the "
+                    "correct database. Falling back to 'dynamic_exec' — records may be lost."
+                )
                 db_name = "dynamic_exec"
             return client[db_name]["slack_files"]
-        except Exception:
+        except Exception as exc:
+            _log.warning("SlackPlugin: failed to connect to MongoDB: %s", exc)
             return None
 
     def _fetch_file_info(self, file_id: str) -> dict[str, Any]:
@@ -840,8 +854,12 @@ class SlackPlugin:
                 {"$set": record},
                 upsert=True,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "_save_file_record: failed to upsert slack_files record for %s: %s",
+                local_file_path,
+                exc,
+            )
 
     def get_file(self, args: dict[str, Any]) -> dict[str, Any]:
         """

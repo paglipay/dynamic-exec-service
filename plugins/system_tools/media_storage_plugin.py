@@ -361,19 +361,21 @@ class MediaStoragePlugin:
             file_path.unlink()
         return {"removed": True}
 
-    def rename_zip_from_staged(
+    def rename_zip(
         self,
         session_id: str,
         sort_order: str = "date_taken",
     ) -> dict[str, Any]:
-        """Build a rename-zip archive from staged files for a session.
+        """Build a rename-zip archive from a staging session.
 
-        Sorts and renames images grouped by video markers, zips the result,
-        saves it under zips/, and removes the staging directory on success.
+        Reads the files staged under session_id, sorts and renames them
+        (images are grouped by adjacent video markers), zips the result,
+        saves it under generated_data/zips/, then clears the staging directory.
 
         Args:
-            session_id: UUID identifying the staging session.
-            sort_order: "date_taken" (default) or "upload_order".
+            session_id: UUID identifying the staging session (created by the upload UI).
+            sort_order: "date_taken" sorts by EXIF/video metadata timestamp (default);
+                        "upload_order" preserves the order files were staged.
         """
         if not self._valid_session_id(session_id):
             raise ValueError("Invalid or missing session_id")
@@ -410,12 +412,14 @@ class MediaStoragePlugin:
             "video_markers": n_videos,
         }
 
-    def rename_zip_from_file_data(
+    def _rename_zip_from_file_data(
         self,
         files_list: list[tuple[str, bytes]],
         sort_order: str = "date_taken",
     ) -> dict[str, Any]:
-        """Build a rename-zip archive from in-memory file data (multipart upload path).
+        """Internal: build a rename-zip from in-memory (filename, bytes) pairs.
+
+        Called by the multipart upload API endpoint. Bots should use rename_zip() instead.
 
         Args:
             files_list: List of (filename, bytes) tuples.

@@ -157,13 +157,15 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
     "plugins.integrations.slack_plugin": {
         "class": "SlackPlugin",
         "methods": [
+            # Messaging — post_message handles both plain text and Block Kit blocks
             "post_message",
-            "post_form_message",
+            # Modals
             "open_modal",
-            "open_modal_form",
             "request_modal_with_button",
-            "upload_text_file",
+            # File upload — upload_content for generated strings; upload_local_file for disk files
+            "upload_content",
             "upload_local_file",
+            # File retrieval from Slack / MongoDB
             "get_file",
             "get_file_exif",
             "backfill_exif",
@@ -234,12 +236,14 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
     "plugins.system_tools.media_storage_plugin": {
         "class": "MediaStoragePlugin",
         "methods": [
+            # Browsing — returns download_url alongside metadata
             "list_files",
-            "delete_file",
-            "list_staged",
-            "clear_staged",
-            "remove_staged_file",
+            # Zipping — rename_zip builds the archive from a staging session;
+            # zip_files bundles already-stored files without renaming
+            "rename_zip",
             "zip_files",
+            # Staging inspection (read-only) — for checking what's in a session
+            "list_staged",
         ],
     },
     "plugins.system_tools.file_reader_plugin": {

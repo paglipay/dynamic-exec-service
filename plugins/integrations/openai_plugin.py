@@ -473,19 +473,23 @@ class OpenAIFunctionCallingPlugin:
                     "Result entries include 'relative_path' relative to generated_data/. "
                     "To get the full path for upload, prepend 'generated_data/' to relative_path."
                 )
-            if method_name == "delete_file":
-                return base + "Delete a file. Use args: [relative_path_within generated_data]."
             if method_name == "list_staged":
-                return base + "List staged files for a session. Use args: [session_id]."
-            if method_name == "clear_staged":
-                return base + "Clear all staged files for a session. Use args: [session_id]."
-            if method_name == "remove_staged_file":
-                return base + "Remove one staged file. Use args: [session_id, filename]."
+                return base + "List files currently staged for a session (read-only). Use args: [session_id]."
+            if method_name == "rename_zip":
+                return (
+                    base +
+                    "Build a rename-zip archive from a staging session. "
+                    "Sorts and renames media files (images grouped by video markers), zips them, "
+                    "and saves the result under generated_data/zips/. "
+                    "Use args: [session_id, sort_order_or_date_taken]. "
+                    "sort_order is 'date_taken' (default) or 'upload_order'. "
+                    "The result includes 'download_url' and 'local_path' for the zip file."
+                )
             if method_name == "zip_files":
                 return (
                     base +
-                    "Zip files already stored in generated_data into a downloadable archive. "
-                    "Use this whenever the user asks to zip files. No staging session required. "
+                    "Zip files already stored in generated_data into a downloadable archive without renaming. "
+                    "Use this when files are already on disk and you just want to bundle them. "
                     "Use args: [file_paths_list, zip_name_or_empty_string]. "
                     "file_paths_list is a list of relative_path values from list_files (e.g. ['01.mp4', '01A.jpg']). "
                     "The result includes 'local_path' — pass that directly to SlackPlugin.upload_local_file as file_path."
@@ -567,6 +571,23 @@ class OpenAIFunctionCallingPlugin:
                 "Obtain the path from list_files or list_directory result entries "
                 "by prepending 'generated_data/' to the relative_path field. "
                 "Do not invent paths; always look up the path from a prior tool result."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
+            and method_name == "upload_content"
+        ):
+            return (
+                "Upload a string (text content) as a file to a Slack channel. "
+                "Use this when you have generated content in memory (e.g. a report, CSV, JSON, markdown string) "
+                "that you want to post as a file attachment — NOT for files already on disk (use upload_local_file instead). "
+                "Use args: [content, filename, channel, title_or_null, initial_comment_or_null]. "
+                "'content' is the raw string to upload. "
+                "'filename' is the name Slack will display, e.g. 'report.md' or 'data.csv'. "
+                "For 'channel', always use the channel ID from [slack_channel_id: ...] in the current message — "
+                "do NOT pass null; pass the explicit channel ID. "
+                "Example: if the message contains '[slack_channel_id: C08SH2VRPJL]', use 'C08SH2VRPJL' as channel."
             )
 
         if (
