@@ -1164,40 +1164,47 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
                         app.logger.info("GPS EXIF extracted from Slack image %s: %s", name, gps_str)
                 # --- END EXIF extract ---
 
-                try:
-                    saved_path = _save_slack_image_copy(binary_data, name, mime, channel if isinstance(channel, str) else None)
-                except Exception as exc:
-                    app.logger.warning("Failed to save Slack image locally (%s): %s", name, exc)
-                    saved_path = None
+                # Use unified intake — saves file, extracts EXIF once, writes media_files record
+                saved_path: str | None = None
+                if isinstance(slack_bot_token, str) and slack_bot_token.strip():
+                    try:
+                        from plugins.integrations.slack_plugin import SlackPlugin as _SP
+                        _sp_instance = _SP(bot_token=slack_bot_token)
+                        _intake_result = _sp_instance.intake_media(
+                            raw_bytes=binary_data,
+                            filename=name,
+                            base_dir=SLACK_IMAGE_SAVE_BASE_DIR,
+                            channel=channel if isinstance(channel, str) else None,
+                            url_private=url_private if isinstance(url_private, str) else None,
+                            subfolder="slack_downloads",
+                            source="slack_share",
+                        )
+                        saved_path = _intake_result.get("full_path")
+                        # Prefer GPS from typed EXIF over the legacy extraction
+                        if _intake_result.get("exif") and _intake_result["exif"].get("gps"):
+                            _image_gps = _intake_result["exif"]["gps"]
+                        app.logger.info(
+                            "intake_media: saved %s (hash=%s exif=%s gps=%s)",
+                            name,
+                            _intake_result.get("file_hash", "")[:16],
+                            bool(_intake_result.get("exif_b64")),
+                            bool(_image_gps),
+                        )
+                    except Exception as _exc:
+                        app.logger.warning("intake_media failed for %s, falling back: %s", name, _exc)
+                        try:
+                            saved_path = _save_slack_image_copy(binary_data, name, mime, channel if isinstance(channel, str) else None)
+                        except Exception as _exc2:
+                            app.logger.warning("Fallback _save_slack_image_copy also failed (%s): %s", name, _exc2)
+                else:
+                    try:
+                        saved_path = _save_slack_image_copy(binary_data, name, mime, channel if isinstance(channel, str) else None)
+                    except Exception as exc:
+                        app.logger.warning("Failed to save Slack image locally (%s): %s", name, exc)
 
                 if isinstance(saved_path, str) and saved_path:
                     saved_image_paths.append(saved_path)
                     file_lines[-1] = f"{file_lines[-1]}; saved_as={saved_path}"
-
-                    # Write a slack_files record for this incoming file so EXIF and
-                    # url_private are permanently recoverable via get_file / get_file_exif.
-                    # This is the only point where we have the raw pre-Slack-strip bytes.
-                    if is_jpeg and isinstance(slack_bot_token, str) and slack_bot_token.strip():
-                        try:
-                            from plugins.integrations.slack_plugin import SlackPlugin as _SP
-                            _exif_b64_incoming = _SP._extract_exif_b64(binary_data, Path(name).suffix)
-                            _sp_instance = _SP(bot_token=slack_bot_token)
-                            _sp_instance._save_slack_file(
-                                local_file_path=saved_path,
-                                filename=name,
-                                channel=channel if isinstance(channel, str) else None,
-                                url_private=url_private if isinstance(url_private, str) else None,
-                                exif_b64=_exif_b64_incoming,
-                                gps=_image_gps,
-                            )
-                            app.logger.info(
-                                "slack_files record written for incoming file_share %s (exif=%s)",
-                                name, bool(_exif_b64_incoming),
-                            )
-                        except Exception as _exc:
-                            app.logger.warning(
-                                "Failed to write slack_files record for incoming %s: %s", name, _exc
-                            )
 
                 vision_bytes, vision_mime = _resize_image_for_vision(binary_data, mime, SLACK_IMAGE_MAX_LONG_EDGE)
                 encoded = base64.b64encode(vision_bytes).decode("ascii")
@@ -2180,18 +2187,37 @@ def upload_file() -> Any:
         except ValueError:
             pass
 
-    # Write initial slack_files record with EXIF so the file is recoverable
-    # after a Heroku restart even before it has been uploaded to Slack.
-    # Slack-specific fields (file_id, permalink, url_private) are absent here
-    # and filled in by upload_local_file when the notification thread runs.
+    # Write media_files record with EXIF using unified intake.
+    # File is already on disk at dest; we read bytes once to extract EXIF and compute hash.
+    # Slack-specific fields (url_private, permalink) are filled in later by upload_local_file.
+    _intake_file_hash: str | None = None
     try:
         from plugins.integrations.slack_plugin import SlackPlugin
         bot_token = os.getenv("SLACK_BOT_TOKEN", "").strip()
         slack = SlackPlugin(bot_token=bot_token, default_channel=SLACK_NETWORK_CHANNEL) if bot_token else None
         if slack:
             file_bytes = dest.read_bytes()
-            exif_b64 = SlackPlugin._extract_exif_b64(file_bytes, dest.suffix)
             gps = {"lat": notify_lat, "lon": notify_lon} if notify_lat is not None and notify_lon is not None else None
+            # Use intake_media — pass raw bytes so EXIF is extracted before any Slack upload
+            _intake = slack.intake_media(
+                raw_bytes=file_bytes,
+                filename=safe_name,
+                base_dir=BASE_DATA_DIR,
+                channel=SLACK_NETWORK_CHANNEL,
+                url_private=None,
+                subfolder=str(dest.parent.relative_to(Path(BASE_DATA_DIR).resolve()))
+                    if dest.parent != Path(BASE_DATA_DIR).resolve() else "",
+                source="upload",
+            )
+            _intake_file_hash = _intake.get("file_hash")
+            app.logger.info(
+                "media_files record written for %s (hash=%s exif=%s)",
+                safe_name,
+                (_intake_file_hash or "")[:16],
+                bool(_intake.get("exif_b64")),
+            )
+            # Also keep legacy slack_files record for backward compat
+            exif_b64 = _intake.get("exif_b64")
             slack._save_file_record(
                 local_file_path=str(dest),
                 file_id=None,
@@ -2204,11 +2230,10 @@ def upload_file() -> Any:
                 exif_b64=exif_b64,
                 gps=gps,
             )
-            app.logger.info("slack_files record written for %s (exif=%s)", safe_name, bool(exif_b64))
         else:
-            app.logger.warning("SLACK_BOT_TOKEN not set; skipping initial slack_files record for %s", safe_name)
+            app.logger.warning("SLACK_BOT_TOKEN not set; skipping media_files record for %s", safe_name)
     except Exception as exc:
-        app.logger.warning("Failed to write initial slack_files record for %s: %s", safe_name, exc)
+        app.logger.warning("Failed to write media_files record for %s: %s", safe_name, exc)
 
     _trigger_upload_notification(safe_name, relative, size_bytes, lat=notify_lat, lon=notify_lon)
 

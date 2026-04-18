@@ -169,8 +169,12 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "get_file",
             "get_file_exif",
             "backfill_exif",
-            # Bulk sync — query slack_files, download missing files, restore EXIF in one call
+            # Bulk sync — query media_files/slack_files, download missing, restore EXIF
             "sync_files",
+            # Unified intake pipeline (save + EXIF + media_files record in one call)
+            "intake_media",
+            "update_media_slack_fields",
+            "migrate_slack_files",
         ],
     },
     "plugins.integrations.openai_http_plugin": {

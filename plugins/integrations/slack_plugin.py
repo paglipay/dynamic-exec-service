@@ -806,6 +806,406 @@ class SlackPlugin:
         except Exception:
             pass
 
+    # ------------------------------------------------------------------
+    # media_files redesign — unified intake, relative paths, typed EXIF
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_exif_intake(
+        file_bytes: bytes,
+        suffix: str,
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        """Extract EXIF once from raw bytes and return both forms needed for storage.
+
+        Returns:
+            exif_b64  — raw EXIF block as base64; use with _reembed_exif to restore
+                        a downloaded file after Slack strips EXIF.
+            exif      — clean typed dict with human-readable fields for querying/display:
+                        {make, model, datetime_original, orientation,
+                         gps: {lat, lon, alt_m, direction, direction_ref}}
+        Call this ONCE on the original bytes before saving to disk or uploading to Slack.
+        """
+        if suffix.lower() not in (".jpg", ".jpeg"):
+            return None, None
+        try:
+            import base64 as _b64
+            import piexif as _piexif
+
+            raw_exif = _piexif.load(file_bytes)
+            # Only proceed if there is at least one non-empty IFD
+            if not any(raw_exif.get(ifd) for ifd in ("0th", "Exif", "GPS", "1st")):
+                return None, None
+
+            exif_b64 = _b64.b64encode(_piexif.dump(raw_exif)).decode("ascii")
+
+            def _r2f(v: Any) -> float | None:
+                """Rational tuple → float."""
+                if isinstance(v, (list, tuple)) and len(v) == 2:
+                    try:
+                        return float(v[0]) / float(v[1]) if v[1] else None
+                    except Exception:
+                        return None
+                return None
+
+            def _dms(dms: Any, ref: Any) -> float | None:
+                if not isinstance(dms, (list, tuple)) or len(dms) != 3:
+                    return None
+                d, m, s = _r2f(dms[0]), _r2f(dms[1]), _r2f(dms[2])
+                if None in (d, m, s):
+                    return None
+                val = d + m / 60 + s / 3600
+                ref_s = ref.decode("ascii").upper() if isinstance(ref, bytes) else str(ref).upper()
+                return round(-val if ref_s in ("S", "W") else val, 8)
+
+            def _dec(v: Any) -> str | None:
+                if isinstance(v, bytes):
+                    return v.decode("utf-8", errors="replace").strip().rstrip("\x00") or None
+                return str(v).strip() or None if v is not None else None
+
+            ifd0 = raw_exif.get("0th", {})
+            exif_ifd = raw_exif.get("Exif", {})
+            gps_ifd = raw_exif.get("GPS", {})
+
+            lat = _dms(
+                gps_ifd.get(_piexif.GPSIFD.GPSLatitude),
+                gps_ifd.get(_piexif.GPSIFD.GPSLatitudeRef, b"N"),
+            )
+            lon = _dms(
+                gps_ifd.get(_piexif.GPSIFD.GPSLongitude),
+                gps_ifd.get(_piexif.GPSIFD.GPSLongitudeRef, b"E"),
+            )
+            alt_r = _r2f(gps_ifd.get(_piexif.GPSIFD.GPSAltitude))
+            alt_ref = gps_ifd.get(_piexif.GPSIFD.GPSAltitudeRef, 0)
+            alt_m = round((-alt_r if alt_ref == 1 else alt_r), 2) if alt_r is not None else None
+            dir_r = _r2f(gps_ifd.get(_piexif.GPSIFD.GPSImgDirection))
+            dir_ref = gps_ifd.get(_piexif.GPSIFD.GPSImgDirectionRef)
+
+            gps: dict[str, Any] | None = None
+            if lat is not None and lon is not None:
+                gps = {
+                    "lat": lat,
+                    "lon": lon,
+                    "alt_m": alt_m,
+                    "direction": round(dir_r, 2) if dir_r is not None else None,
+                    "direction_ref": _dec(dir_ref),
+                    "google_maps_url": f"https://maps.google.com/?q={lat},{lon}",
+                }
+
+            orientation = ifd0.get(_piexif.ImageIFD.Orientation)
+            exif_typed: dict[str, Any] = {
+                "make": _dec(ifd0.get(_piexif.ImageIFD.Make)),
+                "model": _dec(ifd0.get(_piexif.ImageIFD.Model)),
+                "software": _dec(ifd0.get(_piexif.ImageIFD.Software)),
+                "datetime_original": _dec(exif_ifd.get(_piexif.ExifIFD.DateTimeOriginal)),
+                "orientation": orientation,
+                "gps": gps,
+            }
+
+            return exif_b64, exif_typed
+
+        except Exception:
+            return None, None
+
+    @staticmethod
+    def _to_relative_path(full_path: str | Path, base_dir: str | Path) -> str:
+        """Convert an absolute path to a relative path from base_dir.
+
+        Returns the relative path string (e.g. 'slack_downloads/photo.jpg').
+        If path is already relative or cannot be made relative, returns as-is.
+        """
+        try:
+            return str(Path(full_path).resolve().relative_to(Path(base_dir).resolve()))
+        except ValueError:
+            # Not under base_dir — return the filename only as a safe fallback
+            return Path(full_path).name
+
+    def _get_media_collection(self) -> Any:
+        """Return the media_files MongoDB collection, or None if unavailable."""
+        try:
+            from pymongo import MongoClient as _MC
+            uri = os.environ.get("MONGODB_URI", "mongodb://localhost:27017")
+            db_name = os.environ.get("MONGODB_DB", "slack_bot")
+            client = _MC(uri, serverSelectionTimeoutMS=3000)
+            return client[db_name]["media_files"]
+        except Exception as exc:
+            logger.warning("_get_media_collection: unavailable: %s", exc)
+            return None
+
+    def intake_media(
+        self,
+        raw_bytes: bytes,
+        filename: str,
+        base_dir: str,
+        channel: str | None = None,
+        url_private: str | None = None,
+        slack_file_id: str | None = None,
+        permalink: str | None = None,
+        subfolder: str = "slack_downloads",
+        source: str = "slack_share",
+    ) -> dict[str, Any]:
+        """Unified media intake — save file, extract EXIF, write media_files record.
+
+        This is the single entry point for all incoming files regardless of
+        whether they arrive via a Slack file_share event or the app's upload
+        endpoint. Call it once with the raw bytes before anything else.
+
+        Args:
+            raw_bytes:      Raw file bytes (pre-Slack-upload; EXIF intact).
+            filename:       Original filename (e.g. 'Soto_test00E.jpg').
+            base_dir:       Root data directory (e.g. 'generated_data').
+            channel:        Slack channel ID or name.
+            url_private:    Slack url_private for later re-download.
+            slack_file_id:  Slack file_id.
+            permalink:      Slack permalink.
+            subfolder:      Subdirectory under base_dir (default 'slack_downloads').
+            source:         'slack_share' | 'upload' | other.
+
+        Returns dict with: relative_path, full_path, filename, exif, exif_b64, gps,
+            file_hash, already_existed (bool).
+        """
+        import hashlib
+        from datetime import datetime as _dt
+
+        if not isinstance(raw_bytes, bytes) or not raw_bytes:
+            raise ValueError("raw_bytes must be non-empty bytes")
+        if not isinstance(filename, str) or not filename.strip():
+            raise ValueError("filename must be a non-empty string")
+
+        base = Path(base_dir).resolve()
+        target_dir = base / subfolder
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        # Sanitise filename
+        safe_name = re.sub(r"[^\w.\-]", "_", filename.strip())
+        suffix = Path(safe_name).suffix.lower()
+        full_path = target_dir / safe_name
+
+        # Deduplication by SHA-256
+        file_hash = "sha256:" + hashlib.sha256(raw_bytes).hexdigest()
+        collection = self._get_media_collection()
+        already_existed = False
+
+        if collection is not None:
+            existing = collection.find_one({"file_hash": file_hash})
+            if existing:
+                already_existed = True
+                stored_rel = existing.get("relative_path", "")
+                stored_full = (base / stored_rel).resolve() if stored_rel else full_path
+                return {
+                    "status": "success",
+                    "already_existed": True,
+                    "relative_path": stored_rel,
+                    "full_path": str(stored_full),
+                    "filename": existing.get("filename", filename),
+                    "exif": existing.get("exif"),
+                    "exif_b64": existing.get("exif_b64"),
+                    "gps": existing.get("exif", {}).get("gps") if existing.get("exif") else None,
+                    "file_hash": file_hash,
+                }
+
+        # Extract EXIF from raw bytes NOW — before anything else
+        exif_b64, exif_typed = self._extract_exif_intake(raw_bytes, suffix)
+        gps = exif_typed.get("gps") if exif_typed else None
+
+        # Write file to disk
+        try:
+            full_path.write_bytes(raw_bytes)
+        except OSError as exc:
+            raise ValueError(f"Failed to write {full_path}: {exc}") from exc
+
+        relative_path = self._to_relative_path(full_path, base)
+
+        # Write media_files record synchronously
+        if collection is not None:
+            now = _dt.utcnow().isoformat()
+            record: dict[str, Any] = {
+                "file_hash": file_hash,
+                "filename": filename,
+                "relative_path": relative_path,
+                "suffix": suffix,
+                "size_bytes": len(raw_bytes),
+                "source": source,
+                "uploaded_at": now,
+            }
+            if channel is not None:
+                record["channel"] = channel
+            if url_private is not None:
+                record["url_private"] = url_private
+            if slack_file_id is not None:
+                record["slack_file_id"] = slack_file_id
+            if permalink is not None:
+                record["permalink"] = permalink
+            if exif_b64 is not None:
+                record["exif_b64"] = exif_b64
+            if exif_typed is not None:
+                record["exif"] = exif_typed
+            try:
+                collection.update_one(
+                    {"file_hash": file_hash},
+                    {"$set": record},
+                    upsert=True,
+                )
+            except Exception as exc:
+                logger.warning("intake_media: failed to write media_files record: %s", exc)
+
+        return {
+            "status": "success",
+            "already_existed": already_existed,
+            "relative_path": relative_path,
+            "full_path": str(full_path),
+            "filename": filename,
+            "exif": exif_typed,
+            "exif_b64": exif_b64,
+            "gps": gps,
+            "file_hash": file_hash,
+        }
+
+    def update_media_slack_fields(
+        self,
+        file_hash: str,
+        slack_file_id: str | None = None,
+        url_private: str | None = None,
+        permalink: str | None = None,
+    ) -> dict[str, Any]:
+        """Update the Slack-specific fields on a media_files record after upload.
+
+        Call this after uploading to Slack to store the file_id, url_private,
+        and permalink returned by the Slack API.
+        """
+        collection = self._get_media_collection()
+        if collection is None:
+            return {"status": "error", "message": "media_files collection unavailable"}
+        updates: dict[str, Any] = {}
+        if slack_file_id is not None:
+            updates["slack_file_id"] = slack_file_id
+        if url_private is not None:
+            updates["url_private"] = url_private
+        if permalink is not None:
+            updates["permalink"] = permalink
+        if not updates:
+            return {"status": "success", "message": "nothing to update"}
+        try:
+            result = collection.update_one(
+                {"file_hash": file_hash},
+                {"$set": updates},
+            )
+            return {
+                "status": "success",
+                "matched": result.matched_count,
+                "modified": result.modified_count,
+            }
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+
+    def migrate_slack_files(
+        self,
+        base_dir: str = "generated_data",
+    ) -> dict[str, Any]:
+        """Migrate existing slack_files records into the new media_files collection.
+
+        For each slack_files record:
+          - Converts absolute local_file_path to a relative_path from base_dir
+          - Computes file_hash from bytes on disk (if file exists)
+          - Promotes exif_b64 and extracts typed exif if missing
+          - Writes a media_files record (skips if file_hash already present)
+
+        Safe to run multiple times — uses file_hash for deduplication.
+        """
+        import hashlib
+        from datetime import datetime as _dt
+
+        old_col = self._get_mongo_collection()
+        new_col = self._get_media_collection()
+        if old_col is None or new_col is None:
+            raise ValueError("MongoDB unavailable — cannot migrate")
+
+        base = Path(base_dir).resolve()
+        migrated = 0
+        skipped_no_file = 0
+        skipped_duplicate = 0
+        errors = 0
+
+        try:
+            records = list(old_col.find({}))
+        except Exception as exc:
+            raise ValueError(f"Failed to read slack_files: {exc}") from exc
+
+        for rec in records:
+            stored_path = rec.get("local_file_path", "")
+            if not stored_path:
+                errors += 1
+                continue
+
+            local_path = Path(stored_path).expanduser().resolve()
+            if not local_path.exists() or not local_path.is_file():
+                skipped_no_file += 1
+                continue
+
+            try:
+                raw_bytes = local_path.read_bytes()
+                file_hash = "sha256:" + hashlib.sha256(raw_bytes).hexdigest()
+
+                if new_col.find_one({"file_hash": file_hash}):
+                    skipped_duplicate += 1
+                    continue
+
+                relative_path = self._to_relative_path(local_path, base)
+
+                # Promote or extract EXIF
+                exif_b64 = rec.get("exif_b64")
+                exif_typed: dict[str, Any] | None = None
+                if not exif_b64:
+                    exif_b64, exif_typed = self._extract_exif_intake(
+                        raw_bytes, local_path.suffix
+                    )
+                else:
+                    _, exif_typed = self._extract_exif_intake(
+                        raw_bytes, local_path.suffix
+                    )
+
+                new_rec: dict[str, Any] = {
+                    "file_hash": file_hash,
+                    "filename": rec.get("filename", local_path.name),
+                    "relative_path": relative_path,
+                    "suffix": local_path.suffix.lower(),
+                    "size_bytes": len(raw_bytes),
+                    "source": "migrated_from_slack_files",
+                    "channel": rec.get("channel"),
+                    "url_private": rec.get("url_private"),
+                    "slack_file_id": rec.get("file_id"),
+                    "permalink": rec.get("permalink"),
+                    "uploaded_at": rec.get("uploaded_at", _dt.utcnow().isoformat()),
+                    "migrated_at": _dt.utcnow().isoformat(),
+                }
+                if exif_b64:
+                    new_rec["exif_b64"] = exif_b64
+                if exif_typed:
+                    new_rec["exif"] = exif_typed
+
+                new_col.update_one(
+                    {"file_hash": file_hash},
+                    {"$set": new_rec},
+                    upsert=True,
+                )
+                migrated += 1
+
+            except Exception as exc:
+                logger.warning("migrate_slack_files: error on %s: %s", stored_path, exc)
+                errors += 1
+
+        return {
+            "status": "success",
+            "migrated": migrated,
+            "skipped_not_on_disk": skipped_no_file,
+            "skipped_duplicate": skipped_duplicate,
+            "errors": errors,
+            "message": (
+                f"Migration complete. {migrated} record(s) written to media_files. "
+                f"{skipped_no_file} skipped (file not on disk). "
+                f"{skipped_duplicate} already in media_files."
+            ),
+        }
+
     def _save_file_record(
         self,
         local_file_path: str,
@@ -1306,17 +1706,38 @@ class SlackPlugin:
             "exif_restored" count of files that had EXIF re-embedded
             "errors"     count of files that could not be retrieved
         """
-        collection = self._get_mongo_collection()
-        if collection is None:
-            raise ValueError("MongoDB is not available for slack_files lookup")
+        base_dir = os.environ.get("BASE_DATA_DIR", "generated_data")
+        base = Path(base_dir).resolve()
+
+        # Prefer media_files (new design); fall back to slack_files for legacy records
+        media_col = self._get_media_collection()
+        legacy_col = self._get_mongo_collection()
 
         effective_query: dict[str, Any] = query if isinstance(query, dict) else {}
-        try:
-            records = list(
-                collection.find(effective_query).sort("uploaded_at", -1).limit(limit)
-            )
-        except Exception as exc:
-            raise ValueError(f"Failed to query slack_files: {exc}") from exc
+
+        records: list[dict[str, Any]] = []
+        using_media = False
+        if media_col is not None:
+            try:
+                media_records = list(
+                    media_col.find(effective_query).sort("uploaded_at", -1).limit(limit)
+                )
+                if media_records:
+                    records = media_records
+                    using_media = True
+            except Exception:
+                pass
+
+        if not records and legacy_col is not None:
+            try:
+                records = list(
+                    legacy_col.find(effective_query).sort("uploaded_at", -1).limit(limit)
+                )
+            except Exception as exc:
+                raise ValueError(f"Failed to query slack_files: {exc}") from exc
+
+        if not records and media_col is None and legacy_col is None:
+            raise ValueError("MongoDB is not available for file lookup")
 
         files: list[dict[str, Any]] = []
         count_on_disk = 0
@@ -1325,23 +1746,28 @@ class SlackPlugin:
         count_errors = 0
 
         for rec in records:
-            stored_path = rec.get("local_file_path", "")
-            filename = rec.get("filename", Path(stored_path).name if stored_path else "unknown")
+            # Resolve path — media_files uses relative_path, slack_files uses local_file_path
+            if using_media and rec.get("relative_path"):
+                local_path = (base / rec["relative_path"]).resolve()
+                stored_path = str(local_path)
+            else:
+                stored_path = rec.get("local_file_path", "")
+                local_path = Path(stored_path).expanduser().resolve() if stored_path else None
+
+            filename = rec.get("filename", local_path.name if local_path else "unknown")
             url_private = rec.get("url_private", "")
             exif_b64 = rec.get("exif_b64", "")
 
-            if not stored_path:
+            if local_path is None:
                 files.append({
                     "path": None,
                     "filename": filename,
                     "source": "error",
                     "exif_restored": False,
-                    "error": "Record has no local_file_path",
+                    "error": "Record has no path",
                 })
                 count_errors += 1
                 continue
-
-            local_path = Path(stored_path).expanduser().resolve()
 
             # --- Step 1: ensure file is on disk ---
             source = "local"

@@ -660,20 +660,67 @@ class OpenAIFunctionCallingPlugin:
             and method_name == "sync_files"
         ):
             return (
-                "Query slack_files records and ensure every matched file is on local disk in one call. "
-                "Handles the full pipeline internally: find records → download missing files from Slack → "
-                "re-embed original EXIF into JPEGs. No separate get_file loop needed. "
+                "Ensure every matched file is on local disk under generated_data/ in one call. "
+                "Queries media_files first (new design) and falls back to slack_files for legacy records. "
+                "For each record: checks disk → downloads from Slack if missing → re-embeds EXIF into JPEGs. "
+                "Also backfills exif_b64 into media_files for any file already on disk that is missing it. "
                 "Use args: [query_or_null, limit_or_50]. "
-                "query is a MongoDB filter dict applied to slack_files, e.g. "
-                "{'channel': 'C123ABC'} or {'filename': {'$regex': '\\\\.jpg$'}} or {} for all records. "
+                "query is a MongoDB filter dict, e.g. {'channel': 'C123ABC'} or {'filename': {'$regex': '\\\\.jpg$'}}. "
                 "Pass null to match all records. "
-                "limit caps the number of records processed (default 50). "
                 "Returns 'files' — a list where each entry has: "
-                "'path' (ready-to-use local path), 'filename', "
-                "'source' ('local' if already on disk, 'slack' if downloaded, 'error' if failed), "
-                "'exif_restored' (true if EXIF was re-embedded into the JPEG). "
-                "After calling this, pass the 'path' values directly to zip_files or any file tool. "
+                "'path' (absolute local path ready to use), 'filename', "
+                "'source' ('local'|'slack'|'error'), 'exif_restored' (bool). "
+                "Pass 'path' values directly to zip_files or any file tool. "
                 "Use this instead of calling find_documents + get_file separately."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
+            and method_name == "intake_media"
+        ):
+            return (
+                "Unified file intake: save raw bytes to generated_data/, extract EXIF once, write media_files record. "
+                "Use args: [args_dict] where args_dict contains: "
+                "'raw_bytes' (bytes — the raw file content), "
+                "'filename' (original filename, e.g. 'photo.jpg'), "
+                "'base_dir' (use 'generated_data'), "
+                "'channel' (optional Slack channel ID), "
+                "'url_private' (optional Slack url_private for later re-download), "
+                "'subfolder' (subdirectory under generated_data/, default 'slack_downloads'), "
+                "'source' (optional: 'upload' | 'slack_share', default 'slack_share'). "
+                "Returns: relative_path, full_path, filename, exif (typed dict with gps.lat/lon), "
+                "exif_b64, file_hash, already_existed (bool). "
+                "Use this for any new file that needs to be stored — it deduplicates by SHA-256 hash."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
+            and method_name == "migrate_slack_files"
+        ):
+            return (
+                "Migrate existing slack_files MongoDB records into the new media_files collection. "
+                "Reads each record, computes SHA-256 hash from the file on disk, extracts typed EXIF, "
+                "stores a clean relative_path from generated_data/. "
+                "Safe to run multiple times — skips files already in media_files by hash. "
+                "Use args: [args_dict] where args_dict contains: "
+                "'base_dir' (use 'generated_data'). "
+                "Call this once after deployment to bring existing files into the new design. "
+                "Returns: migrated, skipped_not_on_disk, skipped_duplicate, errors."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
+            and method_name == "update_media_slack_fields"
+        ):
+            return (
+                "Update the Slack url_private, permalink, and file_id on a media_files record after upload. "
+                "Use args: [args_dict] where args_dict contains: "
+                "'file_hash' (from intake_media result), "
+                "'slack_file_id' (optional), 'url_private' (optional), 'permalink' (optional). "
+                "Call this after uploading a file to Slack to complete the record."
             )
 
         if (
