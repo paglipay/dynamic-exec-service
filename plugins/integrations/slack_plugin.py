@@ -248,7 +248,7 @@ class SlackPlugin:
             payload: dict[str, Any] = {
                 "exclude_archived": "true",
                 "limit": "1000",
-                "types": "public_channel,private_channel",
+                "types": "public_channel",
             }
             if cursor:
                 payload["cursor"] = cursor
@@ -579,7 +579,7 @@ class SlackPlugin:
 
         return {
             "status": "success",
-            "action": "upload_text_file",
+            "action": "upload_local_file",
             "channel": target_channel,
             "channel_id": target_channel_id,
             "file_id": uploaded_file.get("id", file_id),
@@ -601,13 +601,30 @@ class SlackPlugin:
             raise ValueError("filename must be a non-empty string")
         if not isinstance(content, str) or not content:
             raise ValueError("content must be a non-empty string")
-        return self._upload_file_bytes(
+        result = self._upload_file_bytes(
             filename=filename.strip(),
             file_bytes=content.encode("utf-8"),
             channel=channel,
             title=title,
             initial_comment=initial_comment,
         )
+        try:
+            file_info = self._fetch_file_info(result["file_id"])
+            self._save_file_record(
+                local_file_path=filename.strip(),
+                file_id=result["file_id"],
+                filename=result["file_name"],
+                title=result["title"],
+                channel=result["channel"],
+                channel_id=result["channel_id"],
+                permalink=file_info.get("permalink"),
+                url_private=file_info.get("url_private"),
+            )
+            result["permalink"] = file_info.get("permalink")
+            result["url_private"] = file_info.get("url_private")
+        except Exception:
+            pass
+        return result
 
     def upload_local_file(
         self,
@@ -629,6 +646,8 @@ class SlackPlugin:
         except OSError as exc:
             raise ValueError(f"Failed to read local file: {exc}") from exc
 
+        exif_dict = self._extract_exif_dict(file_bytes, local_path.suffix)
+
         result = self._upload_file_bytes(
             filename=local_path.name,
             file_bytes=file_bytes,
@@ -638,4 +657,515 @@ class SlackPlugin:
         )
         result["action"] = "upload_local_file"
         result["local_file_path"] = str(local_path)
+
+        # Write the core MongoDB record immediately after a successful Slack upload.
+        # This guarantees EXIF and file identity are always persisted, independent of
+        # whether the subsequent files.info call succeeds.
+        self._save_file_record(
+            local_file_path=str(local_path),
+            file_id=result["file_id"],
+            filename=result["file_name"],
+            title=result["title"],
+            channel=result["channel"],
+            channel_id=result["channel_id"],
+            permalink=None,
+            url_private=None,
+            exif_dict=exif_dict,
+        )
+        if exif_dict:
+            result["exif_preserved"] = True
+
+        # Fetch permalink / url_private and update the record with them separately.
+        try:
+            file_info = self._fetch_file_info(result["file_id"])
+            permalink = file_info.get("permalink")
+            url_private = file_info.get("url_private")
+            if permalink or url_private:
+                collection = self._get_mongo_collection()
+                if collection is not None:
+                    collection.update_one(
+                        {"local_file_path": str(local_path)},
+                        {"$set": {"permalink": permalink, "url_private": url_private}},
+                    )
+            result["permalink"] = permalink
+            result["url_private"] = url_private
+        except Exception:
+            pass
+
         return result
+
+    def _get_mongo_collection(self) -> Any:
+        """Return the slack_files MongoDB collection, or None if unavailable."""
+        try:
+            from pymongo import MongoClient as _MongoClient
+        except ImportError:
+            return None
+        mongo_uri = os.getenv("MONGODB_URI", "").strip()
+        if not mongo_uri:
+            return None
+        try:
+            client = _MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+            db_name = os.getenv("MONGODB_DATABASE", "").strip()
+            if not db_name:
+                from urllib.parse import urlparse as _urlparse
+                parsed_uri = _urlparse(mongo_uri)
+                raw_path = parsed_uri.path.lstrip("/")
+                db_name = raw_path.split("?")[0] if raw_path else ""
+            if not db_name:
+                db_name = "dynamic_exec"
+            return client[db_name]["slack_files"]
+        except Exception:
+            return None
+
+    def _fetch_file_info(self, file_id: str) -> dict[str, Any]:
+        """Call files.info and return the file object dict."""
+        if not isinstance(file_id, str) or not file_id.strip():
+            raise ValueError("file_id must be a non-empty string")
+        req = request.Request(
+            f"https://slack.com/api/files.info?file={file_id}",
+            headers={"Authorization": f"Bearer {self.bot_token}"},
+            method="GET",
+        )
+        try:
+            with request.urlopen(req, timeout=20) as response:
+                body = response.read().decode("utf-8")
+        except error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise ValueError(f"Slack files.info HTTP error {exc.code}: {body}") from exc
+        except error.URLError as exc:
+            raise ValueError(f"Failed to reach Slack files.info: {exc.reason}") from exc
+        parsed = self._parse_slack_response(body)
+        return parsed.get("file") if isinstance(parsed.get("file"), dict) else {}
+
+    @staticmethod
+    def _extract_exif_dict(file_bytes: bytes, suffix: str) -> dict | None:
+        """Extract EXIF as a JSON-serializable dict from a JPEG file.
+        Returns None for non-JPEG files or when no EXIF is present.
+        """
+        if suffix.lower() not in (".jpg", ".jpeg"):
+            return None
+        try:
+            import piexif as _piexif
+            exif_dict = _piexif.load(file_bytes)
+            # Only store if there's at least one non-empty IFD
+            if not any(exif_dict.get(ifd) for ifd in ("0th", "Exif", "GPS", "1st")):
+                return None
+            # Convert bytes to strings for JSON serialization
+            def decode_bytes(obj):
+                if isinstance(obj, dict):
+                    return {k: decode_bytes(v) for k, v in obj.items()}
+                if isinstance(obj, (list, tuple)):
+                    return [decode_bytes(x) for x in obj]
+                if isinstance(obj, bytes):
+                    try:
+                        return obj.decode("utf-8", errors="replace")
+                    except Exception:
+                        return str(obj)
+                return obj
+            return {k: decode_bytes(v) for k, v in exif_dict.items()}
+        except Exception:
+            return None
+
+    @staticmethod
+    def _extract_exif_b64(file_bytes: bytes, suffix: str) -> str | None:
+        """Return the raw EXIF block from a JPEG as a base64 string, or None."""
+        if suffix.lower() not in (".jpg", ".jpeg"):
+            return None
+        try:
+            import base64 as _b64
+            import piexif as _piexif
+            exif_dict = _piexif.load(file_bytes)
+            if not any(exif_dict.get(ifd) for ifd in ("0th", "Exif", "GPS", "1st")):
+                return None
+            return _b64.b64encode(_piexif.dump(exif_dict)).decode("ascii")
+        except Exception:
+            return None
+
+    @staticmethod
+    def _reembed_exif(file_path: Path, exif_b64: str) -> None:
+        """Re-insert the stored EXIF block into a JPEG file on disk."""
+        if file_path.suffix.lower() not in (".jpg", ".jpeg"):
+            return
+        try:
+            import base64 as _b64
+            import piexif as _piexif
+            exif_bytes = _b64.b64decode(exif_b64)
+            _piexif.insert(exif_bytes, file_path.read_bytes(), str(file_path))
+        except Exception:
+            pass
+
+    def _save_file_record(
+        self,
+        local_file_path: str,
+        file_id: str | None,
+        filename: str,
+        title: str,
+        channel: str,
+        channel_id: str | None,
+        permalink: str | None,
+        url_private: str | None,
+        exif_dict: dict | None = None,
+        exif_b64: str | None = None,
+        gps: dict | None = None,
+    ) -> None:
+        """Upsert a file upload record in the MongoDB slack_files collection."""
+        collection = self._get_mongo_collection()
+        if collection is None:
+            return
+        from datetime import datetime as _datetime
+        record: dict[str, Any] = {
+            "local_file_path": local_file_path,
+            "filename": filename,
+            "title": title,
+            "channel": channel,
+            "uploaded_at": _datetime.utcnow().isoformat(),
+        }
+        if file_id is not None:
+            record["file_id"] = file_id
+        if channel_id is not None:
+            record["channel_id"] = channel_id
+        if permalink is not None:
+            record["permalink"] = permalink
+        if url_private is not None:
+            record["url_private"] = url_private
+        if exif_dict is not None:
+            record["exif_dict"] = exif_dict
+        if exif_b64 is not None:
+            record["exif_b64"] = exif_b64
+        if gps is not None:
+            record["gps"] = gps
+        try:
+            collection.update_one(
+                {"local_file_path": local_file_path},
+                {"$set": record},
+                upsert=True,
+            )
+        except Exception:
+            pass
+
+    def get_file(self, args: dict[str, Any]) -> dict[str, Any]:
+        """
+        Retrieve a file by its original local path.
+
+        If the file exists locally, returns immediately.
+        Otherwise, queries MongoDB for the Slack upload record, downloads the
+        file from Slack (url_private), and writes it to the original path.
+
+        Args: {"path": "/original/local/path/to/file.pdf"}
+        """
+        if not isinstance(args, dict):
+            raise ValueError("args must be a dict")
+        path = args.get("path")
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError("path must be a non-empty string")
+
+        local_path = Path(path.strip()).expanduser().resolve()
+
+        if local_path.exists() and local_path.is_file():
+            return {
+                "status": "success",
+                "path": str(local_path),
+                "source": "local",
+                "message": "File found locally",
+            }
+
+        collection = self._get_mongo_collection()
+        if collection is None:
+            raise ValueError(
+                "File does not exist locally and MongoDB is not available for lookup"
+            )
+
+        record = collection.find_one({"local_file_path": str(local_path)})
+        if record is None:
+            record = collection.find_one({"local_file_path": path.strip()})
+        if record is None:
+            raise ValueError(f"No file record found for path: {local_path}")
+
+        url_private = record.get("url_private")
+        if not isinstance(url_private, str) or not url_private.strip():
+            raise ValueError(
+                "File record found in MongoDB but has no url_private for Slack download"
+            )
+
+        dl_req = request.Request(
+            url_private,
+            headers={"Authorization": f"Bearer {self.bot_token}"},
+            method="GET",
+        )
+        try:
+            with request.urlopen(dl_req, timeout=60) as response:
+                file_bytes = response.read()
+        except error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise ValueError(
+                f"Failed to download file from Slack: HTTP {exc.code}: {body}"
+            ) from exc
+        except error.URLError as exc:
+            raise ValueError(
+                f"Failed to download file from Slack: {exc.reason}"
+            ) from exc
+
+        try:
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            local_path.write_bytes(file_bytes)
+        except OSError as exc:
+            raise ValueError(f"Failed to write file to {local_path}: {exc}") from exc
+
+        # Re-embed the original EXIF block if one was saved (Slack strips EXIF on upload)
+        exif_b64 = record.get("exif_b64")
+        exif_restored = False
+        if isinstance(exif_b64, str) and exif_b64:
+            self._reembed_exif(local_path, exif_b64)
+            exif_restored = True
+
+        return {
+            "status": "success",
+            "path": str(local_path),
+            "source": "slack",
+            "file_id": record.get("file_id"),
+            "permalink": record.get("permalink"),
+            "exif_restored": exif_restored,
+            "message": "File retrieved from Slack and written to original path",
+        }
+
+    def get_file_exif(self, args: dict[str, Any]) -> dict[str, Any]:
+        """
+        Return parsed EXIF data for a file — from local disk or from the
+        MongoDB slack_files record (exif_b64 field) if the file is gone.
+
+        Args: {"path": "/path/to/image.jpg"}
+
+        Returns human-readable fields including:
+          - orientation (int tag + plain label, e.g. "Rotate 90 CW")
+          - gps_latitude / gps_longitude as decimal floats
+          - gps_lat_ref / gps_lon_ref (N/S, E/W)
+          - gps_altitude (metres)
+          - gps_img_direction (compass bearing 0-360)
+          - gps_img_direction_ref ("T" = True North, "M" = Magnetic)
+          - google_maps_url  (when GPS coords are available)
+          - make, model, datetime_original, software
+        """
+        if not isinstance(args, dict):
+            raise ValueError("args must be a dict")
+        path = args.get("path")
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError("path must be a non-empty string")
+
+        try:
+            import base64 as _b64
+            import piexif as _piexif
+        except ImportError:
+            raise ValueError("piexif is required for EXIF parsing")
+
+        local_path = Path(path.strip()).expanduser().resolve()
+        exif_dict: dict[str, Any] | None = None
+        loaded_from_disk = False
+
+        # Try loading from the local file first
+        if local_path.exists() and local_path.is_file():
+            try:
+                exif_dict = _piexif.load(str(local_path))
+                loaded_from_disk = True
+            except Exception:
+                exif_dict = None
+
+        # Fall back to the base64 blob stored in MongoDB
+        if exif_dict is None:
+            collection = self._get_mongo_collection()
+            if collection is not None:
+                record = collection.find_one({"local_file_path": str(local_path)})
+                if record is None:
+                    record = collection.find_one({"local_file_path": path.strip()})
+                if record and isinstance(record.get("exif_b64"), str):
+                    try:
+                        raw = _b64.b64decode(record["exif_b64"])
+                        exif_dict = _piexif.load(raw)
+                    except Exception:
+                        exif_dict = None
+
+        # If EXIF was read from disk and MongoDB record is missing exif_b64, backfill it now
+        if loaded_from_disk and exif_dict is not None:
+            try:
+                collection = self._get_mongo_collection()
+                if collection is not None:
+                    existing = collection.find_one(
+                        {"local_file_path": str(local_path)},
+                        {"_id": 1, "exif_b64": 1},
+                    )
+                    if existing is not None and not existing.get("exif_b64"):
+                        exif_b64 = self._extract_exif_b64(
+                            local_path.read_bytes(), local_path.suffix
+                        )
+                        if exif_b64:
+                            collection.update_one(
+                                {"local_file_path": str(local_path)},
+                                {"$set": {"exif_b64": exif_b64}},
+                            )
+            except Exception:
+                pass
+
+        if exif_dict is None:
+            return {
+                "status": "success",
+                "path": str(local_path),
+                "exif": None,
+                "message": "No EXIF data found for this file",
+            }
+
+        def _rational_to_float(value: Any) -> float | None:
+            """Convert piexif rational (numerator, denominator) to float."""
+            if isinstance(value, (list, tuple)) and len(value) == 2:
+                num, den = value
+                return float(num) / float(den) if den else None
+            return None
+
+        def _dms_to_decimal(dms: Any, ref: bytes | str) -> float | None:
+            """Convert DMS rational tuple list to signed decimal degrees."""
+            if not isinstance(dms, (list, tuple)) or len(dms) != 3:
+                return None
+            try:
+                d = _rational_to_float(dms[0])
+                m = _rational_to_float(dms[1])
+                s = _rational_to_float(dms[2])
+                if d is None or m is None or s is None:
+                    return None
+                decimal = d + m / 60.0 + s / 3600.0
+                ref_str = ref.decode("ascii") if isinstance(ref, bytes) else str(ref)
+                if ref_str.upper() in ("S", "W"):
+                    decimal = -decimal
+                return round(decimal, 8)
+            except Exception:
+                return None
+
+        _ORIENTATION_LABELS = {
+            1: "Normal",
+            2: "Mirror horizontal",
+            3: "Rotate 180",
+            4: "Mirror vertical",
+            5: "Mirror horizontal, Rotate 270 CW",
+            6: "Rotate 90 CW",
+            7: "Mirror horizontal, Rotate 90 CW",
+            8: "Rotate 270 CW",
+        }
+
+        ifd0 = exif_dict.get("0th", {})
+        exif_ifd = exif_dict.get("Exif", {})
+        gps_ifd = exif_dict.get("GPS", {})
+
+        # --- Orientation ---
+        orientation_tag = ifd0.get(_piexif.ImageIFD.Orientation)
+        orientation_label = _ORIENTATION_LABELS.get(orientation_tag)
+
+        # --- Basic metadata ---
+        def _decode(val: Any) -> str | None:
+            if isinstance(val, bytes):
+                return val.decode("utf-8", errors="replace").strip().rstrip("\x00")
+            return str(val) if val is not None else None
+
+        make = _decode(ifd0.get(_piexif.ImageIFD.Make))
+        model = _decode(ifd0.get(_piexif.ImageIFD.Model))
+        software = _decode(ifd0.get(_piexif.ImageIFD.Software))
+        datetime_original = _decode(exif_ifd.get(_piexif.ExifIFD.DateTimeOriginal))
+
+        # --- GPS ---
+        lat_raw = gps_ifd.get(_piexif.GPSIFD.GPSLatitude)
+        lat_ref = gps_ifd.get(_piexif.GPSIFD.GPSLatitudeRef)
+        lon_raw = gps_ifd.get(_piexif.GPSIFD.GPSLongitude)
+        lon_ref = gps_ifd.get(_piexif.GPSIFD.GPSLongitudeRef)
+        alt_raw = gps_ifd.get(_piexif.GPSIFD.GPSAltitude)
+        alt_ref = gps_ifd.get(_piexif.GPSIFD.GPSAltitudeRef)  # 0=above, 1=below sea level
+        direction_raw = gps_ifd.get(_piexif.GPSIFD.GPSImgDirection)
+        direction_ref = gps_ifd.get(_piexif.GPSIFD.GPSImgDirectionRef)
+
+        lat = _dms_to_decimal(lat_raw, lat_ref or b"N") if lat_raw else None
+        lon = _dms_to_decimal(lon_raw, lon_ref or b"E") if lon_raw else None
+        alt = _rational_to_float(alt_raw)
+        if alt is not None and alt_ref == 1:
+            alt = -alt
+        direction = _rational_to_float(direction_raw)
+        direction_ref_str = direction_ref.decode("ascii").strip() if isinstance(direction_ref, bytes) else None
+
+        maps_url: str | None = None
+        if lat is not None and lon is not None:
+            maps_url = f"https://maps.google.com/?q={lat},{lon}"
+
+        result: dict[str, Any] = {
+            "status": "success",
+            "path": str(local_path),
+            "exif": {
+                "orientation": orientation_tag,
+                "orientation_label": orientation_label,
+                "make": make,
+                "model": model,
+                "software": software,
+                "datetime_original": datetime_original,
+                "gps_latitude": lat,
+                "gps_latitude_ref": _decode(lat_ref),
+                "gps_longitude": lon,
+                "gps_longitude_ref": _decode(lon_ref),
+                "gps_altitude_m": round(alt, 2) if alt is not None else None,
+                "gps_img_direction": round(direction, 2) if direction is not None else None,
+                "gps_img_direction_ref": direction_ref_str,
+                "google_maps_url": maps_url,
+            },
+        }
+        return result
+
+    def backfill_exif(self, args: dict[str, Any] | None = None) -> dict[str, Any]:
+        """
+        Retroactively extract and save EXIF data into MongoDB for all slack_files
+        records that are missing the exif_b64 field AND whose local file is still
+        on disk.
+
+        Safe to call multiple times — skips records that already have exif_b64.
+
+        Args: {} (no arguments required)
+        Returns: counts of updated, skipped, and failed records.
+        """
+        collection = self._get_mongo_collection()
+        if collection is None:
+            raise ValueError("MongoDB is not available")
+
+        updated = 0
+        skipped_no_file = 0
+        skipped_no_exif = 0
+        skipped_already_set = 0
+        failed = 0
+
+        try:
+            cursor = collection.find(
+                {"exif_b64": {"$exists": False}},
+                {"_id": 1, "local_file_path": 1},
+            )
+            records = list(cursor)
+        except Exception as exc:
+            raise ValueError(f"Failed to query MongoDB: {exc}") from exc
+
+        for rec in records:
+            local_file_path = rec.get("local_file_path", "")
+            file_path = Path(local_file_path)
+            if not file_path.exists() or not file_path.is_file():
+                skipped_no_file += 1
+                continue
+            try:
+                file_bytes = file_path.read_bytes()
+                exif_b64 = self._extract_exif_b64(file_bytes, file_path.suffix)
+                if exif_b64 is None:
+                    skipped_no_exif += 1
+                    continue
+                collection.update_one(
+                    {"_id": rec["_id"]},
+                    {"$set": {"exif_b64": exif_b64}},
+                )
+                updated += 1
+            except Exception:
+                failed += 1
+
+        return {
+            "status": "success",
+            "updated": updated,
+            "skipped_file_not_on_disk": skipped_no_file,
+            "skipped_no_exif_in_file": skipped_no_exif,
+            "failed": failed,
+            "message": f"Backfill complete. {updated} record(s) updated.",
+        }

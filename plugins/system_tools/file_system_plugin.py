@@ -124,3 +124,5 @@ class FileSystemPlugin:
             "type": "directory" if target.is_dir() else "file",
             "size_bytes": target.stat().st_size if target.is_file() else None,
         }
+
+
