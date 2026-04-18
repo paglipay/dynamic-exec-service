@@ -845,39 +845,83 @@ class SlackPlugin:
 
     def get_file(self, args: dict[str, Any]) -> dict[str, Any]:
         """
-        Retrieve a file by its original local path.
+        Retrieve a file by its original local path, or by filename (+ optional channel).
 
         If the file exists locally, returns immediately.
         Otherwise, queries MongoDB for the Slack upload record, downloads the
         file from Slack (url_private), and writes it to the original path.
 
-        Args: {"path": "/original/local/path/to/file.pdf"}
+        Args (one of the following):
+          {"path": "/original/local/path/to/file.pdf"}
+          {"filename": "Soto_test00C.jpg"}
+          {"filename": "Soto_test00C.jpg", "channel": "C123ABC"}
         """
         if not isinstance(args, dict):
             raise ValueError("args must be a dict")
         path = args.get("path")
-        if not isinstance(path, str) or not path.strip():
-            raise ValueError("path must be a non-empty string")
+        filename = args.get("filename")
+        channel = args.get("channel")
 
-        local_path = Path(path.strip()).expanduser().resolve()
+        # Require at least one of path or filename
+        has_path = isinstance(path, str) and path.strip()
+        has_filename = isinstance(filename, str) and filename.strip()
+        if not has_path and not has_filename:
+            raise ValueError("args must include either 'path' or 'filename'")
 
-        if local_path.exists() and local_path.is_file():
-            return {
-                "status": "success",
-                "path": str(local_path),
-                "source": "local",
-                "message": "File found locally",
-            }
+        # --- Path-based lookup (original behaviour) ---
+        if has_path:
+            local_path = Path(path.strip()).expanduser().resolve()
 
-        collection = self._get_mongo_collection()
-        if collection is None:
-            raise ValueError(
-                "File does not exist locally and MongoDB is not available for lookup"
-            )
+            if local_path.exists() and local_path.is_file():
+                return {
+                    "status": "success",
+                    "path": str(local_path),
+                    "source": "local",
+                    "message": "File found locally",
+                }
 
-        record = collection.find_one({"local_file_path": str(local_path)})
-        if record is None:
-            record = collection.find_one({"local_file_path": path.strip()})
+            collection = self._get_mongo_collection()
+            if collection is None:
+                raise ValueError(
+                    "File does not exist locally and MongoDB is not available for lookup"
+                )
+
+            record = collection.find_one({"local_file_path": str(local_path)})
+            if record is None:
+                record = collection.find_one({"local_file_path": path.strip()})
+        else:
+            # --- Filename (+ optional channel) lookup ---
+            collection = self._get_mongo_collection()
+            if collection is None:
+                raise ValueError(
+                    "MongoDB is not available for filename-based lookup"
+                )
+
+            query: dict[str, Any] = {"filename": filename.strip()}
+            if isinstance(channel, str) and channel.strip():
+                query["channel"] = channel.strip()
+
+            record = collection.find_one(query, sort=[("uploaded_at", -1)])
+
+            if record is None:
+                raise ValueError(
+                    f"No file record found for filename={filename!r}"
+                    + (f" channel={channel!r}" if channel else "")
+                )
+
+            # Derive local_path from the stored record
+            stored_path = record.get("local_file_path", "")
+            local_path = Path(stored_path).expanduser().resolve() if stored_path else None
+
+            # If the file is already on disk at its recorded location, return it
+            if local_path and local_path.exists() and local_path.is_file():
+                return {
+                    "status": "success",
+                    "path": str(local_path),
+                    "source": "local",
+                    "message": "File found locally",
+                }
+
         if record is None:
             raise ValueError(f"No file record found for path: {local_path}")
 
