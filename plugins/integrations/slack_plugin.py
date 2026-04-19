@@ -1477,10 +1477,14 @@ class SlackPlugin:
             local_path = Path(path.strip()).expanduser().resolve()
             if local_path.exists() and local_path.is_file():
                 try:
-                    exif_dict = _piexif.load(str(local_path))
-                    loaded_from_disk = True
+                    _disk_exif = _piexif.load(str(local_path))
+                    # Only accept if at least one IFD has real tags —
+                    # Slack-stripped files return all-empty IFDs and must fall through to MongoDB
+                    if any(_disk_exif.get(ifd) for ifd in ("0th", "Exif", "GPS", "1st")):
+                        exif_dict = _disk_exif
+                        loaded_from_disk = True
                 except Exception:
-                    exif_dict = None
+                    pass
 
         # Fall back to the base64 blob stored in MongoDB
         if exif_dict is None:
