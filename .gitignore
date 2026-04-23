@@ -90,3 +90,12 @@ Thumbs.db
 *.gif
 *.bmp
 *.tiff
+
+#Video files
+*.mp4
+*.avi
+*.mov
+*.wmv
+
+# Archive files
+*.zip
