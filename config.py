@@ -164,6 +164,9 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "request_modal_with_button",
             "upload_text_file",
             "upload_local_file",
+            "get_file",
+            "get_file_exif",
+            "backfill_exif",
         ],
     },
     "plugins.integrations.openai_http_plugin": {
@@ -187,6 +190,7 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "generate_with_function_calls",
             "generate_with_function_calls_and_history",
             "redis_health_check",
+            "clear_conversation_history",
         ],
     },
     "plugins.integrations.pika_plugin": {
@@ -217,6 +221,52 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
         "methods": [
             "upsert_text_file",
             "commit_streamlit_app",
+        ],
+    },
+    "plugins.integrations.web_search_plugin": {
+        "class": "WebSearchPlugin",
+        "methods": [
+            "web_search",
+            "search_near_address",
+            "search_image_context",
+        ],
+    },
+    "plugins.system_tools.media_storage_plugin": {
+        "class": "MediaStoragePlugin",
+        "methods": [
+            "list_files",
+            "delete_file",
+            "list_staged",
+            "clear_staged",
+            "remove_staged_file",
+            "zip_files",
+        ],
+    },
+    "plugins.system_tools.file_reader_plugin": {
+        "class": "FileReaderPlugin",
+        "methods": [
+            "list_directory",
+            "read_text_file",
+            "read_pdf_text",
+            "read_docx_text",
+            "parse_csv_tsv",
+            "summarize_excel",
+            "read_image_for_vision",
+            "read_image_gps",
+        ],
+    },
+    "plugins.system_tools.image_processing_plugin": {
+        "class": "ImageProcessingPlugin",
+        "methods": [
+            "geocode_address",
+            "reverse_geocode",
+            "get_lat_lon",
+            "find_nearest_site",
+            "detect_objects",
+            "classify_project",
+            "process_and_store",
+            "tag_image",
+            "scan_folder",
         ],
     },
 }

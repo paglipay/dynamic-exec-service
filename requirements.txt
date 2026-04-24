@@ -1,4 +1,5 @@
 flask
+flask-cors
 gunicorn
 paramiko
 slackeventsapi
@@ -17,3 +18,6 @@ google-api-python-client
 google-auth
 google-auth-oauthlib
 pymongo
+Pillow
+hachoir
+piexif

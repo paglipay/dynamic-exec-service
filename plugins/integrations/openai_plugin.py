@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from typing import Any
 from uuid import uuid4
 
@@ -24,7 +25,7 @@ class OpenAIFunctionCallingPlugin:
 
     _conversation_store: dict[str, list[dict[str, Any]]] = {}
     _conversation_redis_prefix = "openai_function_calling:conversation"
-    _slack_images_root = "generated_data/slack_downloads"
+    _slack_images_root = os.getenv("BASE_DATA_DIR", "generated_data") + "/slack_downloads"
 
     def __init__(self, api_key: str | None = None) -> None:
         resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
@@ -174,6 +175,91 @@ class OpenAIFunctionCallingPlugin:
 
         diagnostics["message"] = "Redis connectivity and write/read checks passed"
         return diagnostics
+
+    def clear_conversation_history(self, conversation_id: str) -> dict[str, Any]:
+        """Clear stored conversation history for one conversation or all.
+
+        Args:
+            conversation_id: The conversation key to clear (e.g. "slack:C12345").
+                             Pass "*" to delete ALL conversation keys under the prefix.
+
+        Returns a dict with ``status``, ``backend``, ``cleared_count``, and
+        optionally ``cleared_keys`` listing what was removed.
+        """
+        if not isinstance(conversation_id, str) or not conversation_id.strip():
+            raise ValueError("conversation_id must be a non-empty string, or '*' to clear all")
+
+        conversation_id = conversation_id.strip()
+        redis_client = getattr(self, "_redis_client", None)
+        backend = "redis" if redis_client is not None else "memory"
+
+        if conversation_id == "*":
+            # Clear everything under this plugin's conversation prefix.
+            if redis_client is not None:
+                pattern = f"{self._conversation_redis_prefix}:*"
+                cursor = 0
+                cleared_keys: list[str] = []
+                try:
+                    while True:
+                        cursor, batch = redis_client.scan(cursor, match=pattern, count=100)
+                        if batch:
+                            redis_client.delete(*batch)
+                            cleared_keys.extend(batch)
+                        if cursor == 0:
+                            break
+                except Exception as exc:
+                    return {
+                        "status": "error",
+                        "backend": backend,
+                        "message": f"Redis scan/delete failed: {exc}",
+                    }
+                return {
+                    "status": "success",
+                    "backend": backend,
+                    "cleared_count": len(cleared_keys),
+                    "cleared_keys": cleared_keys,
+                }
+            else:
+                store = getattr(self, "_conversation_store", {})
+                count = len(store)
+                keys = list(store.keys())
+                store.clear()
+                return {
+                    "status": "success",
+                    "backend": backend,
+                    "cleared_count": count,
+                    "cleared_keys": keys,
+                }
+
+        # Clear a single specific conversation.
+        if redis_client is not None:
+            redis_key = self._conversation_history_key(conversation_id)
+            try:
+                deleted = redis_client.delete(redis_key)
+            except Exception as exc:
+                return {
+                    "status": "error",
+                    "backend": backend,
+                    "message": f"Redis delete failed: {exc}",
+                }
+            return {
+                "status": "success",
+                "backend": backend,
+                "conversation_id": conversation_id,
+                "cleared_count": int(deleted),
+                "existed": bool(deleted),
+            }
+        else:
+            store = getattr(self, "_conversation_store", {})
+            existed = conversation_id in store
+            store.pop(conversation_id, None)
+            return {
+                "status": "success",
+                "backend": backend,
+                "conversation_id": conversation_id,
+                "cleared_count": 1 if existed else 0,
+                "existed": existed,
+            }
 
     def _build_tool_mapping(self) -> dict[str, tuple[str, str, str]]:
         """Build a deterministic mapping from tool names to allowlisted targets."""
@@ -374,6 +460,126 @@ class OpenAIFunctionCallingPlugin:
                 "Example: ['A friendly robot coding', 'gpt-image-1', '1024x1024', 'high', 'opaque', 'png', 'robot_coding']."
             )
 
+        if (
+            module_name == "plugins.system_tools.media_storage_plugin"
+            and class_name == "MediaStoragePlugin"
+        ):
+            base = "Use constructor_args: {\"base_dir\": \"data\"}. "
+            if method_name == "list_files":
+                return (
+                    base +
+                    "List files in generated_data storage. "
+                    "Use args: [folder_or_empty_string]. Empty string lists the root. "
+                    "Result entries include 'relative_path' relative to generated_data/. "
+                    "To get the full path for upload, prepend 'generated_data/' to relative_path."
+                )
+            if method_name == "delete_file":
+                return base + "Delete a file. Use args: [relative_path_within generated_data]."
+            if method_name == "list_staged":
+                return base + "List staged files for a session. Use args: [session_id]."
+            if method_name == "clear_staged":
+                return base + "Clear all staged files for a session. Use args: [session_id]."
+            if method_name == "remove_staged_file":
+                return base + "Remove one staged file. Use args: [session_id, filename]."
+            if method_name == "zip_files":
+                return (
+                    base +
+                    "Zip files already stored in generated_data into a downloadable archive. "
+                    "Use this whenever the user asks to zip files. No staging session required. "
+                    "Use args: [file_paths_list, zip_name_or_empty_string]. "
+                    "file_paths_list is a list of relative_path values from list_files (e.g. ['01.mp4', '01A.jpg']). "
+                    "The result includes 'local_path' — pass that directly to SlackPlugin.upload_local_file as file_path."
+                )
+
+        if (
+            module_name == "plugins.system_tools.file_reader_plugin"
+            and class_name == "FileReaderPlugin"
+        ):
+            base = "Use constructor_args: {\"base_dir\": \"data\"}. "
+            if method_name == "list_directory":
+                return (
+                    base +
+                    "List files in generated_data/. "
+                    "Use args: [relative_subdirectory_or_dot]. "
+                    "'.' lists the root of generated_data. 'slack_downloads' lists Slack files. "
+                    "Result entries include 'relative_path' relative to generated_data/. "
+                    "To get the full path for Slack upload, use 'generated_data/' + relative_path."
+                )
+            if method_name == "read_text_file":
+                return base + "Read a text/markdown/csv/tsv file. Use args: [file_path, max_chars_or_20000]."
+            if method_name == "read_pdf_text":
+                return base + "Extract text from a PDF file. Use args: [file_path, max_chars_or_20000]."
+            if method_name == "read_docx_text":
+                return base + "Extract text from a DOCX file. Use args: [file_path, max_chars_or_20000]."
+            if method_name == "parse_csv_tsv":
+                return base + "Parse a CSV or TSV file. Use args: [file_path, max_rows_or_25, delimiter_or_auto]."
+            if method_name == "summarize_excel":
+                return base + "Summarize an Excel workbook. Use args: [file_path, max_preview_rows_or_5]."
+            if method_name == "read_image_for_vision":
+                return (
+                    "Read an image file and return a base64 data_url for vision analysis. "
+                    "No constructor_args needed. "
+                    "Use args: [file_path, max_long_edge_or_1024]. "
+                    "file_path is the path as shown in the upload notification or list_files result, e.g. "
+                    "'generated_data/staging/<session_id>/photo.jpg' or 'generated_data/photo.jpg' or "
+                    "'generated_data/slack_downloads/image.png'. "
+                    "Use the EXACT path from the [System event] or tool result — do not shorten or guess it. "
+                    "The result contains a 'data_url' field; pass it directly to vision reasoning to describe the image."
+                )
+            if method_name == "read_image_gps":
+                return (
+                    "Read GPS coordinates AND all EXIF metadata from a JPEG image file. "
+                    "Use this tool — and ONLY this tool — when the user asks about EXIF data, location, GPS, "
+                    "camera details, when a photo was taken, or any image metadata. "
+                    "Do NOT also call read_image_for_vision for metadata questions — this tool is self-contained. "
+                    "No constructor_args needed. "
+                    "Use args: [file_path]. "
+                    "Use the EXACT file path from the upload notification or list_files result. "
+                    "Returns lat, lon, has_gps, and an 'exif' dict with all decoded fields (Make, Model, DateTime, ExposureTime, ISO, etc.). "
+                    "Do NOT use ImageProcessingPlugin for GPS — it is slow due to database connections."
+                )
+
+        if (
+            module_name == "plugins.system_tools.file_system_plugin"
+            and class_name == "FileSystemPlugin"
+            and method_name == "list_directory"
+        ):
+            return (
+                "List files inside generated_data/. "
+                "Use constructor_args: {\"base_dir\": \"data\"}. "
+                "Use args: [relative_subdirectory_or_dot]. "
+                "Do NOT use this to list upload files; use MediaStoragePlugin.list_files instead."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
+            and method_name == "upload_local_file"
+        ):
+            return (
+                "Upload a local file to a Slack channel. "
+                "Use args: [file_path, channel, title_or_null, initial_comment_or_null]. "
+                "For 'channel', always use the channel ID from [slack_channel_id: ...] in the current message — "
+                "do NOT pass null; pass the explicit channel ID so the bot can upload to the right place. "
+                "Example: if the message contains '[slack_channel_id: C08SH2VRPJL]', use 'C08SH2VRPJL' as channel. "
+                "file_path must be the path relative to the app working directory, e.g. "
+                "'generated_data/photo.jpg' or 'generated_data/device_image_proper.md'. "
+                "Obtain the path from list_files or list_directory result entries "
+                "by prepending 'generated_data/' to the relative_path field. "
+                "Do not invent paths; always look up the path from a prior tool result."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
+            and method_name == "post_message"
+        ):
+            return (
+                "Post a text message to a Slack channel. "
+                "Use args: [channel, text]. "
+                "channel can be a channel name like '#network' or a channel ID like 'C123ABC'."
+            )
+
         return (
             f"Call plugin method {module_name}::{class_name}.{method_name}. "
             "Provide constructor_args and args when needed."
@@ -476,12 +682,13 @@ class OpenAIFunctionCallingPlugin:
         messages: list[dict[str, Any]],
         model: str,
         max_tool_rounds: int,
-    ) -> tuple[str, int]:
+    ) -> tuple[str, int, list[str]]:
         """Run function-calling rounds until final assistant text is produced."""
         tools = self._build_tools()
         executed_tool_calls = 0
+        analyzed_image_paths: list[str] = []
 
-        for _ in range(max_tool_rounds):
+        for round_num in range(max_tool_rounds):
             try:
                 response = self.client.chat.completions.create(
                     model=model,
@@ -495,20 +702,42 @@ class OpenAIFunctionCallingPlugin:
             choice = response.choices[0]
             message = choice.message
             tool_calls = message.tool_calls or []
+            content = message.content or ""
+
+            # Log each round for debugging
+            print(f"[OpenAI][Round {round_num+1}/{max_tool_rounds}] tools_called={len(tool_calls)}, content_len={len(content)}", file=sys.stderr)
+            if tool_calls:
+                tool_names = [tc.function.name for tc in tool_calls]
+                print(f"[OpenAI][Round {round_num+1}] tool_calls: {tool_names}", file=sys.stderr)
 
             if tool_calls:
                 messages.append(
                     {
                         "role": "assistant",
-                        "content": message.content or "",
+                        "content": content,
                         "tool_calls": [tc.model_dump() for tc in tool_calls],
                     }
                 )
                 for tool_call in tool_calls:
                     tool_name = tool_call.function.name
                     tool_args = tool_call.function.arguments or "{}"
-                    tool_output = self._execute_tool_call(tool_name, tool_args)
-                    executed_tool_calls += 1
+                    try:
+                        tool_output = self._execute_tool_call(tool_name, tool_args)
+                        executed_tool_calls += 1
+                        print(f"[OpenAI][Round {round_num+1}] {tool_name} executed successfully", file=sys.stderr)
+                    except Exception as tool_exc:
+                        print(f"[OpenAI][Round {round_num+1}] {tool_name} failed: {tool_exc}", file=sys.stderr)
+                        tool_output = json.dumps({"error": str(tool_exc)})
+                    # Track file paths passed to read_image_for_vision so callers can
+                    # build MongoDB metadata for images from any upload source.
+                    _tgt = self._tool_name_to_target.get(tool_name, ("", "", ""))
+                    if _tgt[2] == "read_image_for_vision":
+                        try:
+                            _targs = json.loads(tool_args).get("args", [])
+                            if _targs and isinstance(_targs[0], str) and _targs[0]:
+                                analyzed_image_paths.append(_targs[0])
+                        except Exception:
+                            pass
                     messages.append(
                         {
                             "role": "tool",
@@ -516,18 +745,52 @@ class OpenAIFunctionCallingPlugin:
                             "content": tool_output,
                         }
                     )
+                    # If the tool returned an image data_url, inject it as a user
+                    # vision message so the model can actually see the image.
+                    try:
+                        tool_result_parsed = json.loads(tool_output)
+                        data_url = (
+                            tool_result_parsed.get("result", {}).get("data_url")
+                            if isinstance(tool_result_parsed.get("result"), dict)
+                            else None
+                        )
+                        if isinstance(data_url, str) and data_url.startswith("data:image/"):
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {
+                                            "type": "text",
+                                            "text": "Here is the image content for your analysis:",
+                                        },
+                                        {
+                                            "type": "image_url",
+                                            "image_url": {"url": data_url},
+                                        },
+                                    ],
+                                }
+                            )
+                    except Exception:
+                        pass
                 continue
 
             final_text = message.content or ""
             if final_text.strip():
+                print(f"[OpenAI][Round {round_num+1}] Got final response: {len(final_text)} chars", file=sys.stderr)
                 messages.append(
                     {
                         "role": "assistant",
                         "content": final_text.strip(),
                     }
                 )
-                return final_text.strip(), executed_tool_calls
+                return final_text.strip(), executed_tool_calls, analyzed_image_paths
+            else:
+                # Model returned neither tool calls nor content — nudge it to produce
+                # a final reply so the next round has new context to act on.
+                print(f"[OpenAI][Round {round_num+1}] No content and no tool_calls — injecting finalization nudge", file=sys.stderr)
+                messages.append({"role": "user", "content": "Please provide your final answer now."})
 
+        print(f"[OpenAI] Max rounds ({max_tool_rounds}) exceeded without final response", file=sys.stderr)
         raise ValueError("Exceeded max tool-calling rounds without a final response")
 
     def _build_system_prompt(self) -> str:
@@ -539,14 +802,43 @@ class OpenAIFunctionCallingPlugin:
             "If a user provides a local file path, do not claim you cannot access local files; call the appropriate tool instead. "
             "For plugin tool calls, put method inputs inside 'args' as positional arguments; "
             "when a plugin method accepts a payload object, pass it as args[0]. "
-            "If the user asks to send an email attachment, include attachment file paths in Gmail send_email args. "
+            "\nImage handling rules:"
+            "\n  0. FILE SHARED WITH NO EXPLICIT REQUEST: if the user uploaded or shared a file without "
+            "asking for analysis, EXIF data, or a description — acknowledge receipt briefly "
+            "(e.g. 'Got it! Let me know what you need.'). Even though image pixels are present in context, "
+            "do NOT describe or analyze the image. Do NOT call read_image_gps. Wait for the user to ask "
+            "something specific. Use conversation context to judge intent — if the user's message (including "
+            "typos or paraphrases) is asking for visual analysis, proceed with rule 2."
+            "\n  1. EXIF/METADATA REQUESTS (EXIF, GPS, location, coordinates, camera make/model, 'when was this taken', "
+            "'date taken', 'show image data', 'show metadata'): "
+            "call FileReaderPlugin.read_image_gps with the saved local file path immediately. "
+            "The saved path is listed under 'Saved local image copies' in the context. "
+            "Do NOT describe visual content. Do NOT ask the user first. read_image_gps is self-contained."
+            "\n  2. VISUAL ANALYSIS REQUESTS (describe, what is shown, analyze, identify, what do you see, "
+            "'analize', 'analyse', or any paraphrase requesting you to look at or explain the image): "
+            "call FileReaderPlugin.read_image_gps first to get EXIF/metadata, then use the image pixels "
+            "already provided in context for the visual description. "
+            "Include both the EXIF summary and the visual description in your reply."
+            "\n  3. ALL OTHER REQUESTS (file info, storage, questions unrelated to image content): "
+            "do not analyze image pixels. Use the saved file path and metadata only. "
+            "Never proactively describe an image unless the user explicitly asks."
+            "\nImage pixels are always included in context when images are attached. Whether to use them "
+            "depends entirely on what the user is asking — use your judgment based on the conversation. "
+            "\n\nStorage layout (relative to the app working directory):\n"
+            "- generated_data/ : all files — uploads, staging sessions, Slack downloads, processed files, and notes. "
+            "Use MediaStoragePlugin (constructor_args: {\"base_dir\": \"data\"}) to list or manage upload files. "
+            "list_files returns entries with a 'relative_path' field; prepend 'generated_data/' to get the full path.\n"
+            "Use FileReaderPlugin (constructor_args: {\"base_dir\": \"data\"}) to read files here. "
+            "list_directory returns entries with a 'relative_path' field; prepend 'generated_data/' to get the full path. "
+            "Slack image attachments are saved under 'generated_data/slack_downloads/'.\n"
+            "\nWhen uploading a file to Slack with upload_local_file, the file_path arg must be the "
+            "full relative path constructed from the tool result (e.g. 'generated_data/photo.jpg'). "
+            "Always look up the path from a prior list_files or list_directory call — never invent it. "
+            "\n\nIf the user asks to send an email attachment, include attachment file paths in Gmail send_email args. "
             "Do not claim an attachment was sent unless the Gmail tool result shows attachment_count > 0. "
             "For MongoDB write tools, do not claim a document was created/updated/replaced unless the tool result proves it. "
             "Require inserted_id for create_document. "
-            "Require operation_result != 'no_match' for update_documents and replace_document. "
-            "Slack image attachments are saved locally under "
-            f"'{self._slack_images_root}/' as a flat directory by the app. "
-            "If the user asks to reference or locate Slack images, use this directory convention."
+            "Require operation_result != 'no_match' for update_documents and replace_document."
         )
 
     def _build_user_message(
@@ -600,7 +892,7 @@ class OpenAIFunctionCallingPlugin:
             self._build_user_message(prompt, image_data_urls),
         ]
 
-        final_text, executed_tool_calls = self._execute_chat_turn(
+        final_text, executed_tool_calls, _ = self._execute_chat_turn(
             messages,
             model.strip(),
             max_tool_rounds,
@@ -612,6 +904,29 @@ class OpenAIFunctionCallingPlugin:
             "text": final_text,
             "tool_calls_executed": executed_tool_calls,
         }
+
+    @staticmethod
+    def _strip_image_urls_from_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Return messages with image_url content removed, keeping only text.
+
+        Prevents base64 image pixels from being persisted in conversation history,
+        which would give the model vision access on every subsequent request.
+        """
+        stripped = []
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                text_parts = [
+                    part for part in content
+                    if isinstance(part, dict) and part.get("type") == "text"
+                ]
+                if text_parts:
+                    text_only = " ".join(p.get("text", "") for p in text_parts).strip()
+                    stripped.append({**msg, "content": text_only})
+                # Skip messages that were purely image_url (no text) — they carry no useful history
+            else:
+                stripped.append(msg)
+        return stripped
 
     def generate_with_function_calls_and_history(
         self,
@@ -644,19 +959,19 @@ class OpenAIFunctionCallingPlugin:
             isinstance(message, dict)
             and message.get("role") == "system"
             and isinstance(message.get("content"), str)
-            and "Slack image attachments are saved locally" in message.get("content", "")
+            and "generated_data/" in message.get("content", "")
             for message in messages
         ):
             messages.insert(0, {"role": "system", "content": self._build_system_prompt()})
         messages.append(self._build_user_message(prompt, image_data_urls))
 
-        final_text, executed_tool_calls = self._execute_chat_turn(
+        final_text, executed_tool_calls, analyzed_image_paths = self._execute_chat_turn(
             messages,
             model.strip(),
             max_tool_rounds,
         )
 
-        self._save_conversation_history(key, messages)
+        self._save_conversation_history(key, self._strip_image_urls_from_messages(messages))
         stored_messages = self._load_conversation_history(key)
         _, compaction_meta_after_turn = history_manager.compact(stored_messages)
 
@@ -672,4 +987,5 @@ class OpenAIFunctionCallingPlugin:
                 or compaction_meta_after_turn.get("compacted")
             ),
             "history_estimated_tokens": compaction_meta_after_turn.get("after_estimated_tokens"),
+            "analyzed_image_paths": analyzed_image_paths,
         }

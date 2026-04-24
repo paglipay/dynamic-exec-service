@@ -75,8 +75,8 @@ def test_extract_slack_file_context_summarizes_excel_attachment(monkeypatch, tmp
     monkeypatch.setattr(app_module, "_download_slack_binary_file", lambda *_args, **_kwargs: (b"excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
     monkeypatch.setattr(app_module, "_save_slack_excel_copy", lambda *_args, **_kwargs: str(saved_excel))
     monkeypatch.setattr(
-        app_module,
-        "_summarize_slack_excel_file",
+        app_module._file_reader_plugin,
+        "summarize_excel",
         lambda *_args, **_kwargs: {
             "file_path": str(saved_excel),
             "sheet_count": 1,

@@ -10,15 +10,20 @@ import io
 import json
 import os
 import re
+import shutil
+import tempfile
 import threading
 import time
+import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib import error as urlerror, request as urlrequest
 from urllib.parse import urljoin
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
+from werkzeug.utils import secure_filename
 from slackeventsapi import SlackEventAdapter
 try:
     import redis  # type: ignore[import-not-found]
@@ -40,8 +45,14 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     fitz = None  # type: ignore[assignment]
 
+try:
+    from PIL import Image as _PILImage  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover - optional dependency
+    _PILImage = None  # type: ignore[assignment]
+
 from executor.engine import JSONExecutor
 from executor.permissions import validate_request
+from flask_cors import CORS
 
 
 
@@ -51,15 +62,24 @@ env_path = Path(".") / ".env"
 load_dotenv(dotenv_path=env_path)
 signing_secret = os.getenv("SIGNING_SECRET")
 
+# Allow cross-origin requests. Configure CORS_ALLOWED_ORIGINS in .env to
+# restrict to specific origins (comma-separated). Defaults to "*" so the
+# app works without extra config, but you can lock it down in production.
+_cors_origins_env = os.getenv("CORS_ALLOWED_ORIGINS", "*").strip()
+_cors_origins: list[str] | str = (
+    [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
+    if _cors_origins_env != "*"
+    else "*"
+)
+CORS(app, origins=_cors_origins, supports_credentials=True)
+
 # --- DEBUG WRAPPER FOR /slack/events ---
 from flask import Response
 @app.before_request
 def log_slack_events():
     if request.path == "/slack/events":
-        # Debug logging for /slack/events can be enabled here if needed
         if not request.data or not request.get_data(as_text=True).strip():
             return Response("Missing or empty request body", status=400)
-        # Optionally handle Slack url_verification
         content_type = request.headers.get("Content-Type", "")
         if "application/x-www-form-urlencoded" in content_type:
             from urllib.parse import parse_qs, unquote_plus
@@ -72,7 +92,6 @@ def log_slack_events():
                 parsed_payload = json.loads(payload_json)
             except Exception:
                 return Response("Invalid payload JSON", status=400)
-            # Always return 200 OK for interactive payloads so Slack doesn't retry
             return Response("OK", status=200)
         else:
             try:
@@ -80,7 +99,6 @@ def log_slack_events():
             except Exception:
                 return Response("Invalid JSON", status=400)
 
-        # Optionally handle Slack url_verification
         if isinstance(body, dict) and body.get("type") == "url_verification":
             return jsonify({"challenge": body.get("challenge", "")})
 
@@ -96,6 +114,10 @@ WORKFLOW_REF_PATTERN = re.compile(r"^\$\{steps\.([^\.]+)\.result(?:\.(.+))?\}$")
 SLACK_EVENT_TTL_SECONDS = 300
 SLACK_MAX_IMAGE_BYTES = 5 * 1024 * 1024
 SLACK_MAX_IMAGE_COUNT = 3
+try:
+    SLACK_IMAGE_MAX_LONG_EDGE = int(os.getenv("SLACK_IMAGE_MAX_LONG_EDGE", "1024"))
+except ValueError:
+    SLACK_IMAGE_MAX_LONG_EDGE = 1024
 SLACK_MAX_PDF_BYTES = 15 * 1024 * 1024
 SLACK_MAX_PDF_TEXT_CHARS = 20000
 SLACK_MAX_PDF_IMAGE_PAGES = 3
@@ -103,7 +125,8 @@ SLACK_MAX_EXCEL_BYTES = 15 * 1024 * 1024
 SLACK_MAX_EXCEL_PREVIEW_ROWS = 5
 SLACK_MAX_DOCX_BYTES = 15 * 1024 * 1024
 SLACK_MAX_DOCX_TEXT_CHARS = 20000
-SLACK_IMAGE_SAVE_BASE_DIR = os.getenv("SLACK_IMAGE_SAVE_BASE_DIR", "generated_data")
+BASE_DATA_DIR = os.getenv("BASE_DATA_DIR", "generated_data")
+SLACK_IMAGE_SAVE_BASE_DIR = os.getenv("SLACK_IMAGE_SAVE_BASE_DIR", BASE_DATA_DIR)
 SLACK_UNREADABLE_PREVIEW_TEXTS = {
     "[no preview available]",
     "no preview available",
@@ -115,6 +138,39 @@ SLACK_INTERACTIVITY_TTL_SECONDS = 86400
 SLACK_MAX_STORED_FORM_SUBMISSIONS = 200
 _slack_form_submissions: list[dict[str, Any]] = []
 _slack_form_submissions_lock = threading.Lock()
+
+# --- File Storage Configuration ---
+# Set BASE_DATA_DIR to set the shared root for all file storage (default: "generated_data").
+# Set FILE_UPLOAD_API_KEY in .env to require authentication for upload/download/list/delete.
+# Set MEDIA_STORAGE_DIR to override where uploads are saved (defaults to BASE_DATA_DIR / generated_data).
+# Set FILE_MAX_UPLOAD_MB to change the per-request size cap (default 500 MB).
+# Set SLACK_NETWORK_CHANNEL to the channel name/ID where upload notifications are posted.
+MEDIA_STORAGE_DIR = os.getenv("MEDIA_STORAGE_DIR", BASE_DATA_DIR)
+SLACK_NETWORK_CHANNEL = os.getenv("SLACK_NETWORK_CHANNEL", "#general")
+FILE_UPLOAD_API_KEY = os.getenv("FILE_UPLOAD_API_KEY", "").strip()
+try:
+    FILE_MAX_UPLOAD_MB = max(1, int(os.getenv("FILE_MAX_UPLOAD_MB", "500")))
+except ValueError:
+    FILE_MAX_UPLOAD_MB = 500
+FILE_MAX_UPLOAD_BYTES = FILE_MAX_UPLOAD_MB * 1024 * 1024
+ALLOWED_FILE_EXTENSIONS: frozenset[str] = frozenset({
+    # Images
+    "jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff",
+    # Videos
+    "mp4", "mov", "avi", "mkv", "webm", "m4v", "wmv", "flv",
+    # Documents / data
+    "pdf", "docx", "xlsx", "csv", "txt",
+})
+_MEDIA_STORAGE_PATH = Path(MEDIA_STORAGE_DIR).resolve()
+_MEDIA_STORAGE_PATH.mkdir(parents=True, exist_ok=True)
+app.config.setdefault("MAX_CONTENT_LENGTH", FILE_MAX_UPLOAD_BYTES)
+
+from plugins.system_tools.media_storage_plugin import MediaStoragePlugin  # noqa: E402
+_media_storage_plugin = MediaStoragePlugin(base_dir=MEDIA_STORAGE_DIR)
+
+from plugins.system_tools.file_reader_plugin import FileReaderPlugin  # noqa: E402
+_file_reader_plugin = FileReaderPlugin(base_dir=SLACK_IMAGE_SAVE_BASE_DIR)
+
 
 
 def _build_redis_client() -> Any | None:
@@ -372,6 +428,36 @@ def _guess_image_extension(content_type: str, fallback_name: str) -> str:
     return mapping.get(content_type.lower().strip(), ".png")
 
 
+def _resize_image_for_vision(image_bytes: bytes, mime: str, max_long_edge: int = 1024) -> tuple[bytes, str]:
+    """Resize image bytes so the long edge is at most max_long_edge pixels and encode as JPEG."""
+    if _PILImage is None:
+        return image_bytes, mime
+    if not isinstance(image_bytes, bytes) or not image_bytes:
+        return image_bytes, mime
+    try:
+        import io as _io
+        img = _PILImage.open(_io.BytesIO(image_bytes))
+        w, h = img.size
+        if max(w, h) > max_long_edge:
+            scale = max_long_edge / max(w, h)
+            new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
+            img = img.resize(new_size, _PILImage.LANCZOS)
+        else:
+            new_size = (w, h)
+        img = img.convert("RGB")
+        buf = _io.BytesIO()
+        img.save(buf, format="JPEG", quality=75, optimize=True)
+        resized = buf.getvalue()
+        app.logger.info(
+            "Image prepared for vision: %dx%d -> %dx%d, %d -> %d bytes (JPEG q75)",
+            w, h, new_size[0], new_size[1], len(image_bytes), len(resized),
+        )
+        return resized, "image/jpeg"
+    except Exception as exc:
+        app.logger.warning("Image resize/convert failed, using original: %s", exc)
+        return image_bytes, mime
+
+
 def _save_slack_image_copy(
     binary_data: bytes,
     original_name: str,
@@ -456,144 +542,6 @@ def _save_slack_excel_copy(
     target_path = target_dir / f"{stem}{extension}"
     target_path.write_bytes(binary_data)
     return str(target_path)
-
-
-def _extract_pdf_text(pdf_bytes: bytes, max_chars: int = SLACK_MAX_PDF_TEXT_CHARS) -> str:
-    """Extract bounded text from a PDF payload."""
-    if PdfReader is None:
-        return ""
-    if not isinstance(pdf_bytes, bytes) or not pdf_bytes:
-        return ""
-
-    try:
-        reader = PdfReader(io.BytesIO(pdf_bytes))
-    except Exception as exc:
-        app.logger.warning("Failed to parse PDF for text extraction: %s", exc)
-        return ""
-
-    chunks: list[str] = []
-    current_size = 0
-    for page in getattr(reader, "pages", []):
-        try:
-            text = page.extract_text() or ""
-        except Exception:
-            text = ""
-        if not text.strip():
-            continue
-
-        remaining = max_chars - current_size
-        if remaining <= 0:
-            break
-        trimmed = text[:remaining]
-        chunks.append(trimmed)
-        current_size += len(trimmed)
-
-    return "\n\n".join(chunks).strip()
-
-
-def _extract_docx_text(docx_bytes: bytes, max_chars: int = SLACK_MAX_DOCX_TEXT_CHARS) -> str:
-    """Extract bounded text from a DOCX payload, including table cell content."""
-    if DocxDocument is None:
-        return ""
-    if not isinstance(docx_bytes, bytes) or not docx_bytes:
-        return ""
-
-    try:
-        document = DocxDocument(io.BytesIO(docx_bytes))
-    except Exception as exc:
-        app.logger.warning("Failed to parse DOCX for text extraction: %s", exc)
-        return ""
-
-    chunks: list[str] = []
-    current_size = 0
-
-    def _add_chunk(text: str) -> bool:
-        nonlocal current_size
-        text = text.strip()
-        if not text:
-            return True
-        remaining = max_chars - current_size
-        if remaining <= 0:
-            return False
-        trimmed = text[:remaining]
-        chunks.append(trimmed)
-        current_size += len(trimmed)
-        return current_size < max_chars
-
-    for paragraph in getattr(document, "paragraphs", []):
-        try:
-            text = str(paragraph.text or "")
-        except Exception:
-            text = ""
-        if not _add_chunk(text):
-            break
-
-    for table in getattr(document, "tables", []):
-        try:
-            rows = getattr(table, "rows", [])
-        except Exception:
-            continue
-        for row in rows:
-            try:
-                cells = getattr(row, "cells", [])
-                cell_texts = []
-                for cell in cells:
-                    try:
-                        cell_texts.append(str(cell.text or "").strip())
-                    except Exception:
-                        cell_texts.append("")
-                row_text = "\t".join(cell_texts)
-            except Exception:
-                row_text = ""
-            if not _add_chunk(row_text):
-                break
-
-    return "\n".join(chunks).strip()
-
-
-def _summarize_slack_excel_file(saved_excel_path: str) -> dict[str, Any] | None:
-    """Return a compact workbook summary for a locally saved Slack Excel file."""
-    if not isinstance(saved_excel_path, str) or not saved_excel_path.strip():
-        return None
-
-    try:
-        from plugins.system_tools.excel_plugin import ExcelPlugin
-
-        plugin = ExcelPlugin(
-            base_dir=SLACK_IMAGE_SAVE_BASE_DIR,
-            allow_outside_base_dir=True,
-        )
-        sheet_result = plugin.list_sheet_names(saved_excel_path)
-        sheet_names = sheet_result.get("sheet_names", [])
-        if not isinstance(sheet_names, list):
-            sheet_names = []
-
-        summary: dict[str, Any] = {
-            "file_path": saved_excel_path,
-            "sheet_count": len(sheet_names),
-            "sheet_names": sheet_names,
-        }
-
-        if sheet_names:
-            preview_result = plugin.preview_sheet(
-                {
-                    "file_path": saved_excel_path,
-                    "sheet": sheet_names[0],
-                    "max_rows": SLACK_MAX_EXCEL_PREVIEW_ROWS,
-                }
-            )
-            summary["first_sheet_preview"] = {
-                "sheet_name": preview_result.get("sheet_name"),
-                "column_names": preview_result.get("column_names"),
-                "total_row_count": preview_result.get("total_row_count"),
-                "preview_row_count": preview_result.get("preview_row_count"),
-                "preview_rows": preview_result.get("preview_rows"),
-            }
-
-        return summary
-    except Exception as exc:
-        app.logger.warning("Failed to summarize Slack Excel file (%s): %s", saved_excel_path, exc)
-        return None
 
 
 def _collect_slack_block_text(node: Any, chunks: list[str]) -> None:
@@ -770,7 +718,67 @@ def _render_pdf_pages_to_image_data_urls(
     return data_urls, saved_paths, rendered_count
 
 
-def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | None) -> tuple[str, str, list[str]]:
+def _extract_exif_full(image_bytes: bytes, name: str) -> dict | None:
+    """Extract full EXIF data from JPEG bytes into a JSON-serializable dict.
+
+    Returns a dict keyed by IFD name (e.g. '0th', 'Exif', 'GPS', '1st')
+    where each value is a dict of {str(tag_id): repr(value)}.
+    Returns None if piexif is unavailable or parsing fails.
+    """
+    try:
+        import piexif
+        _exif = piexif.load(image_bytes)
+        exif_full: dict = {}
+        for _ifd, _tags in _exif.items():
+            if isinstance(_tags, dict):
+                exif_full[_ifd] = {str(k): repr(v) for k, v in _tags.items()}
+        # Debug: print full EXIF to stdout immediately
+        _exif_str = json.dumps(exif_full, indent=2, ensure_ascii=False)
+        print(f"[EXIF ON RECEIVE] {name} ({len(image_bytes)} bytes):\n{_exif_str}", flush=True)
+        app.logger.debug("[EXIF ON RECEIVE] %s:\n%s", name, _exif_str)
+        return exif_full
+    except Exception as exc:
+        print(f"[EXIF ON RECEIVE] Could not read EXIF for {name}: {exc}", flush=True)
+        app.logger.debug("[EXIF ON RECEIVE] Could not read EXIF for %s: %s", name, exc)
+        return None
+
+
+def _extract_gps_from_exif(image_bytes: bytes, name: str) -> dict | None:
+    """Extract GPS lat/lon from JPEG bytes. Returns {'lat': float, 'lon': float} or None."""
+    try:
+        import piexif
+        _exif = piexif.load(image_bytes)
+        _gps = _exif.get("GPS", {})
+        if not _gps:
+            return None
+
+        def _dms_to_dec(dms: tuple, ref: bytes) -> float | None:
+            try:
+                d = dms[0][0] / dms[0][1]
+                m = dms[1][0] / dms[1][1]
+                s = dms[2][0] / dms[2][1]
+                val = d + m / 60 + s / 3600
+                return -val if ref in (b"S", b"W") else val
+            except Exception:
+                return None
+
+        _lat = _dms_to_dec(
+            _gps.get(piexif.GPSIFD.GPSLatitude, ()),
+            _gps.get(piexif.GPSIFD.GPSLatitudeRef, b"N"),
+        )
+        _lon = _dms_to_dec(
+            _gps.get(piexif.GPSIFD.GPSLongitude, ()),
+            _gps.get(piexif.GPSIFD.GPSLongitudeRef, b"E"),
+        )
+        if _lat is not None and _lon is not None:
+            return {"lat": round(_lat, 7), "lon": round(_lon, 7)}
+        return None
+    except Exception as exc:
+        app.logger.debug("GPS extraction failed for %s: %s", name, exc)
+        return None
+
+
+def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | None) -> tuple[str, str, list[str], list[dict]]:
     """Build prompt/reply snippets and image data URLs from Slack files when available."""
     files = event.get("files")
     if not isinstance(files, list) or not files:
@@ -779,13 +787,14 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
             files = nested_message.get("files")
     if not isinstance(files, list) or not files:
         app.logger.info("No Slack files attached on this event")
-        return "", "", []
+        return "", "", [], []
 
     app.logger.info("Slack files detected: count=%s", len(files))
 
     file_lines: list[str] = []
     file_content_lines: list[str] = []
     image_data_urls: list[str] = []
+    image_metadata: list[dict] = []
     saved_image_paths: list[str] = []
     saved_pdf_paths: list[str] = []
     saved_docx_paths: list[str] = []
@@ -877,7 +886,15 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
                     saved_pdf_paths.append(saved_pdf_path)
                     file_lines[-1] = f"{file_lines[-1]}; saved_pdf_as={saved_pdf_path}"
 
-                extracted_pdf_text = _extract_pdf_text(pdf_data)
+                extracted_pdf_text = ""
+                if isinstance(saved_pdf_path, str) and saved_pdf_path:
+                    try:
+                        pdf_read_result = _file_reader_plugin.read_pdf_text(
+                            saved_pdf_path, max_chars=SLACK_MAX_PDF_TEXT_CHARS
+                        )
+                        extracted_pdf_text = pdf_read_result.get("text", "")
+                    except Exception as exc:
+                        app.logger.warning("Failed to read PDF text via plugin (%s): %s", name, exc)
                 rendered_pages = 0
                 if extracted_pdf_text:
                     file_content_lines.append(f"PDF '{name}' extracted text:\n{extracted_pdf_text}")
@@ -933,7 +950,15 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
                     saved_docx_paths.append(saved_docx_path)
                     file_lines[-1] = f"{file_lines[-1]}; saved_docx_as={saved_docx_path}"
 
-                extracted_docx_text = _extract_docx_text(docx_data)
+                extracted_docx_text = ""
+                if isinstance(saved_docx_path, str) and saved_docx_path:
+                    try:
+                        docx_read_result = _file_reader_plugin.read_docx_text(
+                            saved_docx_path, max_chars=SLACK_MAX_DOCX_TEXT_CHARS
+                        )
+                        extracted_docx_text = docx_read_result.get("text", "")
+                    except Exception as exc:
+                        app.logger.warning("Failed to read DOCX text via plugin (%s): %s", name, exc)
                 if extracted_docx_text:
                     file_content_lines.append(f"DOCX '{name}' extracted text:\n{extracted_docx_text}")
                     app.logger.info("Attached DOCX text extracted: %s chars=%s", name, len(extracted_docx_text))
@@ -975,7 +1000,13 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
                 if isinstance(saved_excel_path, str) and saved_excel_path:
                     saved_excel_paths.append(saved_excel_path)
                     file_lines[-1] = f"{file_lines[-1]}; saved_excel_as={saved_excel_path}"
-                    excel_summary = _summarize_slack_excel_file(saved_excel_path)
+                    excel_summary = None
+                    try:
+                        excel_summary = _file_reader_plugin.summarize_excel(
+                            saved_excel_path, max_preview_rows=SLACK_MAX_EXCEL_PREVIEW_ROWS
+                        )
+                    except Exception as exc:
+                        app.logger.warning("Failed to summarize Excel via plugin (%s): %s", saved_excel_path, exc)
                     if isinstance(excel_summary, dict) and excel_summary:
                         file_content_lines.append(
                             f"Excel '{name}' workbook summary:\n{json.dumps(excel_summary, ensure_ascii=True)}"
@@ -1017,24 +1048,49 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
                 if not mime.startswith("image/"):
                     mime = "image/png"
 
+                # --- Extract EXIF immediately from raw in-memory bytes (earliest possible moment) ---
+                _image_exif_full: dict | None = None
+                _image_gps: dict | None = None
+                is_jpeg = (
+                    name.lower().endswith((".jpg", ".jpeg"))
+                    or mime in ("image/jpeg", "image/jpg")
+                )
+                if is_jpeg:
+                    _image_exif_full = _extract_exif_full(binary_data, name)
+                    _image_gps = _extract_gps_from_exif(binary_data, name)
+                    if _image_gps:
+                        gps_str = f"GPS coordinates embedded in image: lat={_image_gps['lat']}, lon={_image_gps['lon']}"
+                        file_content_lines.append(f"[{name}] {gps_str}")
+                        app.logger.info("GPS EXIF extracted from Slack image %s: %s", name, gps_str)
+                # --- END EXIF extract ---
+
                 try:
                     saved_path = _save_slack_image_copy(binary_data, name, mime, channel if isinstance(channel, str) else None)
                 except Exception as exc:
                     app.logger.warning("Failed to save Slack image locally (%s): %s", name, exc)
                     saved_path = None
+
                 if isinstance(saved_path, str) and saved_path:
                     saved_image_paths.append(saved_path)
                     file_lines[-1] = f"{file_lines[-1]}; saved_as={saved_path}"
 
-                encoded = base64.b64encode(binary_data).decode("ascii")
-                image_data_urls.append(f"data:{mime};base64,{encoded}")
+                vision_bytes, vision_mime = _resize_image_for_vision(binary_data, mime, SLACK_IMAGE_MAX_LONG_EDGE)
+                encoded = base64.b64encode(vision_bytes).decode("ascii")
+                image_data_urls.append(f"data:{vision_mime};base64,{encoded}")
+                image_metadata.append({
+                    "name": name,
+                    "saved_path": saved_path if isinstance(saved_path, str) else None,
+                    "gps": _image_gps,
+                    "exif_full": _image_exif_full,
+                    "vision_data_url": f"data:{vision_mime};base64,{encoded}",
+                })
                 app.logger.info("Attached image captured for OpenAI vision input: %s", name)
             else:
                 app.logger.info("Attached image could not be downloaded: %s", name)
 
     if not file_lines:
         app.logger.info("No usable Slack file metadata extracted")
-        return "", "", []
+        return "", "", [], []
 
     prompt_suffix = "\n\nSlack attached files metadata:\n" + "\n".join(f"- {line}" for line in file_lines)
     if file_content_lines:
@@ -1060,7 +1116,7 @@ def _extract_slack_file_context(event: dict[str, Any], slack_bot_token: str | No
         prompt_suffix += "\n\nSaved local Excel copies:\n" + "\n".join(f"- {path}" for path in saved_excel_paths)
         app.logger.info("Saved %s Slack Excel file(s) under local generated_data path", len(saved_excel_paths))
     reply_suffix = "\n\nAttachments in your message: " + ", ".join(reply_items)
-    return prompt_suffix, reply_suffix, image_data_urls
+    return prompt_suffix, reply_suffix, image_data_urls, image_metadata
 
 
 if slack_event_adapter is not None:
@@ -1091,7 +1147,7 @@ if slack_event_adapter is not None:
                 channel = nested_message.get("channel")
         text = _extract_slack_message_text(event)
         slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
-        file_prompt_suffix, file_reply_suffix, image_data_urls = _extract_slack_file_context(event, slack_bot_token)
+        file_prompt_suffix, file_reply_suffix, image_data_urls, image_metadata = _extract_slack_file_context(event, slack_bot_token)
         if not isinstance(channel, str) or not channel:
             return
         if not isinstance(text, str):
@@ -1138,13 +1194,13 @@ if slack_event_adapter is not None:
             conversation_key = event.get("thread_ts") or channel
             conversation_id = f"slack:{conversation_key}"
         model_name = os.getenv("SLACK_OPENAI_MODEL", "gpt-4.1-mini")
-        max_tool_rounds_raw = os.getenv("SLACK_OPENAI_MAX_TOOL_ROUNDS", "5").strip()
+        max_tool_rounds_raw = os.getenv("SLACK_OPENAI_MAX_TOOL_ROUNDS", "10").strip()
         try:
             max_tool_rounds = int(max_tool_rounds_raw)
         except ValueError:
-            max_tool_rounds = 5
+            max_tool_rounds = 10
         if max_tool_rounds <= 0:
-            max_tool_rounds = 5
+            max_tool_rounds = 10
 
         try:
             validate_request(
@@ -1157,15 +1213,18 @@ if slack_event_adapter is not None:
                 "OpenAIFunctionCallingPlugin",
                 {},
             )
+            vision_urls_to_send = image_data_urls
+            if vision_urls_to_send:
+                app.logger.info("Sending %s vision image(s) inline to OpenAI", len(vision_urls_to_send))
             ai_result = executor.call_method(
                 "plugins.integrations.openai_plugin",
                 "generate_with_function_calls_and_history",
                 [
                     conversation_id,
-                    (text.strip() or "Please analyze attached files.") + file_prompt_suffix,
+                    (text.strip() or "The user shared a file with no message. Acknowledge receipt briefly. Do NOT describe, analyze, or load any image content — wait for the user to ask.") + file_prompt_suffix + f"\n[slack_channel_id: {channel}]",
                     model_name,
                     max_tool_rounds,
-                    image_data_urls,
+                    vision_urls_to_send,
                 ],
             )
             app.logger.info("Slack AI generation completed; result_type=%s", type(ai_result).__name__)
@@ -1173,6 +1232,120 @@ if slack_event_adapter is not None:
                 reply_text = str(ai_result.get("text", "")).strip()
             else:
                 reply_text = str(ai_result).strip()
+
+            print(f"[MongoDB-save] ai_result type={type(ai_result).__name__} is_dict={isinstance(ai_result, dict)}", flush=True)
+            if isinstance(ai_result, dict):
+                _analyzed_paths = ai_result.get("analyzed_image_paths") or []
+                _existing_saved_paths = {m.get("saved_path") for m in image_metadata}
+                print(f"[MongoDB-save] analyzed_image_paths={_analyzed_paths}", flush=True)
+                print(f"[MongoDB-save] existing_saved_paths={_existing_saved_paths}", flush=True)
+                for _ap in _analyzed_paths:
+                    if _ap in _existing_saved_paths:
+                        print(f"[MongoDB-save] Skipping {_ap} (already in Slack attachment metadata)", flush=True)
+                        continue
+                    print(f"[MongoDB-save] Building metadata from path: {_ap}", flush=True)
+                    try:
+                        with open(_ap, "rb") as _f:
+                            _ap_bytes = _f.read()
+                        print(f"[MongoDB-save] File read OK: {_ap} bytes={len(_ap_bytes)}", flush=True)
+                        _ap_name = os.path.basename(_ap)
+
+                        # Extract full EXIF and GPS from the analyzed image path
+                        _ap_exif_full: dict | None = None
+                        _ap_gps: dict | None = None
+                        if _ap.lower().endswith((".jpg", ".jpeg")):
+                            _ap_exif_full = _extract_exif_full(_ap_bytes, _ap_name)
+                            _ap_gps = _extract_gps_from_exif(_ap_bytes, _ap_name)
+                            if _ap_gps:
+                                print(f"[MongoDB-save] GPS extracted: {_ap_gps}", flush=True)
+
+                        _ap_mime = "image/jpeg" if _ap.lower().endswith((".jpg", ".jpeg")) else "image/png"
+                        _vis_bytes, _vis_mime = _resize_image_for_vision(_ap_bytes, _ap_mime, SLACK_IMAGE_MAX_LONG_EDGE)
+                        _vis_enc = base64.b64encode(_vis_bytes).decode("ascii")
+                        image_metadata.append({
+                            "name": _ap_name,
+                            "saved_path": _ap,
+                            "gps": _ap_gps,
+                            "exif_full": _ap_exif_full,
+                            "vision_data_url": f"data:{_vis_mime};base64,{_vis_enc}",
+                        })
+                        print(f"[MongoDB-save] Appended metadata for: {_ap_name}", flush=True)
+                    except Exception as _exc:
+                        print(f"[MongoDB-save] FAILED to build metadata for {_ap}: {_exc}", flush=True)
+                        app.logger.warning("[MongoDB-save] Could not build metadata for %s: %s", _ap, _exc)
+            else:
+                print(f"[MongoDB-save] ai_result is not a dict — analyzed_image_paths unavailable", flush=True)
+
+            print(f"[MongoDB-save] image_metadata present={bool(image_metadata)} count={len(image_metadata)}", flush=True)
+            app.logger.warning("[MongoDB-save] image_metadata present=%s count=%s", bool(image_metadata), len(image_metadata))
+            if image_metadata:
+                def _save_image_analysis(
+                    _channel=channel,
+                    _user=event.get("user"),
+                    _ts=event.get("ts"),
+                    _query=text,
+                    _model=model_name,
+                    _findings=reply_text,
+                    _meta=list(image_metadata),
+                    _conv_id=conversation_id,
+                ) -> None:
+                    print("[MongoDB-save] Thread started", flush=True)
+                    app.logger.info("[MongoDB-save] Thread started: channel=%s user=%s images=%s", _channel, _user, len(_meta))
+                    from datetime import datetime, timezone
+                    try:
+                        print("[MongoDB-save] Importing MongoDBPlugin", flush=True)
+                        from plugins.mongodb_plugin import MongoDBPlugin
+                        mongo = MongoDBPlugin()
+                        print(f"[MongoDB-save] MongoDBPlugin instantiated: {mongo}", flush=True)
+                        analyzed_at = datetime.now(timezone.utc).isoformat()
+                        doc = {
+                            "channel": _channel,
+                            "user": _user,
+                            "event_ts": _ts,
+                            "user_query": _query,
+                            "model": _model,
+                            "ai_findings": _findings,
+                            "image_count": len(_meta),
+                            "images": _meta,
+                            "analyzed_at": analyzed_at,
+                        }
+                        print(f"[MongoDB-save] Calling create_document with {len(_meta)} image(s)", flush=True)
+                        result = mongo.create_document("slack_image_analyses", doc)
+                        print(f"[MongoDB-save] create_document result: {result}", flush=True)
+                        inserted_id = result.get("inserted_id", "unknown") if isinstance(result, dict) else "unknown"
+                        app.logger.info(
+                            "[MongoDB-save] Saved: channel=%s images=%s id=%s",
+                            _channel,
+                            len(_meta),
+                            inserted_id,
+                        )
+                        try:
+                            from plugins.integrations.openai_plugin import OpenAIFunctionCallingPlugin
+                            openai_plugin = OpenAIFunctionCallingPlugin()
+                            history = openai_plugin._load_conversation_history(_conv_id)
+                            image_names = ", ".join(m.get("name", "unknown") for m in _meta)
+                            history.append({
+                                "role": "assistant",
+                                "content": (
+                                    f"[System event] I saved the image analysis to MongoDB.\n"
+                                    f"Collection: slack_image_analyses\n"
+                                    f"Document ID: {inserted_id}\n"
+                                    f"Images: {image_names}\n"
+                                    f"Saved at: {analyzed_at}"
+                                ),
+                            })
+                            openai_plugin._save_conversation_history(_conv_id, history)
+                            print(f"[MongoDB-save] History injected into conversation {_conv_id}", flush=True)
+                            app.logger.info("[MongoDB-save] History injected into conversation %s", _conv_id)
+                        except Exception as exc:
+                            print(f"[MongoDB-save] History injection failed (non-fatal): {exc}", flush=True)
+                            app.logger.warning("[MongoDB-save] History injection failed (non-fatal): %s", exc)
+                    except Exception as exc:
+                        print(f"[MongoDB-save] FAILED: {exc}", flush=True)
+                        app.logger.exception("[MongoDB-save] Failed to save image analysis to MongoDB: %s", exc)
+
+                print(f"[MongoDB-save] Starting background thread for {len(image_metadata)} image(s)", flush=True)
+                threading.Thread(target=_save_image_analysis, daemon=True).start()
         except Exception:
             app.logger.exception("Failed to generate Slack AI reply")
             reply_text = "Sorry, I couldn't generate a reply right now."
@@ -1197,7 +1370,7 @@ if slack_event_adapter is not None:
             executor.instantiate(
                 "plugins.integrations.slack_plugin",
                 "SlackPlugin",
-                {"bot_token": slack_bot_token.strip(), "default_channel": "#general"},
+                {"bot_token": slack_bot_token.strip(), "default_channel": SLACK_NETWORK_CHANNEL},
             )
             executor.call_method(
                 "plugins.integrations.slack_plugin",
@@ -1214,18 +1387,20 @@ def _error_response(message: str, status_code: int = 400):
     return jsonify({"status": "error", "message": message}), status_code
 
 
+@app.get("/")
+def health_check() -> Any:
+    """Health-check endpoint."""
+    return jsonify({"status": "ok"})
+
+
 @app.post("/slack/interactivity")
 def slack_interactivity() -> Any:
     """Handle Slack interactive payloads such as modal form submissions."""
-
-    # Debug logging for /slack/interactivity can be enabled here if needed
     if not signing_secret:
         return _error_response("SIGNING_SECRET is not configured", status_code=503)
-    # Verify signature BEFORE reading body or form
     if not _verify_slack_signed_request(request, signing_secret):
         return _error_response("Invalid Slack signature", status_code=401)
 
-    # Now it's safe to read the body/form
     raw_payload = request.form.get("payload", "")
     if not isinstance(raw_payload, str) or not raw_payload.strip():
         return _error_response("Missing Slack payload")
@@ -1277,7 +1452,6 @@ def slack_interactivity() -> Any:
         }
         _store_slack_form_submission(submission_record)
 
-        # Immediately respond to Slack to avoid timeout
         from threading import Thread
         def process_form_submission_async(user_info, channel_id, submitted_values, trigger_id, view, payload):
             try:
@@ -1352,7 +1526,7 @@ def slack_interactivity() -> Any:
                     executor.instantiate(
                         "plugins.integrations.slack_plugin",
                         "SlackPlugin",
-                        {"bot_token": slack_bot_token.strip(), "default_channel": "#general"},
+                        {"bot_token": slack_bot_token.strip(), "default_channel": SLACK_NETWORK_CHANNEL},
                     )
                     executor.call_method(
                         "plugins.integrations.slack_plugin",
@@ -1381,13 +1555,10 @@ def slack_interactivity() -> Any:
             }
         )
 
-        # Immediately open a modal if the button was clicked
         trigger_id = payload.get("trigger_id")
-        # Try to get modal_view from Redis using a key in the button value
         modal_view = None
         redis_client = _slack_dedupe_redis_client
         modal_key = None
-        # 1. Check actions for a value that looks like a modal_view key
         print(f"[DEBUG] block_actions: actions received: {actions}")
         for action in actions:
             print(f"[DEBUG] Inspecting action: {action}")
@@ -1395,7 +1566,6 @@ def slack_interactivity() -> Any:
             if value and isinstance(value, str) and value.startswith("modalview:"):
                 modal_key = value[len("modalview:"):]
                 print(f"[DEBUG] Extracted modal_key: {modal_key} from action_id: {action.get('action_id')}")
-        # 2. If modal_key is found, try to fetch modal_view from Redis
         if modal_key:
             print(f"[DEBUG] modal_key is set: {modal_key}, redis_client is {'present' if redis_client is not None else 'None'}")
         if modal_key and redis_client is not None:
@@ -1406,7 +1576,6 @@ def slack_interactivity() -> Any:
                     modal_view = json.loads(modal_json)
             except Exception as exc:
                 app.logger.warning(f"Failed to fetch modal_view from Redis: {exc}")
-        # 3. Fallback to default if still not set
         if not modal_view:
             modal_view = {
                 "type": "modal",
@@ -1422,7 +1591,6 @@ def slack_interactivity() -> Any:
                     }
                 ]
             }
-        # Restore modal opening logic: call open_modal (or open_modal_form) on SlackPlugin
         if trigger_id:
             try:
                 from executor.engine import JSONExecutor
@@ -1436,9 +1604,8 @@ def slack_interactivity() -> Any:
                 executor.instantiate(
                     "plugins.integrations.slack_plugin",
                     "SlackPlugin",
-                    {"bot_token": os.getenv("SLACK_BOT_TOKEN", ""), "default_channel": "#general"},
+                    {"bot_token": os.getenv("SLACK_BOT_TOKEN", ""), "default_channel": SLACK_NETWORK_CHANNEL},
                 )
-                # open_modal expects a dict with at least trigger_id and modal_view
                 result = executor.call_method(
                     "plugins.integrations.slack_plugin",
                     "open_modal",
@@ -1630,5 +1797,611 @@ def workflow() -> Any:
         return _error_response("Internal server error", status_code=500)
 
 
+# ---------------------------------------------------------------------------
+# File Storage — helpers
+# ---------------------------------------------------------------------------
+
+def _check_file_api_key() -> bool:
+    """Return True when no key is configured, or when the request supplies it."""
+    if not FILE_UPLOAD_API_KEY:
+        return True
+    provided = (
+        request.headers.get("X-API-Key", "")
+        or request.args.get("api_key", "")
+    ).strip()
+    if not provided:
+        return False
+    return hmac.compare_digest(FILE_UPLOAD_API_KEY, provided)
+
+
+# ---------------------------------------------------------------------------
+# File Storage — routes
+# ---------------------------------------------------------------------------
+
+@app.errorhandler(413)
+def _handle_request_entity_too_large(error: Any) -> Any:
+    return _error_response(
+        f"File exceeds the maximum allowed size of {FILE_MAX_UPLOAD_MB} MB",
+        status_code=413,
+    )
+
+
+def _trigger_upload_notification(
+    filename: str,
+    relative_path: str,
+    size_bytes: int,
+    lat: float | None = None,
+    lon: float | None = None,
+) -> None:
+    """Fire-and-forget: post a Slack upload notification directly via SlackPlugin."""
+    import threading
+    from datetime import datetime, timezone
+
+    def _notify() -> None:
+        print("[UploadNotify] Thread started", flush=True)
+        bot_token = os.getenv("SLACK_BOT_TOKEN", "").strip()
+        if not bot_token:
+            print("[UploadNotify] SLACK_BOT_TOKEN not set, skipping", flush=True)
+            app.logger.warning("Upload notification: SLACK_BOT_TOKEN not set, skipping")
+            return
+
+        uploaded_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        size_kb = size_bytes / 1024
+
+        print(f"[UploadNotify] Posting to channel: {SLACK_NETWORK_CHANNEL}", flush=True)
+        try:
+            from plugins.integrations.slack_plugin import SlackPlugin
+            from plugins.integrations.openai_plugin import OpenAIFunctionCallingPlugin
+            slack = SlackPlugin(bot_token=bot_token, default_channel=SLACK_NETWORK_CHANNEL)
+            upload_result: dict[str, Any] | None = None
+
+            # Upload the actual file to Slack when available.
+            try:
+                absolute_path = (_MEDIA_STORAGE_PATH / relative_path).resolve()
+                absolute_path.relative_to(_MEDIA_STORAGE_PATH)
+                if absolute_path.exists() and absolute_path.is_file():
+                    upload_result = slack.upload_local_file(
+                        str(absolute_path),
+                        channel=SLACK_NETWORK_CHANNEL,
+                        initial_comment=(
+                            f":file_folder: Uploaded via Streamlit: {filename} "
+                            f"({size_kb:.1f} KB)\n"
+                            f"Path: {MEDIA_STORAGE_DIR}/{relative_path}\n"
+                            f"Uploaded: {uploaded_at}"
+                            + (
+                                f"\nLocation: {lat:.6f}, {lon:.6f}"
+                                f"\nMap: https://maps.google.com/?q={lat:.6f},{lon:.6f}"
+                                if lat is not None and lon is not None
+                                else ""
+                            )
+                        ),
+                    )
+                    print(f"[UploadNotify] upload_local_file result: {upload_result}", flush=True)
+                    app.logger.warning("Upload notification posted to %s for file %s", SLACK_NETWORK_CHANNEL, filename)
+
+                    # Keep conversation memory up to date without triggering model generation.
+                    try:
+                        channel_for_history = (
+                            upload_result.get("channel_id")
+                            if isinstance(upload_result.get("channel_id"), str)
+                            else (
+                                upload_result.get("channel")
+                                if isinstance(upload_result.get("channel"), str)
+                                else SLACK_NETWORK_CHANNEL
+                            )
+                        )
+                        forced_conversation_id = os.getenv("SLACK_CONVERSATION_ID", "").strip()
+                        conversation_id = (
+                            forced_conversation_id
+                            if forced_conversation_id
+                            else f"slack:{channel_for_history}"
+                        )
+                        openai_plugin = OpenAIFunctionCallingPlugin()
+                        history = openai_plugin._load_conversation_history(conversation_id)
+                        history.append(
+                            {
+                                "role": "assistant",
+                                "content": (
+                                    "[System event] A file was uploaded via the Streamlit UI and posted to Slack.\n"
+                                    f"File: {filename}\n"
+                                    f"Size: {size_kb:.1f} KB\n"
+                                    f"Path: {MEDIA_STORAGE_DIR}/{relative_path}\n"
+                                    f"Uploaded at: {uploaded_at}"
+                                    + (
+                                        f"\nGPS location: lat={lat:.6f}, lon={lon:.6f}"
+                                        f"\nGoogle Maps: https://maps.google.com/?q={lat:.6f},{lon:.6f}"
+                                        if lat is not None and lon is not None
+                                        else ""
+                                    )
+                                ),
+                            }
+                        )
+                        openai_plugin._save_conversation_history(conversation_id, history)
+                        app.logger.info("Upload notification history written for conversation %s", conversation_id)
+                    except Exception as exc:
+                        app.logger.warning("Upload notification: history write failed (non-fatal): %s", exc)
+                else:
+                    app.logger.warning(
+                        "Upload notification: local file missing for Slack upload: %s",
+                        absolute_path,
+                    )
+            except Exception as exc:
+                app.logger.warning("Upload notification: Slack file upload failed: %s", exc)
+            if upload_result is None:
+                app.logger.warning("Upload notification: Slack file upload did not complete")
+
+        except Exception as exc:
+            print(f"[UploadNotify] Slack post failed: {exc}", flush=True)
+            app.logger.warning("Upload notification: Slack post failed: %s", exc)
+
+    threading.Thread(target=_notify, daemon=True).start()
+
+
+@app.post("/files/upload")
+def upload_file() -> Any:
+    """Accept a multipart/form-data file and store it in the generated_data directory.
+
+    Form fields:
+      - file (required): the file to upload
+      - folder (optional): subdirectory within generated_data, e.g. "videos/2026"
+
+    Headers:
+      - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment
+    """
+    if not _check_file_api_key():
+        return _error_response("Unauthorized", status_code=401)
+
+    if "file" not in request.files:
+        return _error_response("No 'file' field in the multipart request")
+
+    f = request.files["file"]
+    if not f.filename:
+        return _error_response("No filename provided")
+
+    ext = Path(f.filename).suffix.lower().lstrip(".")
+    if ext not in ALLOWED_FILE_EXTENSIONS:
+        return _error_response(
+            f"File type '.{ext}' is not allowed. "
+            f"Allowed: {', '.join(sorted(ALLOWED_FILE_EXTENSIONS))}"
+        )
+
+    safe_name = _media_storage_plugin._sanitize_filename(f.filename)
+    folder = request.form.get("folder", "").strip()
+
+    try:
+        dest = _media_storage_plugin._resolve_path(folder, safe_name)
+    except ValueError as exc:
+        return _error_response(str(exc))
+
+    if dest.exists():
+        ts = int(time.time())
+        stem = Path(safe_name).stem
+        suffix = Path(safe_name).suffix
+        safe_name = f"{stem}_{ts}{suffix}"
+        try:
+            dest = _media_storage_plugin._resolve_path(folder, safe_name)
+        except ValueError as exc:
+            return _error_response(str(exc))
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    lat_raw = request.form.get("lat", "").strip()
+    lon_raw = request.form.get("lon", "").strip()
+    has_gps = bool(lat_raw and lon_raw)
+
+    _JPEG_EXTS = {".jpg", ".jpeg"}
+    _CONVERTIBLE_EXTS = {".png", ".webp", ".gif", ".bmp", ".tiff"}
+    if has_gps and dest.suffix.lower() in _CONVERTIBLE_EXTS and _PILImage is not None:
+        try:
+            import io as _io_mod
+            img = _PILImage.open(f.stream)
+            img = img.convert("RGB")
+            buf = _io_mod.BytesIO()
+            img.save(buf, format="JPEG", quality=90, optimize=True)
+            stem = Path(safe_name).stem
+            safe_name = f"{stem}.jpg"
+            try:
+                dest = _media_storage_plugin._resolve_path(folder, safe_name)
+            except ValueError as exc:
+                return _error_response(str(exc))
+            if dest.exists():
+                ts_now = int(time.time())
+                safe_name = f"{stem}_{ts_now}.jpg"
+                try:
+                    dest = _media_storage_plugin._resolve_path(folder, safe_name)
+                except ValueError as exc:
+                    return _error_response(str(exc))
+            dest.write_bytes(buf.getvalue())
+            app.logger.info("Converted %s to JPEG for GPS EXIF embedding: %s", ext, safe_name)
+        except Exception as exc:
+            app.logger.warning("JPEG conversion failed, saving original format: %s", exc)
+            f.stream.seek(0)
+            f.save(str(dest))
+    else:
+        f.save(str(dest))
+
+    if has_gps and dest.suffix.lower() in _JPEG_EXTS:
+        try:
+            import piexif
+
+            existing_bytes = dest.read_bytes()
+            try:
+                existing_exif = piexif.load(existing_bytes)
+            except Exception:
+                existing_exif = {"GPS": {}}
+
+            already_has_gps = bool(existing_exif.get("GPS"))
+            if already_has_gps:
+                app.logger.info("Skipping GPS EXIF write for %s — existing GPS data found", dest.name)
+            else:
+                def _to_dms_rational(degrees: float) -> tuple:
+                    d = int(abs(degrees))
+                    m_float = (abs(degrees) - d) * 60
+                    m = int(m_float)
+                    s = round((m_float - m) * 60 * 10000)
+                    return ((d, 1), (m, 1), (s, 10000))
+
+                lat_val = float(lat_raw)
+                lon_val = float(lon_raw)
+                existing_exif["GPS"] = {
+                    piexif.GPSIFD.GPSLatitudeRef: b"N" if lat_val >= 0 else b"S",
+                    piexif.GPSIFD.GPSLatitude: _to_dms_rational(lat_val),
+                    piexif.GPSIFD.GPSLongitudeRef: b"E" if lon_val >= 0 else b"W",
+                    piexif.GPSIFD.GPSLongitude: _to_dms_rational(lon_val),
+                }
+                exif_bytes = piexif.dump(existing_exif)
+                piexif.insert(exif_bytes, existing_bytes, str(dest))
+                app.logger.info("GPS EXIF written to %s: lat=%s, lon=%s", dest.name, lat_raw, lon_raw)
+        except Exception as exc:
+            app.logger.warning("Failed to write GPS EXIF to %s: %s", dest.name, exc)
+
+    size_bytes = dest.stat().st_size
+    relative = dest.relative_to(_media_storage_plugin._base).as_posix()
+
+    notify_lat: float | None = None
+    notify_lon: float | None = None
+    if has_gps:
+        try:
+            notify_lat = float(lat_raw)
+            notify_lon = float(lon_raw)
+        except ValueError:
+            pass
+
+    # Write initial slack_files record with EXIF so the file is recoverable
+    # after a Heroku restart even before it has been uploaded to Slack.
+    # Slack-specific fields (file_id, permalink, url_private) are absent here
+    # and filled in by upload_local_file when the notification thread runs.
+    try:
+        from plugins.integrations.slack_plugin import SlackPlugin
+        bot_token = os.getenv("SLACK_BOT_TOKEN", "").strip()
+        slack = SlackPlugin(bot_token=bot_token, default_channel=SLACK_NETWORK_CHANNEL) if bot_token else None
+        if slack:
+            file_bytes = dest.read_bytes()
+            exif_b64 = SlackPlugin._extract_exif_b64(file_bytes, dest.suffix)
+            gps = {"lat": notify_lat, "lon": notify_lon} if notify_lat is not None and notify_lon is not None else None
+            slack._save_file_record(
+                local_file_path=str(dest),
+                file_id=None,
+                filename=safe_name,
+                title=safe_name,
+                channel=SLACK_NETWORK_CHANNEL,
+                channel_id=None,
+                permalink=None,
+                url_private=None,
+                exif_b64=exif_b64,
+                gps=gps,
+            )
+            app.logger.info("slack_files record written for %s (exif=%s)", safe_name, bool(exif_b64))
+        else:
+            app.logger.warning("SLACK_BOT_TOKEN not set; skipping initial slack_files record for %s", safe_name)
+    except Exception as exc:
+        app.logger.warning("Failed to write initial slack_files record for %s: %s", safe_name, exc)
+
+    _trigger_upload_notification(safe_name, relative, size_bytes, lat=notify_lat, lon=notify_lon)
+
+    return jsonify({
+        "status": "success",
+        "filename": safe_name,
+        "path": relative,
+        "size_bytes": size_bytes,
+        "download_url": f"/files/download/{relative}",
+    })
+
+
+@app.get("/files/download/<path:filename>")
+def download_file(filename: str) -> Any:
+    """Stream a stored file back to the caller."""
+    if not _check_file_api_key():
+        return _error_response("Unauthorized", status_code=401)
+
+    try:
+        target = (_MEDIA_STORAGE_PATH / filename).resolve()
+        target.relative_to(_MEDIA_STORAGE_PATH)
+    except ValueError:
+        return _error_response("Invalid file path", status_code=400)
+
+    if not target.exists() or not target.is_file():
+        # Transparent Slack fallback: query MongoDB for the file record and
+        # re-download from Slack so ephemeral dyno storage is fully transparent.
+        recovered = False
+        try:
+            from plugins.integrations.slack_plugin import SlackPlugin
+            bot_token = os.getenv("SLACK_BOT_TOKEN", "").strip()
+            if bot_token:
+                slack = SlackPlugin(bot_token=bot_token, default_channel=SLACK_NETWORK_CHANNEL)
+                slack.get_file({"path": str(target)})
+                if target.exists() and target.is_file():
+                    app.logger.info("File recovered from Slack for path: %s", target)
+                    recovered = True
+        except Exception as exc:
+            app.logger.warning("Slack file recovery failed for %s: %s", target, exc)
+
+        if not recovered:
+            return _error_response("File not found", status_code=404)
+
+    as_attachment = request.args.get("download", "false").lower() == "true"
+    return send_from_directory(str(target.parent), target.name, as_attachment=as_attachment)
+
+
+def _query_slack_files_index(folder: str) -> list[dict[str, Any]]:
+    """Query MongoDB slack_files for records whose local_file_path falls under the given folder.
+
+    Returns a list of dicts shaped like MediaStoragePlugin list_files entries,
+    with extra keys: source="slack", permalink, url_private, file_id.
+    Only returns records not already present on the local filesystem.
+    """
+    try:
+        from pymongo import MongoClient as _MongoClient
+        from urllib.parse import urlparse as _urlparse
+    except ImportError:
+        return []
+
+    mongo_uri = os.getenv("MONGODB_URI", "").strip()
+    if not mongo_uri:
+        return []
+
+    try:
+        client = _MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+        db_name = os.getenv("MONGODB_DATABASE", "").strip()
+        if not db_name:
+            parsed_uri = _urlparse(mongo_uri)
+            raw_path = parsed_uri.path.lstrip("/")
+            db_name = raw_path.split("?")[0] if raw_path else ""
+        if not db_name:
+            db_name = "dynamic_exec"
+        collection = client[db_name]["slack_files"]
+    except Exception:
+        return []
+
+    # Build a prefix filter: match records whose local_file_path starts with
+    # the resolved scan directory.
+    if folder:
+        try:
+            scan_dir = (_MEDIA_STORAGE_PATH / folder).resolve()
+            scan_dir.relative_to(_MEDIA_STORAGE_PATH)
+        except (ValueError, Exception):
+            return []
+    else:
+        scan_dir = _MEDIA_STORAGE_PATH
+
+    prefix = str(scan_dir)
+
+    try:
+        cursor = collection.find(
+            {"local_file_path": {"$regex": f"^{re.escape(prefix)}"}},
+            {"_id": 0, "local_file_path": 1, "filename": 1, "permalink": 1,
+             "url_private": 1, "file_id": 1, "title": 1},
+        )
+        records = list(cursor)
+    except Exception:
+        return []
+
+    extra: list[dict[str, Any]] = []
+    for rec in records:
+        local_path = Path(rec.get("local_file_path", ""))
+        # Skip if the file is already present locally — the local listing covers it.
+        if local_path.exists() and local_path.is_file():
+            continue
+        try:
+            relative = local_path.relative_to(_MEDIA_STORAGE_PATH).as_posix()
+        except ValueError:
+            relative = local_path.name
+
+        entry: dict[str, Any] = {
+            "name": local_path.name,
+            "path": relative,
+            "type": "file",
+            "source": "slack",
+            "download_url": f"/files/download/{relative}",
+            "permalink": rec.get("permalink"),
+            "url_private": rec.get("url_private"),
+            "file_id": rec.get("file_id"),
+            "title": rec.get("title"),
+        }
+        extra.append(entry)
+
+    return extra
+
+
+@app.get("/files/list")
+def list_files() -> Any:
+    """List files and directories inside the media storage root or a subfolder.
+
+    Merges local filesystem entries with MongoDB slack_files records so that
+    files uploaded to Slack (but no longer on the ephemeral dyno disk) still
+    appear in the listing with source="slack". Accessing their download_url
+    will transparently re-fetch them from Slack on demand.
+
+    Query params:
+      - folder (optional): subdirectory to list, e.g. "videos/2026"
+
+    Headers:
+      - X-API-Key: required when FILE_UPLOAD_API_KEY is set in the environment
+    """
+    if not _check_file_api_key():
+        return _error_response("Unauthorized", status_code=401)
+
+    folder = request.args.get("folder", "").strip()
+    try:
+        result = _media_storage_plugin.list_files(folder)
+    except FileNotFoundError:
+        # Folder may not exist locally after a dyno restart — still check MongoDB.
+        result = {"status": "success", "folder": folder or "/", "count": 0, "files": []}
+    except ValueError as exc:
+        return _error_response(str(exc), status_code=400)
+
+    # Tag locally-found files with source="local"
+    for entry in result.get("files", []):
+        if entry.get("type") == "file":
+            entry.setdefault("source", "local")
+
+    # Merge in any Slack-only records from MongoDB
+    slack_only = _query_slack_files_index(folder)
+    result["files"] = result.get("files", []) + slack_only
+    result["count"] = len(result["files"])
+    if slack_only:
+        result["note"] = (
+            f"{len(slack_only)} file(s) not on local disk — stored in Slack. "
+            "Access via download_url to restore automatically."
+        )
+
+    return jsonify(result)
+
+
+@app.delete("/files/delete/<path:filename>")
+def delete_file(filename: str) -> Any:
+    """Delete a stored file."""
+    if not _check_file_api_key():
+        return _error_response("Unauthorized", status_code=401)
+
+    try:
+        result = _media_storage_plugin.delete_file(filename)
+        return jsonify(result)
+    except FileNotFoundError:
+        return _error_response("File not found", status_code=404)
+    except ValueError as exc:
+        return _error_response(str(exc), status_code=400)
+
+
+# ---------------------------------------------------------------------------
+# Staging — routes
+# ---------------------------------------------------------------------------
+
+@app.post("/files/stage/<session_id>")
+def stage_file(session_id: str) -> Any:
+    """Upload a single file into a temporary staging area for a session."""
+    if not _check_file_api_key():
+        return _error_response("Unauthorized", status_code=401)
+
+    if not _media_storage_plugin._valid_session_id(session_id):
+        return _error_response("Invalid session ID", status_code=400)
+
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return _error_response("No file provided")
+
+    session_dir = _media_storage_plugin._safe_stage_path(session_id)
+    if session_dir is None:
+        return _error_response("Invalid session ID", status_code=400)
+
+    safe_name = secure_filename(f.filename)
+    if not safe_name:
+        return _error_response("Invalid filename")
+
+    session_dir.mkdir(parents=True, exist_ok=True)
+    dest = session_dir / safe_name
+    f.save(str(dest))
+
+    size_bytes = dest.stat().st_size
+    _trigger_upload_notification(safe_name, f"staging/{session_id}/{safe_name}", size_bytes)
+
+    return jsonify({
+        "filename": safe_name,
+        "size_bytes": size_bytes,
+        "staged": True,
+    })
+
+
+@app.get("/files/stage/<session_id>")
+def list_staged_route(session_id: str) -> Any:
+    """List files currently staged for a session."""
+    if not _check_file_api_key():
+        return _error_response("Unauthorized", status_code=401)
+
+    try:
+        result = _media_storage_plugin.list_staged(session_id)
+        return jsonify(result)
+    except ValueError as exc:
+        return _error_response(str(exc), status_code=400)
+
+
+@app.delete("/files/stage/<session_id>")
+def clear_staged_route(session_id: str) -> Any:
+    """Remove all staged files for a session."""
+    if not _check_file_api_key():
+        return _error_response("Unauthorized", status_code=401)
+
+    try:
+        result = _media_storage_plugin.clear_staged(session_id)
+        return jsonify(result)
+    except ValueError as exc:
+        return _error_response(str(exc), status_code=400)
+
+
+@app.delete("/files/stage/<session_id>/<filename>")
+def remove_staged_file_route(session_id: str, filename: str) -> Any:
+    """Remove a single staged file."""
+    if not _check_file_api_key():
+        return _error_response("Unauthorized", status_code=401)
+
+    try:
+        result = _media_storage_plugin.remove_staged_file(session_id, filename)
+        return jsonify(result)
+    except ValueError as exc:
+        return _error_response(str(exc), status_code=400)
+
+
+# ---------------------------------------------------------------------------
+# Rename-zip — route
+# ---------------------------------------------------------------------------
+
+@app.post("/files/rename-zip")
+def rename_zip() -> Any:
+    """Sort, rename, and zip uploaded images and videos grouped by video markers."""
+    if not _check_file_api_key():
+        return _error_response("Unauthorized", status_code=401)
+
+    if request.is_json:
+        body = request.get_json(silent=True) or {}
+        session_id = body.get("session_id", "")
+        sort_order = body.get("sort_order", "date_taken")
+        try:
+            result = _media_storage_plugin.rename_zip_from_staged(session_id, sort_order)
+            return jsonify(result)
+        except FileNotFoundError as exc:
+            return _error_response(str(exc), status_code=404)
+        except ValueError as exc:
+            return _error_response(str(exc), status_code=422)
+        except Exception:
+            app.logger.exception("rename_zip (staged) processing failed")
+            return _error_response("Processing failed", status_code=500)
+
+    uploaded = request.files.getlist("files")
+    if not uploaded:
+        return _error_response("No files provided")
+
+    sort_order = request.form.get("sort_order", "date_taken")
+    files_list = [(f.filename or f"file_{i}", f.read()) for i, f in enumerate(uploaded)]
+
+    try:
+        result = _media_storage_plugin.rename_zip_from_file_data(files_list, sort_order)
+        return jsonify(result)
+    except ValueError as exc:
+        return _error_response(str(exc), status_code=422)
+    except Exception:
+        app.logger.exception("rename_zip processing failed")
+        return _error_response("Processing failed", status_code=500)
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=True)
+    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
