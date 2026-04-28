@@ -110,10 +110,14 @@ class FileReaderPlugin:
         }
 
     def read_text_file(self, file_path: str, max_chars: int = 20000) -> dict[str, Any]:
-        """Read the contents of a plain text or markdown file.
+        """Read the raw contents of a plain text, markdown, or log file.
+
+        Use this for .txt, .md, .text, and .log files where you want the raw string.
+        For .csv or .tsv files, use parse_csv_tsv() instead — it returns rows as
+        structured dicts with headers rather than a raw string.
 
         Args:
-            file_path: Path to the .txt or .md file (relative to base_dir or absolute).
+            file_path: Path to the file (relative to base_dir or absolute).
             max_chars: Maximum characters to return. Defaults to 20000.
         """
         if not isinstance(max_chars, int) or max_chars < 1:
@@ -122,8 +126,11 @@ class FileReaderPlugin:
         path = self._resolve_path(file_path)
         if not path.exists() or not path.is_file():
             raise FileNotFoundError(f"file not found: {file_path}")
-        if path.suffix.lower() not in {".txt", ".md", ".text", ".log", ".csv", ".tsv"}:
-            raise ValueError("read_text_file supports .txt, .md, .text, .log, .csv, and .tsv files")
+        if path.suffix.lower() not in {".txt", ".md", ".text", ".log"}:
+            raise ValueError(
+                "read_text_file supports .txt, .md, .text, and .log files. "
+                "For .csv or .tsv files use parse_csv_tsv() to get structured rows."
+            )
 
         try:
             content = path.read_text(encoding="utf-8", errors="replace")

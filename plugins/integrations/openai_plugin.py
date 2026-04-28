@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from typing import Any
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 from openai import OpenAI
 try:
@@ -262,9 +265,13 @@ class OpenAIFunctionCallingPlugin:
             }
 
     def _build_tool_mapping(self) -> dict[str, tuple[str, str, str]]:
-        """Build a deterministic mapping from tool names to allowlisted targets."""
+        """Build a stable semantic mapping from tool names to allowlisted targets.
+
+        Tool names are derived from the module's short name and method name so they
+        remain stable across config changes and give the model mnemonic signal —
+        e.g. ``slack_plugin__post_message`` or ``mongodb_plugin__find_documents``.
+        """
         mapping: dict[str, tuple[str, str, str]] = {}
-        counter = 1
         for module_name in sorted(ALLOWED_MODULES):
             module_config = ALLOWED_MODULES[module_name]
             class_name = module_config["class"]
@@ -280,9 +287,9 @@ class OpenAIFunctionCallingPlugin:
                 ):
                     continue
 
-                tool_name = f"plugin_tool_{counter:03d}"
+                module_short = module_name.split(".")[-1]
+                tool_name = f"{module_short}__{method_name}"
                 mapping[tool_name] = (module_name, class_name, method_name)
-                counter += 1
 
         if not mapping:
             raise ValueError("No allowlisted plugin tools available")
@@ -413,7 +420,23 @@ class OpenAIFunctionCallingPlugin:
                 "Find MongoDB documents with filtering, projection, sorting, and pagination. "
                 "Use args in this exact order: "
                 "[collection, filter_query_or_null, projection_or_null, sort_or_null, limit, skip]. "
-                "sort_or_null should be an array like [{field: 'created_at', direction: 'desc'}]."
+                "sort_or_null should be an array like [{field: 'created_at', direction: 'desc'}]. "
+                "Do NOT use this just to count documents — call count_documents instead. "
+                "IMPORTANT: the [slack_channel_id: ...] tag in the user's message is for Slack posting only. "
+                "Do NOT apply it as a MongoDB filter unless the user explicitly says to filter by channel. "
+                "When the user asks to 'list' or 'query' a collection, pass null as the filter to return all documents."
+            )
+
+        if (
+            module_name == "plugins.mongodb_plugin"
+            and class_name == "MongoDBPlugin"
+            and method_name == "count_documents"
+        ):
+            return (
+                "Count MongoDB documents matching a filter without fetching them. "
+                "Use args in this exact order: [collection, filter_query_or_null]. "
+                "Pass null or {} to count all documents in the collection. "
+                "Use this whenever the user asks how many records exist — do NOT call find_documents with a large limit just to count."
             )
 
         if (
@@ -464,7 +487,7 @@ class OpenAIFunctionCallingPlugin:
             module_name == "plugins.system_tools.media_storage_plugin"
             and class_name == "MediaStoragePlugin"
         ):
-            base = "Use constructor_args: {\"base_dir\": \"data\"}. "
+            base = "Use constructor_args: {\"base_dir\": \"generated_data\"}. "
             if method_name == "list_files":
                 return (
                     base +
@@ -473,29 +496,37 @@ class OpenAIFunctionCallingPlugin:
                     "Result entries include 'relative_path' relative to generated_data/. "
                     "To get the full path for upload, prepend 'generated_data/' to relative_path."
                 )
-            if method_name == "delete_file":
-                return base + "Delete a file. Use args: [relative_path_within generated_data]."
             if method_name == "list_staged":
-                return base + "List staged files for a session. Use args: [session_id]."
-            if method_name == "clear_staged":
-                return base + "Clear all staged files for a session. Use args: [session_id]."
-            if method_name == "remove_staged_file":
-                return base + "Remove one staged file. Use args: [session_id, filename]."
+                return base + "List files currently staged for a session (read-only). Use args: [session_id]."
+            if method_name == "rename_zip":
+                return (
+                    base +
+                    "Build a rename-zip archive from a staging session. "
+                    "Sorts and renames media files (images grouped by video markers), zips them, "
+                    "and saves the result under generated_data/zips/. "
+                    "Use args: [session_id, sort_order_or_date_taken]. "
+                    "sort_order is 'date_taken' (default) or 'upload_order'. "
+                    "The result includes 'download_url' and 'local_path' for the zip file."
+                )
             if method_name == "zip_files":
                 return (
                     base +
-                    "Zip files already stored in generated_data into a downloadable archive. "
-                    "Use this whenever the user asks to zip files. No staging session required. "
+                    "Zip files into a downloadable archive without renaming them. "
                     "Use args: [file_paths_list, zip_name_or_empty_string]. "
-                    "file_paths_list is a list of relative_path values from list_files (e.g. ['01.mp4', '01A.jpg']). "
-                    "The result includes 'local_path' — pass that directly to SlackPlugin.upload_local_file as file_path."
+                    "file_paths_list accepts any of: "
+                    "absolute paths (e.g. from sync_files result 'path' field), "
+                    "CWD-relative paths (e.g. 'generated_data/slack_downloads/photo.jpg'), "
+                    "or base-relative paths (e.g. 'slack_downloads/photo.jpg'). "
+                    "All three formats work — use the 'path' values from sync_files directly. "
+                    "Every file must exist on disk before calling this; run sync_files first for Slack files. "
+                    "The result includes 'local_path' — pass that directly to SlackPlugin.upload_local_file."
                 )
 
         if (
             module_name == "plugins.system_tools.file_reader_plugin"
             and class_name == "FileReaderPlugin"
         ):
-            base = "Use constructor_args: {\"base_dir\": \"data\"}. "
+            base = "Use constructor_args: {\"base_dir\": \"generated_data\"}. "
             if method_name == "list_directory":
                 return (
                     base +
@@ -506,7 +537,7 @@ class OpenAIFunctionCallingPlugin:
                     "To get the full path for Slack upload, use 'generated_data/' + relative_path."
                 )
             if method_name == "read_text_file":
-                return base + "Read a text/markdown/csv/tsv file. Use args: [file_path, max_chars_or_20000]."
+                return base + "Read a .txt, .md, .text, or .log file as a raw string. Use args: [file_path, max_chars_or_20000]. For .csv or .tsv files use parse_csv_tsv instead — read_text_file will reject them."
             if method_name == "read_pdf_text":
                 return base + "Extract text from a PDF file. Use args: [file_path, max_chars_or_20000]."
             if method_name == "read_docx_text":
@@ -524,7 +555,8 @@ class OpenAIFunctionCallingPlugin:
                     "'generated_data/staging/<session_id>/photo.jpg' or 'generated_data/photo.jpg' or "
                     "'generated_data/slack_downloads/image.png'. "
                     "Use the EXACT path from the [System event] or tool result — do not shorten or guess it. "
-                    "The result contains a 'data_url' field; pass it directly to vision reasoning to describe the image."
+                    "The result contains a 'data_url' field; pass it directly to vision reasoning to describe the image. "
+                    "For EXIF, GPS, location, camera info, or 'when was this taken' questions, use read_image_gps instead — it is self-contained and faster."
                 )
             if method_name == "read_image_gps":
                 return (
@@ -546,9 +578,45 @@ class OpenAIFunctionCallingPlugin:
         ):
             return (
                 "List files inside generated_data/. "
-                "Use constructor_args: {\"base_dir\": \"data\"}. "
+                "Use constructor_args: {\"base_dir\": \"generated_data\"}. "
                 "Use args: [relative_subdirectory_or_dot]. "
                 "Do NOT use this to list upload files; use MediaStoragePlugin.list_files instead."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
+            and method_name == "open_modal"
+        ):
+            return (
+                "Open a Slack modal dialog. Requires a trigger_id from a button-click action event — "
+                "trigger_ids are NOT available from regular message events and expire in 3 seconds. "
+                "Use args: [args_dict] where args_dict is: "
+                "{'trigger_id': '<id from action event>', 'modal_view': { "
+                "'title': {'type': 'plain_text', 'text': '<max 24 chars>'}, "
+                "'submit': {'type': 'plain_text', 'text': 'Submit'}, "
+                "'close': {'type': 'plain_text', 'text': 'Cancel'}, "
+                "'blocks': [<Block Kit input blocks>], "
+                "'callback_id': '<optional string to identify submission>', "
+                "'private_metadata': '<optional string passed back on submit>'}}. "
+                "Call this immediately upon receiving a block_action event — do not delay."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
+            and method_name == "request_modal_with_button"
+        ):
+            return (
+                "Post a Slack message containing a button that, when clicked, opens a modal. "
+                "Use this to initiate a form when you do NOT already have a trigger_id. "
+                "Use args: [args_dict] where args_dict contains: "
+                "'channel' (channel ID or name, required), "
+                "'message_text' (text shown above the button), "
+                "'button_text' (label on the button), "
+                "'callback_id' (action_id for the button — must match your block_action handler), "
+                "'modal_view' (optional dict: if provided, the modal definition is stored in Redis "
+                "and automatically opened when the button is clicked)."
             )
 
         if (
@@ -572,13 +640,398 @@ class OpenAIFunctionCallingPlugin:
         if (
             module_name == "plugins.integrations.slack_plugin"
             and class_name == "SlackPlugin"
+            and method_name == "upload_content"
+        ):
+            return (
+                "Upload a string (text content) as a file to a Slack channel. "
+                "Use this when you have generated content in memory (e.g. a report, CSV, JSON, markdown string) "
+                "that you want to post as a file attachment — NOT for files already on disk (use upload_local_file instead). "
+                "Use args: [filename, content, channel, title_or_null, initial_comment_or_null]. "
+                "'content' is the raw string to upload. "
+                "'filename' is the name Slack will display, e.g. 'report.md' or 'data.csv'. "
+                "For 'channel', always use the channel ID from [slack_channel_id: ...] in the current message — "
+                "do NOT pass null; pass the explicit channel ID. "
+                "Example: if the message contains '[slack_channel_id: C08SH2VRPJL]', use 'C08SH2VRPJL' as channel."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
+            and method_name == "sync_files"
+        ):
+            return (
+                "Ensure every matched file is on local disk under generated_data/ in one call. "
+                "Queries media_files first (new design) and falls back to slack_files for legacy records. "
+                "For each record: checks disk → downloads from Slack if missing → re-embeds EXIF into JPEGs. "
+                "Also backfills exif_b64 into media_files for any file already on disk that is missing it. "
+                "Use args: [query_or_null, limit_or_50]. "
+                "query is a MongoDB filter dict, e.g. {'channel': 'C123ABC'} or {'filename': {'$regex': '\\\\.jpg$'}}. "
+                "Pass null to match all records. "
+                "Returns 'files' — a list where each entry has: "
+                "'path' (absolute local path ready to use), 'filename', "
+                "'source' ('local'|'slack'|'error'), 'exif_restored' (bool). "
+                "Pass 'path' values directly to zip_files or any file tool. "
+                "Use this instead of calling find_documents + get_file separately."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
+            and method_name == "intake_media"
+        ):
+            return (
+                "Unified file intake: save raw bytes to generated_data/, extract EXIF once, write media_files record. "
+                "Use args: [args_dict] where args_dict contains: "
+                "'raw_bytes' (bytes — the raw file content), "
+                "'filename' (original filename, e.g. 'photo.jpg'), "
+                "'base_dir' (use 'generated_data'), "
+                "'channel' (optional Slack channel ID), "
+                "'url_private' (optional Slack url_private for later re-download), "
+                "'subfolder' (subdirectory under generated_data/, default 'slack_downloads'), "
+                "'source' (optional: 'upload' | 'slack_share', default 'slack_share'). "
+                "Returns: relative_path, full_path, filename, exif (typed dict with gps.lat/lon), "
+                "exif_b64, file_hash, already_existed (bool). "
+                "Use this for any new file that needs to be stored — it deduplicates by SHA-256 hash."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
+            and method_name == "migrate_slack_files"
+        ):
+            return (
+                "Migrate existing slack_files MongoDB records into the new media_files collection. "
+                "Reads each record, computes SHA-256 hash from the file on disk, extracts typed EXIF, "
+                "stores a clean relative_path from generated_data/. "
+                "Safe to run multiple times — skips files already in media_files by hash. "
+                "Use args: [args_dict] where args_dict contains: "
+                "'base_dir' (use 'generated_data'). "
+                "Call this once after deployment to bring existing files into the new design. "
+                "Returns: migrated, skipped_not_on_disk, skipped_duplicate, errors."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
+            and method_name == "update_media_slack_fields"
+        ):
+            return (
+                "Update the Slack url_private, permalink, and file_id on a media_files record after upload. "
+                "Use args: [args_dict] where args_dict contains: "
+                "'file_hash' (from intake_media result), "
+                "'slack_file_id' (optional), 'url_private' (optional), 'permalink' (optional). "
+                "Call this after uploading a file to Slack to complete the record."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
+            and method_name == "get_file"
+        ):
+            return (
+                "Retrieve a previously uploaded file — returns it from local disk or re-downloads it from Slack if missing. "
+                "Use args: [lookup_dict] where lookup_dict is EXACTLY ONE of: "
+                "{'path': 'generated_data/photo.jpg'} — look up by the file's recorded local path, OR "
+                "{'filename': 'photo.jpg'} — find the most recent file with that name, OR "
+                "{'filename': 'photo.jpg', 'channel': 'C123ABC'} — narrow to a specific channel. "
+                "Returns 'path' (usable local path) and 'source' ('local' if on disk already, 'slack' if re-downloaded). "
+                "IMPORTANT: if you have already called find_documents on slack_files and have records, "
+                "call this immediately for each record using its local_file_path — "
+                "do NOT ask the user for URLs or file IDs, and do NOT use list_files to pre-check existence. "
+                "get_file checks disk and falls back to Slack automatically."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
+            and method_name == "get_file_exif"
+        ):
+            return (
+                "Return parsed EXIF metadata for a JPEG — reads from disk or falls back to the MongoDB exif_b64 backup "
+                "if the file is not on disk. No download needed. "
+                "Use args: [args_dict] where args_dict is ONE of: "
+                "{'path': 'generated_data/slack_downloads/photo.jpg'} — look up by the file's recorded local path, OR "
+                "{'filename': 'photo.jpg'} — find the most recent matching record in slack_files by filename. "
+                "Use 'filename' when the user gives a file name and the file may not be on disk — "
+                "this is the correct first call when asked for EXIF on a Slack file by name. "
+                "Returns orientation, GPS latitude/longitude, Google Maps URL, camera make/model, datetime_original. "
+                "Do NOT check local disk or call read_image_gps first — call this directly and it handles both cases."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
+            and method_name == "backfill_exif"
+        ):
+            return (
+                "Maintenance tool: scan all MongoDB slack_files records and save EXIF data for any record "
+                "that is missing it but whose file is still on disk. "
+                "Use args: [] (no arguments needed). "
+                "Safe to call multiple times — skips records that already have EXIF saved. "
+                "Only call this when a user explicitly asks to fix or backfill EXIF records, "
+                "not during normal operation."
+            )
+
+        if (
+            module_name == "plugins.integrations.slack_plugin"
+            and class_name == "SlackPlugin"
             and method_name == "post_message"
         ):
             return (
-                "Post a text message to a Slack channel. "
-                "Use args: [channel, text]. "
-                "channel can be a channel name like '#network' or a channel ID like 'C123ABC'."
+                "Post a message to a Slack channel. "
+                "Use args: [channel, text] for plain text, or [channel, text, blocks] for rich Block Kit messages. "
+                "channel can be a channel name like '#network' or a channel ID like 'C123ABC'. "
+                "text is always required — it serves as the notification fallback even when blocks are used. "
+                "blocks is an optional list of Slack Block Kit block dicts (sections, actions, inputs, etc.). "
+                "Omit blocks when a plain text reply is sufficient."
             )
+
+        if (
+            module_name == "plugins.integrations.web_search_plugin"
+            and class_name == "WebSearchPlugin"
+        ):
+            if method_name == "web_search":
+                return (
+                    "Search the web using Google (via SerpApi) and return the top results. "
+                    "No constructor_args needed (API key is read from env). "
+                    "Use args: [query, num_results_or_5]. "
+                    "num_results is 1–10; default 5. "
+                    "Each result has: title, snippet, url, display_url. "
+                    "Use for general lookups, news, documentation, or any public information question."
+                )
+            if method_name == "search_near_address":
+                return (
+                    "Search for something near a specific street address using Google. "
+                    "No constructor_args needed. "
+                    "Use args: [address, query, num_results_or_5]. "
+                    "address: street address or place name (e.g. '123 Main St, Springfield'). "
+                    "query: what to find near that address (e.g. 'locksmith', 'CCTV installer'). "
+                    "Returns the same result format as web_search."
+                )
+            if method_name == "search_image_context":
+                return (
+                    "Search for business context using image analysis results and a reverse-geocoded address. "
+                    "No constructor_args needed. "
+                    "Use args: [formatted_address, objects_found, num_results_or_5]. "
+                    "formatted_address: string from ImageProcessingPlugin.reverse_geocode(). "
+                    "objects_found: list of detected object labels from detect_objects(). "
+                    "Use this after classify_project to get background context about a site."
+                )
+
+        if (
+            module_name == "plugins.system_tools.subprocess_plugin"
+            and class_name == "SubprocessPlugin"
+            and method_name == "run_python_script"
+        ):
+            return (
+                "Run a Python .py file and return its stdout, stderr, and exit_code. "
+                "Use constructor_args: {} (defaults to app working directory). "
+                "Use args: [script_path, args_or_null, cwd_or_null, timeout_seconds_or_60]. "
+                "script_path must point to an existing .py file — write it to disk first "
+                "(use TextFileCRUDPlugin.create_text or FileSystemPlugin), then call this. "
+                "Example path: 'generated_data/my_script.py'. "
+                "args is a list of strings passed as command-line arguments (sys.argv[1:]). "
+                "Check exit_code == 0 before reporting success; stdout/stderr contain the output."
+            )
+
+        if (
+            module_name == "plugins.system_tools.word_plugin"
+            and class_name == "WordPlugin"
+        ):
+            base = "Use constructor_args: {\"base_dir\": \"generated_data\"}. "
+            if method_name == "create_document":
+                return (
+                    base +
+                    "Create a new DOCX file with an optional heading and paragraph list. "
+                    "Use args: [args_dict] where args_dict contains: "
+                    "'output_path' (required, e.g. 'reports/summary.docx'), "
+                    "'title' (optional heading string), "
+                    "'paragraphs' (optional list of paragraph strings). "
+                    "output_path is resolved relative to generated_data/. "
+                    "Returns 'output_path' (absolute path)."
+                )
+            if method_name == "inspect_document":
+                return (
+                    base +
+                    "Preview the paragraph and table contents of an existing DOCX file without modifying it. "
+                    "Use args: [args_dict] where args_dict contains: "
+                    "'file_path' (required), 'max_paragraphs' (default 10), 'max_table_rows' (default 5). "
+                    "Use this before replace_text or add_table to understand the document structure."
+                )
+            if method_name == "replace_text":
+                return (
+                    base +
+                    "Find-and-replace text tokens inside a DOCX file (paragraphs and table cells) and write the result to a new file. "
+                    "Use args: [args_dict] where args_dict contains: "
+                    "'file_path' (path to source .docx), "
+                    "'output_path' (path to save the modified copy), "
+                    "'replacements' (list of {\"find\": \"{{TOKEN}}\", \"replace\": \"value\"} objects). "
+                    "Both file_path and output_path are resolved relative to generated_data/. "
+                    "The source file is not modified — a new copy is always written to output_path."
+                )
+            if method_name == "add_table":
+                return (
+                    base +
+                    "Append a table to the end of an existing DOCX file and save the result. "
+                    "Use args: [args_dict] where args_dict contains: "
+                    "'file_path' (source .docx), 'output_path' (destination .docx), "
+                    "'headers' (list of column header strings), "
+                    "'rows' (list of lists — each inner list must have the same length as headers). "
+                    "All cell values are converted to strings automatically."
+                )
+            if method_name == "export_pdf":
+                return (
+                    base +
+                    "Convert a DOCX file to PDF using the best available local converter "
+                    "(tries docx2pdf, then win32com, then LibreOffice/soffice). "
+                    "Use args: [args_dict] where args_dict contains: "
+                    "'file_path' (required, path to .docx), "
+                    "'output_path' (optional, defaults to same name with .pdf extension). "
+                    "Check that LibreOffice is installed if this fails on Linux."
+                )
+            if method_name == "generate_documents":
+                return (
+                    base +
+                    "Bulk-generate DOCX files from a template + per-document data rows. "
+                    "Use args: [args_dict] where args_dict contains: "
+                    "'input_docx' (path to the template .docx with {{TOKEN}} placeholders), "
+                    "'output_dir' (folder to write generated files into), "
+                    "'filename_template' (e.g. '{document_name_sanitized}_report.docx'), "
+                    "'documents_json' (list of dicts — each dict is one document's token/value map), "
+                    "'replacements_json' (optional list of global {find, replace} pairs applied to every document), "
+                    "'table_updates' (optional list of table expansion configs), "
+                    "'export_pdf' (optional bool, default false — also export each generated .docx to PDF). "
+                    "Each document dict must contain 'document_name' (used in filename_template). "
+                    "Returns 'generated_documents' list with 'output_path' for each file."
+                )
+
+        if (
+            module_name == "plugins.system_tools.markdown_pdf_plugin"
+            and class_name == "MarkdownPDFPlugin"
+            and method_name == "markdown_to_pdf"
+        ):
+            return (
+                "Convert a Markdown (.md) file to a PDF using ReportLab. "
+                "Use constructor_args: {\"base_dir\": \"generated_data\"}. "
+                "Use args: [file_path, output_path_or_null, title_or_null]. "
+                "file_path must be a .md file (absolute or relative to generated_data/). "
+                "output_path defaults to the same directory as the .md file with a .pdf extension. "
+                "title adds a large heading at the top of the PDF. "
+                "Supports headings (#–######), bold, italic, code blocks, bullet lists, numbered lists, "
+                "inline images (local file paths only — not HTTP URLs), and Markdown tables. "
+                "Returns 'output_path' (absolute path to the generated PDF)."
+            )
+
+        if (
+            module_name == "plugins.system_tools.apscheduler_plugin"
+            and class_name == "APSchedulerPlugin"
+        ):
+            if method_name == "health":
+                return (
+                    "Check whether the APScheduler scheduler is running. "
+                    "Use args: [] (no arguments). "
+                    "Returns 'running' (bool) and 'job_count'. "
+                    "Call this before adding jobs if you are unsure the scheduler is started."
+                )
+            if method_name == "list_jobs":
+                return (
+                    "List all scheduled jobs in the APScheduler instance. "
+                    "Use args: [] (no arguments). "
+                    "Each job includes: id, name, next_run_time, trigger."
+                )
+            if method_name == "run_workflow_now":
+                return (
+                    "Execute a workflow immediately (one-shot, not scheduled). "
+                    "Use args: [workflow]. "
+                    "workflow is a dict: "
+                    "{\"steps\": [{\"id\": \"step1\", \"module\": \"plugins.mongodb_plugin\", "
+                    "\"class\": \"MongoDBPlugin\", \"method\": \"find_documents\", "
+                    "\"constructor_args\": {}, \"args\": [\"my_collection\", null, null, null, 10, 0]}], "
+                    "\"stop_on_error\": true}. "
+                    "Step results can reference prior steps via ${steps.<step_id>.result.<path>}. "
+                    "Use this for ad-hoc tasks that should run once right now."
+                )
+            if method_name == "add_interval_workflow_job":
+                return (
+                    "Schedule a workflow to run on a fixed time interval. "
+                    "Use args: [job_id, workflow, interval_seconds, replace_existing]. "
+                    "job_id: unique string identifier for the job. "
+                    "workflow: same format as run_workflow_now. "
+                    "interval_seconds: how often to repeat (default 60). "
+                    "replace_existing: true to overwrite a job with the same id (default true). "
+                    "Returns 'job' with the next_run_time."
+                )
+            if method_name == "add_cron_workflow_job":
+                return (
+                    "Schedule a workflow using a cron expression. "
+                    "Use args: [args_dict] where args_dict contains: "
+                    "'job_id' (required string), 'workflow' (required, same format as run_workflow_now), "
+                    "'minute' (default '*'), 'hour' (default '*'), 'day' (default '*'), "
+                    "'month' (default '*'), 'day_of_week' (default '*'), 'second' (default '0'). "
+                    "Example for 9 AM every weekday: hour='9', minute='0', day_of_week='mon-fri'. "
+                    "All cron fields accept standard cron syntax strings."
+                )
+            if method_name == "add_date_workflow_job":
+                return (
+                    "Schedule a workflow to run once at a specific date and time. "
+                    "Use args: [job_id, workflow, run_at_iso, replace_existing]. "
+                    "run_at_iso: ISO 8601 datetime string, e.g. '2026-05-01T09:00:00'. "
+                    "The job is removed automatically after it runs once."
+                )
+            if method_name == "remove_job":
+                return (
+                    "Remove a scheduled job by its job_id. "
+                    "Use args: [job_id]. "
+                    "Call list_jobs first if you need to find the job_id."
+                )
+            if method_name == "get_last_run":
+                return (
+                    "Get the result of the most recent execution of a scheduled job. "
+                    "Use args: [job_id]. "
+                    "Returns the stored result dict from the last workflow execution, or null if never run."
+                )
+
+        if (
+            module_name == "plugins.system_tools.streamlit_plugin"
+            and class_name == "StreamlitPlugin"
+        ):
+            if method_name == "create_app_file":
+                return (
+                    "Create a Streamlit app .py file from a template or custom content. "
+                    "Use args: [args_dict] where args_dict contains: "
+                    "'file_path' (required, path to the .py file to create), "
+                    "'title' (page title, default 'Dynamic Streamlit App'), "
+                    "'template' (one of: 'basic', 'simple_submit_form'; default 'basic'), "
+                    "'description' (optional subtitle text), "
+                    "'app_content' (optional: raw Python source code — overrides template entirely), "
+                    "'overwrite_existing' (bool, default false), "
+                    "'auto_start' (bool: also call start_app after writing the file, default false). "
+                    "file_path is resolved relative to the plugin's base_dir. "
+                    "Returns 'file_path' (absolute path of the created file). "
+                    "Use constructor_args: {} (base_dir defaults to '.')."
+                )
+            if method_name == "start_app":
+                return (
+                    "Start a Streamlit app as a background process. "
+                    "Only one app can run at a time — call stop_app first if one is already running. "
+                    "Use args: [script_path, port_or_null, host_or_null, headless_or_true]. "
+                    "script_path must be an existing .py file. "
+                    "Returns 'pid', 'url' (e.g. 'http://127.0.0.1:8501'), and 'port'. "
+                    "Use constructor_args: {} (defaults to port 8501, host 127.0.0.1)."
+                )
+            if method_name == "status":
+                return (
+                    "Check whether a Streamlit app process is currently running. "
+                    "Use args: [] (no arguments). "
+                    "Returns 'running' (bool), 'pid', and 'script' (path of active app)."
+                )
+            if method_name == "stop_app":
+                return (
+                    "Stop the active Streamlit app process. "
+                    "Use args: [force_or_false, timeout_seconds_or_10]. "
+                    "force=true sends SIGKILL; false sends SIGTERM first (graceful). "
+                    "Returns 'stopped' (bool) and 'exit_code'."
+                )
 
         return (
             f"Call plugin method {module_name}::{class_name}.{method_name}. "
@@ -705,10 +1158,10 @@ class OpenAIFunctionCallingPlugin:
             content = message.content or ""
 
             # Log each round for debugging
-            print(f"[OpenAI][Round {round_num+1}/{max_tool_rounds}] tools_called={len(tool_calls)}, content_len={len(content)}", file=sys.stderr)
+            logger.debug("[OpenAI][Round %d/%d] tools_called=%d, content_len=%d", round_num + 1, max_tool_rounds, len(tool_calls), len(content))
             if tool_calls:
                 tool_names = [tc.function.name for tc in tool_calls]
-                print(f"[OpenAI][Round {round_num+1}] tool_calls: {tool_names}", file=sys.stderr)
+                logger.debug("[OpenAI][Round %d] tool_calls: %s", round_num + 1, tool_names)
 
             if tool_calls:
                 messages.append(
@@ -724,9 +1177,9 @@ class OpenAIFunctionCallingPlugin:
                     try:
                         tool_output = self._execute_tool_call(tool_name, tool_args)
                         executed_tool_calls += 1
-                        print(f"[OpenAI][Round {round_num+1}] {tool_name} executed successfully", file=sys.stderr)
+                        logger.debug("[OpenAI][Round %d] %s executed successfully", round_num + 1, tool_name)
                     except Exception as tool_exc:
-                        print(f"[OpenAI][Round {round_num+1}] {tool_name} failed: {tool_exc}", file=sys.stderr)
+                        logger.warning("[OpenAI][Round %d] %s failed: %s", round_num + 1, tool_name, tool_exc)
                         tool_output = json.dumps({"error": str(tool_exc)})
                     # Track file paths passed to read_image_for_vision so callers can
                     # build MongoDB metadata for images from any upload source.
@@ -776,7 +1229,7 @@ class OpenAIFunctionCallingPlugin:
 
             final_text = message.content or ""
             if final_text.strip():
-                print(f"[OpenAI][Round {round_num+1}] Got final response: {len(final_text)} chars", file=sys.stderr)
+                logger.debug("[OpenAI][Round %d] Got final response: %d chars", round_num + 1, len(final_text))
                 messages.append(
                     {
                         "role": "assistant",
@@ -787,10 +1240,10 @@ class OpenAIFunctionCallingPlugin:
             else:
                 # Model returned neither tool calls nor content — nudge it to produce
                 # a final reply so the next round has new context to act on.
-                print(f"[OpenAI][Round {round_num+1}] No content and no tool_calls — injecting finalization nudge", file=sys.stderr)
+                logger.debug("[OpenAI][Round %d] No content and no tool_calls — injecting finalization nudge", round_num + 1)
                 messages.append({"role": "user", "content": "Please provide your final answer now."})
 
-        print(f"[OpenAI] Max rounds ({max_tool_rounds}) exceeded without final response", file=sys.stderr)
+        logger.warning("[OpenAI] Max rounds (%d) exceeded without final response", max_tool_rounds)
         raise ValueError("Exceeded max tool-calling rounds without a final response")
 
     def _build_system_prompt(self) -> str:
@@ -802,6 +1255,25 @@ class OpenAIFunctionCallingPlugin:
             "If a user provides a local file path, do not claim you cannot access local files; call the appropriate tool instead. "
             "For plugin tool calls, put method inputs inside 'args' as positional arguments; "
             "when a plugin method accepts a payload object, pass it as args[0]. "
+            "\n\nAction mandate — bias toward action, not narration: "
+            "When the user gives a directive and you already have sufficient information to act, "
+            "call the tool immediately. Do NOT describe what you could do. Do NOT ask for confirmation. "
+            "Do NOT summarize a plan and wait. A response that describes a capability without calling "
+            "a tool is a failure when the information needed to act is already in hand. "
+            "Examples of the wrong pattern: "
+            "'Yes, I can download those files — please confirm you want to proceed.' "
+            "'The files appear to be stored in the database. Would you like me to retrieve them?' "
+            "Examples of the correct pattern: call sync_files, report which files were retrieved, continue. "
+            "\n\nSlack file retrieval workflow — use sync_files, not a manual loop: "
+            "When the user wants to work with files from Slack (zip, read, analyze, etc.), "
+            "call SlackPlugin.sync_files in a single tool call. "
+            "sync_files queries slack_files internally, downloads any missing files from Slack, "
+            "and re-embeds EXIF into JPEGs — all in one step. "
+            "The returned 'files' list contains ready-to-use local 'path' values. "
+            "Pass those paths directly to zip_files or whatever the user asked for next. "
+            "Do NOT call find_documents + get_file in a loop — sync_files replaces that entire pattern. "
+            "Do NOT use MediaStoragePlugin.list_files to find Slack files — it does not see slack_downloads. "
+            "Do NOT ask the user for URLs or file IDs — sync_files reads everything from the database. "
             "\nImage handling rules:"
             "\n  0. FILE SHARED WITH NO EXPLICIT REQUEST: if the user uploaded or shared a file without "
             "asking for analysis, EXIF data, or a description — acknowledge receipt briefly "
@@ -811,9 +1283,16 @@ class OpenAIFunctionCallingPlugin:
             "typos or paraphrases) is asking for visual analysis, proceed with rule 2."
             "\n  1. EXIF/METADATA REQUESTS (EXIF, GPS, location, coordinates, camera make/model, 'when was this taken', "
             "'date taken', 'show image data', 'show metadata'): "
-            "call FileReaderPlugin.read_image_gps with the saved local file path immediately. "
-            "The saved path is listed under 'Saved local image copies' in the context. "
-            "Do NOT describe visual content. Do NOT ask the user first. read_image_gps is self-contained."
+            "If the file path is listed in the current context under 'Saved local image copies', "
+            "call FileReaderPlugin.read_image_gps with that path immediately. "
+            "If the user gives a filename but it is NOT in the current context (it is a Slack file from a prior upload), "
+            "call SlackPlugin.get_file_exif with {'filename': '<name>'} — "
+            "it reads EXIF from the MongoDB backup without downloading the file. "
+            "If the user asks for EXIF but does NOT name a specific file, "
+            "call sync_files to get all available files, then call get_file_exif for each one "
+            "and report the results — do NOT ask the user to pick first. "
+            "Do NOT guess or invent a local path. Do NOT ask the user where the file is. "
+            "Do NOT describe visual content. read_image_gps and get_file_exif are both self-contained."
             "\n  2. VISUAL ANALYSIS REQUESTS (describe, what is shown, analyze, identify, what do you see, "
             "'analize', 'analyse', or any paraphrase requesting you to look at or explain the image): "
             "call FileReaderPlugin.read_image_gps first to get EXIF/metadata, then use the image pixels "
@@ -826,14 +1305,19 @@ class OpenAIFunctionCallingPlugin:
             "depends entirely on what the user is asking — use your judgment based on the conversation. "
             "\n\nStorage layout (relative to the app working directory):\n"
             "- generated_data/ : all files — uploads, staging sessions, Slack downloads, processed files, and notes. "
-            "Use MediaStoragePlugin (constructor_args: {\"base_dir\": \"data\"}) to list or manage upload files. "
+            "Use MediaStoragePlugin (constructor_args: {\"base_dir\": \"generated_data\"}) to list or manage upload files. "
             "list_files returns entries with a 'relative_path' field; prepend 'generated_data/' to get the full path.\n"
-            "Use FileReaderPlugin (constructor_args: {\"base_dir\": \"data\"}) to read files here. "
+            "Use FileReaderPlugin (constructor_args: {\"base_dir\": \"generated_data\"}) to read files here. "
             "list_directory returns entries with a 'relative_path' field; prepend 'generated_data/' to get the full path. "
             "Slack image attachments are saved under 'generated_data/slack_downloads/'.\n"
             "\nWhen uploading a file to Slack with upload_local_file, the file_path arg must be the "
             "full relative path constructed from the tool result (e.g. 'generated_data/photo.jpg'). "
             "Always look up the path from a prior list_files or list_directory call — never invent it. "
+            "\n\n[slack_channel_id:] scope rule: every Slack message includes a [slack_channel_id: <ID>] tag. "
+            "This ID is ONLY for Slack operations that need a target channel (post_message, upload_local_file, upload_content). "
+            "Do NOT use it to filter MongoDB queries unless the user explicitly asks to filter by channel. "
+            "When a user says 'list the slack_files collection' or 'query the database', "
+            "call find_documents with a null filter — return ALL documents regardless of channel. "
             "\n\nIf the user asks to send an email attachment, include attachment file paths in Gmail send_email args. "
             "Do not claim an attachment was sent unless the Gmail tool result shows attachment_count > 0. "
             "For MongoDB write tools, do not claim a document was created/updated/replaced unless the tool result proves it. "
