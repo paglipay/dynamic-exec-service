@@ -1,0 +1,80 @@
+{
+  "stop_on_error": true,
+  "steps": [
+    {
+      "id": "get_schools",
+      "module": "plugins.mongodb_plugin",
+      "class": "MongoDBPlugin",
+      "method": "find_documents",
+      "constructor_args": {
+        "database": "dynamic-exec-service-streamlit"
+      },
+      "args": [
+        {
+          "collection": "r1_data",
+          "filter_query": {
+            "latitude": { "$exists": true },
+            "longitude": { "$exists": true }
+          },
+          "projection": ["Site", "Loc Code", "School Name", "Address", "latitude", "longitude"],
+          "limit": 200
+        }
+      ]
+    },
+    {
+      "id": "get_images",
+      "module": "plugins.mongodb_plugin",
+      "class": "MongoDBPlugin",
+      "method": "find_documents",
+      "constructor_args": {
+        "database": "dynamic-exec-service-streamlit"
+      },
+      "args": [
+        {
+          "collection": "slack_files",
+          "filter_query": {},
+          "limit": 200
+        }
+      ]
+    },
+    {
+      "id": "match",
+      "module": "plugins.system_tools.nearest_school_matcher_plugin",
+      "class": "NearestSchoolMatcherPlugin",
+      "method": "match_to_schools",
+      "constructor_args": {
+        "max_distance_km": 2.0,
+        "site_field": "Site",
+        "loc_code_field": "Loc Code"
+      },
+      "args": [
+        {
+          "schools": "${steps.get_schools.result.documents}",
+          "image_docs": "${steps.get_images.result.documents}",
+          "skip_downloaded": false
+        }
+      ]
+    },
+    {
+      "id": "deploy",
+      "module": "plugins.system_tools.file_system_plugin",
+      "class": "FileSystemPlugin",
+      "method": "deploy_template_to_projects",
+      "constructor_args": {
+        "base_dir": "generated_data",
+        "allow_outside_base_dir": true
+      },
+      "args": [
+        {
+          "template_dir": "C:/Users/Paul/OneDrive - Los Angeles Unified School District/Paul's Share Folder/Project Sites/_Template",
+          "projects_root": "C:/Users/Paul/OneDrive - Los Angeles Unified School District/Paul's Share Folder/Project Sites",
+          "project_names": "${steps.match.result.project_names}",
+          "copy_files": true,
+          "ignore_dirs": [".venv", "__pycache__", ".git"],
+          "overwrite": false,
+          "stop_on_error": false
+        }
+      ]
+    }
+  ]
+}

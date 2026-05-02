@@ -163,6 +163,14 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "stop_app",
         ],
     },
+    "plugins.integrations.geocoding_plugin": {
+        "class": "NominatimGeocodingPlugin",
+        "methods": ["bulk_geocode_records"],
+    },
+    "plugins.system_tools.nearest_school_matcher_plugin": {
+        "class": "NearestSchoolMatcherPlugin",
+        "methods": ["match_to_schools"],
+    },
     "plugins.integrations.slack_plugin": {
         "class": "SlackPlugin",
         "methods": [
@@ -238,6 +246,12 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "web_search",
             "search_near_address",
             "search_image_context",
+        ],
+    },
+    "plugins.integrations.geocoding_plugin": {
+        "class": "NominatimGeocodingPlugin",
+        "methods": [
+            "bulk_geocode_records",
         ],
     },
     "plugins.system_tools.media_storage_plugin": {
