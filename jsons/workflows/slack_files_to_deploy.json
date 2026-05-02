@@ -28,24 +28,29 @@
       "args": [
         "slack_files",
         {},
-        ["filename", "name", "title", "gps", "latitude", "longitude", "lat", "lon", "location", "download_status"],
+        ["filename", "name", "title", "gps", "latitude", "longitude", "lat", "lon",
+         "location", "download_status", "url_private", "url_private_download", "exif_b64"],
         null,
         200
       ]
     },
     {
-      "id": "match",
-      "module": "plugins.system_tools.nearest_school_matcher_plugin",
-      "class": "NearestSchoolMatcherPlugin",
-      "method": "match_to_schools",
+      "id": "restore",
+      "module": "plugins.system_tools.slack_image_restore_plugin",
+      "class": "SlackImageRestorePlugin",
+      "method": "restore_and_place",
       "constructor_args": {
+        "projects_root": "C:/Users/Paul/OneDrive - Los Angeles Unified School District/Paul's Share Folder/Project Sites",
+        "image_subfolder": "Camera/Design/Pictures",
         "max_distance_km": 2.0,
         "site_field": "Site",
-        "loc_code_field": "Loc Code"
+        "loc_code_field": "Loc Code",
+        "update_mongo": true
       },
       "args": [
         "${steps.get_schools.result.documents}",
         "${steps.get_images.result.documents}",
+        false,
         false
       ]
     },
@@ -61,8 +66,8 @@
       "args": [
         {
           "template_dir": "C:/Users/Paul/OneDrive - Los Angeles Unified School District/Paul's Share Folder/Project Sites/_Template",
-          "projects_root": "Project Sites",
-          "project_names": "${steps.match.result.project_names}",
+          "projects_root": "C:/Users/Paul/OneDrive - Los Angeles Unified School District/Paul's Share Folder/Project Sites",
+          "project_names": "${steps.restore.result.project_names}",
           "copy_files": true,
           "ignore_dirs": [".venv", "__pycache__", ".git"],
           "overwrite": false,
@@ -72,3 +77,4 @@
     }
   ]
 }
+

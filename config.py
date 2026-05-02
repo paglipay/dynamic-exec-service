@@ -171,6 +171,10 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
         "class": "NearestSchoolMatcherPlugin",
         "methods": ["match_to_schools"],
     },
+    "plugins.system_tools.slack_image_restore_plugin": {
+        "class": "SlackImageRestorePlugin",
+        "methods": ["restore_and_place"],
+    },
     "plugins.integrations.slack_plugin": {
         "class": "SlackPlugin",
         "methods": [
