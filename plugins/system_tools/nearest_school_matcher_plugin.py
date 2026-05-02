@@ -202,5 +202,4 @@ class NearestSchoolMatcherPlugin:
             "no_gps_count": no_gps,
             "no_match_count": no_match,
             "skipped_count": skipped,
-            "match_details": match_details,
         }

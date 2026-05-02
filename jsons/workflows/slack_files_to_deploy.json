@@ -10,15 +10,11 @@
         "database": "dynamic-exec-service-streamlit"
       },
       "args": [
-        {
-          "collection": "r1_data",
-          "filter_query": {
-            "latitude": { "$exists": true },
-            "longitude": { "$exists": true }
-          },
-          "projection": ["Site", "Loc Code", "School Name", "Address", "latitude", "longitude"],
-          "limit": 200
-        }
+        "r1_data",
+        { "latitude": { "$exists": true }, "longitude": { "$exists": true } },
+        ["Site", "Loc Code", "School Name", "Address", "latitude", "longitude"],
+        null,
+        200
       ]
     },
     {
@@ -30,11 +26,11 @@
         "database": "dynamic-exec-service-streamlit"
       },
       "args": [
-        {
-          "collection": "slack_files",
-          "filter_query": {},
-          "limit": 200
-        }
+        "slack_files",
+        {},
+        ["filename", "name", "title", "gps", "latitude", "longitude", "lat", "lon", "location", "download_status"],
+        null,
+        200
       ]
     },
     {
@@ -48,11 +44,9 @@
         "loc_code_field": "Loc Code"
       },
       "args": [
-        {
-          "schools": "${steps.get_schools.result.documents}",
-          "image_docs": "${steps.get_images.result.documents}",
-          "skip_downloaded": false
-        }
+        "${steps.get_schools.result.documents}",
+        "${steps.get_images.result.documents}",
+        false
       ]
     },
     {
@@ -67,7 +61,7 @@
       "args": [
         {
           "template_dir": "C:/Users/Paul/OneDrive - Los Angeles Unified School District/Paul's Share Folder/Project Sites/_Template",
-          "projects_root": "C:/Users/Paul/OneDrive - Los Angeles Unified School District/Paul's Share Folder/Project Sites",
+          "projects_root": "Project Sites",
           "project_names": "${steps.match.result.project_names}",
           "copy_files": true,
           "ignore_dirs": [".venv", "__pycache__", ".git"],
