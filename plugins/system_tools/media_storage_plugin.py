@@ -508,3 +508,71 @@ class MediaStoragePlugin:
             "local_path": local_path,
             "files_zipped": len(resolved),
         }
+
+    def zip_directory(
+        self,
+        directory_path: str,
+        zip_name: str = "",
+    ) -> dict[str, Any]:
+        """Recursively zip a directory, preserving its full folder structure.
+
+        The source directory may be anywhere within the project working directory.
+        The resulting ZIP is saved under zips/ inside the storage base.
+
+        Args:
+            directory_path: Path to the directory to zip. Relative paths are
+                resolved from the current working directory.
+            zip_name: Optional custom ZIP filename (without .zip). Defaults to
+                the directory name plus a UTC timestamp.
+
+        Returns:
+            dict with status, filename, size_bytes, download_url, local_path,
+            files_zipped, and source_directory. local_path is suitable for
+            passing directly to SlackPlugin.upload_local_file.
+        """
+        if not isinstance(directory_path, str) or not directory_path.strip():
+            raise ValueError("directory_path must be a non-empty string")
+
+        source = Path(directory_path).resolve()
+        if not source.exists():
+            raise FileNotFoundError(f"Directory not found: {directory_path}")
+        if not source.is_dir():
+            raise ValueError(f"Path is not a directory: {directory_path}")
+
+        # Build zip in memory, preserving tree relative to source's parent
+        buf = io.BytesIO()
+        file_count = 0
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for file in sorted(source.rglob("*")):
+                if file.is_file():
+                    arcname = file.relative_to(source.parent).as_posix()
+                    zf.write(file, arcname=arcname)
+                    file_count += 1
+        zip_bytes = buf.getvalue()
+
+        if file_count == 0:
+            raise ValueError(f"No files found in directory: {directory_path}")
+
+        # Determine zip filename
+        zip_dir = (self._base / "zips").resolve()
+        zip_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        if zip_name and isinstance(zip_name, str) and zip_name.strip():
+            safe_stem = re.sub(r"[^A-Za-z0-9_\-]", "_", zip_name.strip())
+        else:
+            safe_stem = re.sub(r"[^A-Za-z0-9_\-]", "_", source.name)
+        zip_filename = f"{safe_stem}_{ts}.zip"
+        zip_path = zip_dir / zip_filename
+        zip_path.write_bytes(zip_bytes)
+
+        relative = zip_path.relative_to(self._base).as_posix()
+        local_path = f"{self._base.name}/{relative}"
+        return {
+            "status": "success",
+            "filename": zip_filename,
+            "size_bytes": len(zip_bytes),
+            "download_url": f"/files/download/{relative}",
+            "local_path": local_path,
+            "files_zipped": file_count,
+            "source_directory": str(source),
+        }

@@ -2154,12 +2154,93 @@ def _trigger_upload_notification(
                 app.logger.warning("Upload notification: Slack file upload failed: %s", exc)
             if upload_result is None:
                 app.logger.warning("Upload notification: Slack file upload did not complete")
+            else:
+                # File is now in Slack with url_private populated — run the
+                # per-upload restore-and-deploy workflow in a second background thread.
+                _trigger_restore_workflow(filename)
 
         except Exception as exc:
             print(f"[UploadNotify] Slack post failed: {exc}", flush=True)
             app.logger.warning("Upload notification: Slack post failed: %s", exc)
 
     threading.Thread(target=_notify, daemon=True).start()
+
+
+def _trigger_restore_workflow(filename: str) -> None:
+    """Fire-and-forget: run the 4-step restore workflow for a single uploaded file."""
+    import threading
+
+    def _run() -> None:
+        print(f"[RestoreWorkflow] Starting for file: {filename}", flush=True)
+        steps = [
+            {
+                "id": "schools",
+                "module": "plugins.mongodb_plugin",
+                "class": "MongoDBPlugin",
+                "method": "find_documents",
+                "constructor_args": {"database": "dynamic-exec-service-streamlit"},
+                "args": [{"collection": "r1_data", "query": {}, "limit": 0}],
+            },
+            {
+                "id": "images",
+                "module": "plugins.mongodb_plugin",
+                "class": "MongoDBPlugin",
+                "method": "find_documents",
+                "constructor_args": {"database": "dynamic-exec-service-streamlit"},
+                "args": [
+                    {
+                        "collection": "slack_files",
+                        "query": {"original_filename": filename},
+                        "limit": 1,
+                    }
+                ],
+            },
+            {
+                "id": "restore",
+                "module": "plugins.system_tools.slack_image_restore_plugin",
+                "class": "SlackImageRestorePlugin",
+                "method": "restore_and_place",
+                "constructor_args": {},
+                "args": [
+                    {
+                        "schools": "${steps.schools.result.documents}",
+                        "image_docs": "${steps.images.result.documents}",
+                        "skip_downloaded": False,
+                        "dry_run": False,
+                    }
+                ],
+            },
+            {
+                "id": "deploy",
+                "module": "plugins.system_tools.file_system_plugin",
+                "class": "FileSystemPlugin",
+                "method": "deploy_template_to_projects",
+                "constructor_args": {
+                    "base_dir": "generated_data",
+                    "allow_outside_base_dir": True,
+                },
+                "args": [
+                    {
+                        "template_dir": "generated_data/Project Sites/_Template",
+                        "projects_root": "generated_data/Project Sites",
+                        "project_names": "${steps.restore.result.project_names}",
+                        "copy_files": True,
+                        "ignore_dirs": [".venv", "__pycache__", ".git"],
+                        "overwrite": False,
+                        "stop_on_error": False,
+                    }
+                ],
+            },
+        ]
+        try:
+            result = _run_workflow_steps(steps, stop_on_error=False)
+            print(f"[RestoreWorkflow] Completed for {filename}: {result.get('status')}", flush=True)
+            app.logger.info("RestoreWorkflow completed for %s: %s", filename, result.get("status"))
+        except Exception as exc:
+            print(f"[RestoreWorkflow] Failed for {filename}: {exc}", flush=True)
+            app.logger.warning("RestoreWorkflow failed for %s: %s", filename, exc)
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 @app.post("/files/upload")
