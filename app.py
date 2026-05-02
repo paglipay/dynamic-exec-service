@@ -139,6 +139,90 @@ SLACK_MAX_STORED_FORM_SUBMISSIONS = 200
 _slack_form_submissions: list[dict[str, Any]] = []
 _slack_form_submissions_lock = threading.Lock()
 
+# ---------------------------------------------------------------------------
+# Async job store + live-log stdout interceptor
+# ---------------------------------------------------------------------------
+import sys as _sys
+import queue as _queue
+import uuid as _uuid
+
+_jobs: dict[str, dict[str, Any]] = {}
+_jobs_lock = threading.Lock()
+
+# Thread-local slot: when set, prints are also routed to the job's log list.
+_tl = threading.local()
+
+
+class _JobTeeStream:
+    """Wraps real stdout; tees each write into the current thread's job log."""
+
+    def __init__(self, real: Any) -> None:
+        self._real = real
+        self._buf: dict[int, str] = {}  # per-thread partial-line buffer
+
+    def write(self, text: str) -> int:
+        self._real.write(text)
+        job_id: str | None = getattr(_tl, "job_id", None)
+        if job_id:
+            tid = threading.get_ident()
+            buf = self._buf.get(tid, "") + text
+            while "\n" in buf:
+                line, buf = buf.split("\n", 1)
+                line = line.rstrip("\r")
+                if line:
+                    _job_emit(job_id, line)
+            self._buf[tid] = buf
+        return len(text)
+
+    def flush(self) -> None:
+        self._real.flush()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real, name)
+
+
+# Install the tee once at import time.
+_sys.stdout = _JobTeeStream(_sys.stdout)
+
+
+def _job_create() -> str:
+    job_id = str(_uuid.uuid4())
+    with _jobs_lock:
+        _jobs[job_id] = {
+            "status": "running",
+            "log": [],
+            "result": None,
+            "error": None,
+            "queue": _queue.Queue(),
+        }
+    return job_id
+
+
+def _job_emit(job_id: str, message: str) -> None:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+    if job:
+        job["log"].append(message)
+        job["queue"].put(message)
+
+
+def _job_finish(job_id: str, result: Any) -> None:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+    if job:
+        job["status"] = "done"
+        job["result"] = result
+        job["queue"].put(None)  # sentinel
+
+
+def _job_fail(job_id: str, error: str) -> None:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+    if job:
+        job["status"] = "error"
+        job["error"] = error
+        job["queue"].put(None)  # sentinel
+
 # --- File Storage Configuration ---
 # Set BASE_DATA_DIR to set the shared root for all file storage (default: "generated_data").
 # Set FILE_UPLOAD_API_KEY in .env to require authentication for upload/download/list/delete.
@@ -1735,84 +1819,207 @@ def execute() -> Any:
         return _error_response("Internal server error", status_code=500)
 
 
-@app.post("/workflow")
-def workflow() -> Any:
-    """Execute a chain of allowlisted plugin calls in sequence."""
-    print("[workflow] Request received", flush=True)
-    payload = request.get_json(silent=True)
+def _parse_workflow_payload(payload: Any) -> tuple[list, bool] | tuple[None, None]:
+    """Validate top-level workflow payload. Returns (steps, stop_on_error) or (None, None)."""
     if not isinstance(payload, dict):
-        return _error_response("Request body must be valid JSON")
-
+        return None, None
     steps = payload.get("steps")
     stop_on_error = payload.get("stop_on_error", True)
     if not isinstance(steps, list) or not steps:
-        return _error_response("steps must be a non-empty array")
+        return None, None
     if not isinstance(stop_on_error, bool):
-        return _error_response("stop_on_error must be a boolean")
+        return None, None
+    return steps, stop_on_error
 
+
+def _run_workflow_steps(
+    steps: list,
+    stop_on_error: bool,
+) -> dict[str, Any]:
+    """
+    Execute workflow steps sequentially.
+    All print() calls from plugins are captured by the _JobTeeStream if a job_id
+    is bound to the current thread via _tl.job_id.
+    Returns the final response dict (same shape as /workflow JSON response).
+    """
     print(f"[workflow] {len(steps)} step(s) to run", flush=True)
     step_results: dict[str, Any] = {}
     results: list[dict[str, Any]] = []
     has_errors = False
 
+    for index, step in enumerate(steps, start=1):
+        if not isinstance(step, dict):
+            raise ValueError(f"Step {index} must be an object")
+
+        step_id = step.get("id", str(index))
+        if not isinstance(step_id, str) or not step_id.strip():
+            raise ValueError(f"Step {index} id must be a non-empty string")
+        step_id = step_id.strip()
+
+        if step_id in step_results:
+            raise ValueError(f"Duplicate step id '{step_id}'")
+
+        step_on_error = step.get("on_error", "stop" if stop_on_error else "continue")
+        if step_on_error not in {"stop", "continue"}:
+            raise ValueError(f"Step '{step_id}' on_error must be 'stop' or 'continue'")
+
+        module_name, class_name, method_name, constructor_args, args = _validate_execution_fields(step)
+        constructor_args = _resolve_references(constructor_args, step_results)
+        args = _resolve_references(args, step_results)
+
+        print(f"[workflow] Step {index}/{len(steps)} '{step_id}' — {module_name}.{class_name}.{method_name}", flush=True)
+
+        try:
+            validate_request(module_name, class_name, method_name)
+            executor.instantiate(module_name, class_name, constructor_args)
+            result = executor.call_method(module_name, method_name, args)
+            summary = str(result)
+            if len(summary) > 300:
+                summary = summary[:300] + "..."
+            print(f"[workflow] Step '{step_id}' succeeded: {summary}", flush=True)
+            step_results[step_id] = result
+            results.append({"id": step_id, "status": "success", "result": summary})
+        except (ValueError, ImportError, AttributeError, TypeError) as exc:
+            has_errors = True
+            message = str(exc) if str(exc) else "Invalid execution request"
+            print(f"[workflow] Step '{step_id}' FAILED: {message}", flush=True)
+            results.append({"id": step_id, "status": "error", "message": message})
+            if step_on_error == "stop":
+                return {
+                    "status": "error",
+                    "message": f"Workflow failed at step '{step_id}'",
+                    "failed_step": step_id,
+                    "results": results,
+                }
+
+    print(f"[workflow] Completed — has_errors={has_errors}", flush=True)
+    return {"status": "success", "has_errors": has_errors, "results": results}
+
+
+@app.post("/workflow")
+def workflow() -> Any:
+    """Execute a chain of allowlisted plugin calls in sequence."""
+    print("[workflow] Request received", flush=True)
+    payload = request.get_json(silent=True)
+    steps, stop_on_error = _parse_workflow_payload(payload)
+    if steps is None:
+        if not isinstance(payload, dict):
+            return _error_response("Request body must be valid JSON")
+        if not isinstance(payload.get("steps"), list) or not payload.get("steps"):
+            return _error_response("steps must be a non-empty array")
+        return _error_response("stop_on_error must be a boolean")
+
     try:
-        for index, step in enumerate(steps, start=1):
-            if not isinstance(step, dict):
-                raise ValueError(f"Step {index} must be an object")
-
-            step_id = step.get("id", str(index))
-            if not isinstance(step_id, str) or not step_id.strip():
-                raise ValueError(f"Step {index} id must be a non-empty string")
-            step_id = step_id.strip()
-
-            if step_id in step_results:
-                raise ValueError(f"Duplicate step id '{step_id}'")
-
-            step_on_error = step.get("on_error", "stop" if stop_on_error else "continue")
-            if step_on_error not in {"stop", "continue"}:
-                raise ValueError(f"Step '{step_id}' on_error must be 'stop' or 'continue'")
-
-            module_name, class_name, method_name, constructor_args, args = _validate_execution_fields(step)
-            constructor_args = _resolve_references(constructor_args, step_results)
-            args = _resolve_references(args, step_results)
-
-            print(f"[workflow] Step {index}/{len(steps)} '{step_id}' — {module_name}.{class_name}.{method_name}", flush=True)
-
-            try:
-                validate_request(module_name, class_name, method_name)
-                executor.instantiate(module_name, class_name, constructor_args)
-                result = executor.call_method(module_name, method_name, args)
-                summary = str(result)
-                if len(summary) > 300:
-                    summary = summary[:300] + "..."
-                print(f"[workflow] Step '{step_id}' succeeded: {summary}", flush=True)
-                step_results[step_id] = result
-                results.append({"id": step_id, "status": "success", "result": summary})
-            except (ValueError, ImportError, AttributeError, TypeError) as exc:
-                has_errors = True
-                message = str(exc) if str(exc) else "Invalid execution request"
-                print(f"[workflow] Step '{step_id}' FAILED: {message}", flush=True)
-                results.append({"id": step_id, "status": "error", "message": message})
-                if step_on_error == "stop":
-                    return (
-                        jsonify(
-                            {
-                                "status": "error",
-                                "message": f"Workflow failed at step '{step_id}'",
-                                "failed_step": step_id,
-                                "results": results,
-                            }
-                        ),
-                        400,
-                    )
-
-        print(f"[workflow] Completed — has_errors={has_errors}", flush=True)
-        return jsonify({"status": "success", "has_errors": has_errors, "results": results})
+        response_dict = _run_workflow_steps(steps, stop_on_error)
+        status_code = 400 if response_dict.get("status") == "error" else 200
+        return jsonify(response_dict), status_code
     except ValueError as exc:
         return _error_response(str(exc), status_code=400)
     except Exception:
         app.logger.exception("Unhandled workflow execution error")
         return _error_response("Internal server error", status_code=500)
+
+
+@app.post("/workflow/async")
+def workflow_async() -> Any:
+    """Start a workflow in the background; return a job_id for polling."""
+    payload = request.get_json(silent=True)
+    steps, stop_on_error = _parse_workflow_payload(payload)
+    if steps is None:
+        if not isinstance(payload, dict):
+            return _error_response("Request body must be valid JSON")
+        if not isinstance(payload.get("steps"), list) or not payload.get("steps"):
+            return _error_response("steps must be a non-empty array")
+        return _error_response("stop_on_error must be a boolean")
+
+    job_id = _job_create()
+    print(f"[workflow/async] Job {job_id} queued — {len(steps)} step(s)", flush=True)
+
+    def _run() -> None:
+        _tl.job_id = job_id
+        try:
+            result = _run_workflow_steps(steps, stop_on_error)
+            _job_finish(job_id, result)
+        except Exception as exc:
+            app.logger.exception("Unhandled async workflow error")
+            _job_fail(job_id, str(exc) or "Internal server error")
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"status": "accepted", "job_id": job_id}), 202
+
+
+@app.get("/workflow/job/<job_id>")
+def workflow_job_status(job_id: str) -> Any:
+    """Poll the status and accumulated log of an async workflow job."""
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+    if job is None:
+        return _error_response("Job not found", status_code=404)
+    return jsonify({
+        "job_id": job_id,
+        "status": job["status"],
+        "log": list(job["log"]),
+        "result": job["result"],
+        "error": job["error"],
+    })
+
+
+@app.post("/workflow/stream")
+def workflow_stream() -> Any:
+    """Execute a workflow and stream live log lines as Server-Sent Events."""
+    from flask import Response as _Response
+
+    payload = request.get_json(silent=True)
+    steps, stop_on_error = _parse_workflow_payload(payload)
+    if steps is None:
+        if not isinstance(payload, dict):
+            return _error_response("Request body must be valid JSON")
+        if not isinstance(payload.get("steps"), list) or not payload.get("steps"):
+            return _error_response("steps must be a non-empty array")
+        return _error_response("stop_on_error must be a boolean")
+
+    job_id = _job_create()
+    print(f"[workflow/stream] Job {job_id} starting — {len(steps)} step(s)", flush=True)
+
+    def _run() -> None:
+        _tl.job_id = job_id
+        try:
+            result = _run_workflow_steps(steps, stop_on_error)
+            _job_finish(job_id, result)
+        except Exception as exc:
+            app.logger.exception("Unhandled stream workflow error")
+            _job_fail(job_id, str(exc) or "Internal server error")
+
+    threading.Thread(target=_run, daemon=True).start()
+
+    def _sse_generator():
+        with _jobs_lock:
+            q = _jobs[job_id]["queue"]
+        while True:
+            msg = q.get()
+            if msg is None:  # sentinel — job finished
+                with _jobs_lock:
+                    job = _jobs[job_id]
+                import json as _json
+                final = _json.dumps({
+                    "status": job["status"],
+                    "result": job["result"],
+                    "error": job["error"],
+                })
+                yield f"event: done\ndata: {final}\n\n"
+                return
+            # Escape newlines so the SSE frame stays valid
+            safe = msg.replace("\n", " ").replace("\r", "")
+            yield f"data: {safe}\n\n"
+
+    return _Response(
+        _sse_generator(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
