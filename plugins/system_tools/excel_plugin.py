@@ -150,6 +150,9 @@ class ExcelPlugin:
         save_as: str = "output.json",
         max_rows: int | None = None,
         start_row: int = 0,
+        sanitize_keys: bool = False,
+        include_row_index: bool = True,
+        write_file: bool = False,
     ) -> dict[str, Any]:
         """Read an Excel sheet, optionally select/filter rows, and save to a JSON file."""
         if isinstance(file_path, dict):
@@ -161,6 +164,9 @@ class ExcelPlugin:
             resolved_save_as = payload.get("save_as", save_as)
             resolved_max_rows = payload.get("max_rows", max_rows)
             resolved_start_row = payload.get("start_row", start_row)
+            resolved_sanitize_keys = payload.get("sanitize_keys", sanitize_keys)
+            resolved_include_row_index = payload.get("include_row_index", include_row_index)
+            resolved_write_file = payload.get("write_file", write_file)
         else:
             resolved_file_path = file_path
             resolved_sheet = sheet
@@ -169,6 +175,9 @@ class ExcelPlugin:
             resolved_save_as = save_as
             resolved_max_rows = max_rows
             resolved_start_row = start_row
+            resolved_sanitize_keys = sanitize_keys
+            resolved_include_row_index = include_row_index
+            resolved_write_file = write_file
 
         if not isinstance(resolved_file_path, str) or not resolved_file_path.strip():
             raise ValueError("file_path must be a non-empty string")
@@ -196,6 +205,12 @@ class ExcelPlugin:
 
         if filter_by is not None and not isinstance(filter_by, list):
             raise ValueError("filter_by must be an array when provided")
+        if not isinstance(resolved_sanitize_keys, bool):
+            raise ValueError("sanitize_keys must be a boolean")
+        if not isinstance(resolved_include_row_index, bool):
+            raise ValueError("include_row_index must be a boolean")
+        if not isinstance(resolved_write_file, bool):
+            raise ValueError("write_file must be a boolean")
 
         if max_rows is not None:
             max_rows = self._normalize_positive_int(max_rows, "max_rows", minimum=1)
@@ -210,7 +225,8 @@ class ExcelPlugin:
         frame = self._read_sheet_frame(excel_path, sheet_name)
 
         frame = frame.copy()
-        frame.insert(0, "row", frame.index.astype(int) + 2)
+        if resolved_include_row_index:
+            frame.insert(0, "row", frame.index.astype(int) + 2)
 
         if columns:
             missing_columns = [column for column in columns if column not in frame.columns]
@@ -229,11 +245,33 @@ class ExcelPlugin:
 
         records = self._to_json_safe(frame.where(pd.notna(frame), None).to_dict(orient="records"))
 
-        # output_path.parent.mkdir(parents=True, exist_ok=True)
-        # try:
-        #     output_path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
-        # except Exception as exc:
-        #     raise ValueError(f"Failed to write JSON output: {exc}") from exc
+        if resolved_sanitize_keys:
+            def _sanitize(k):
+                if not isinstance(k, str):
+                    k = str(k)
+                k = k.strip().strip(".").replace(".", "_")
+                return k or None
+            sanitized_records = []
+            for rec in records:
+                new_rec = {}
+                for raw_key, val in rec.items():
+                    sk = _sanitize(raw_key)
+                    if sk:
+                        new_rec[sk] = val
+                sanitized_records.append(new_rec)
+            records = sanitized_records
+
+        wrote_file = False
+        if resolved_write_file:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                output_path.write_text(
+                    json.dumps(records, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                wrote_file = True
+            except Exception as exc:
+                raise ValueError(f"Failed to write JSON output: {exc}") from exc
 
         return {
             "status": "success",
@@ -250,6 +288,9 @@ class ExcelPlugin:
             "max_rows": max_rows,
             "save_as": str(output_path),
             "save_as_content": records,
+            "wrote_file": wrote_file,
+            "sanitize_keys": resolved_sanitize_keys,
+            "include_row_index": resolved_include_row_index,
         }
 
     def preview_sheet(

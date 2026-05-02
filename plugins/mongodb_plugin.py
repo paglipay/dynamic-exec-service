@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 
 try:
@@ -12,12 +12,15 @@ except Exception:  # pragma: no cover - dependency may be optional in some envir
     ObjectId = None  # type: ignore[assignment]
 
 try:
-    from pymongo import ASCENDING, DESCENDING, TEXT, MongoClient
+    from pymongo import ASCENDING, DESCENDING, TEXT, MongoClient, UpdateOne
+    from pymongo.errors import BulkWriteError
 except Exception:  # pragma: no cover - dependency may be optional in some environments
     ASCENDING = 1  # type: ignore[assignment]
     DESCENDING = -1  # type: ignore[assignment]
     TEXT = "text"  # type: ignore[assignment]
     MongoClient = None  # type: ignore[assignment]
+    UpdateOne = None  # type: ignore[assignment]
+    BulkWriteError = Exception  # type: ignore[assignment]
 
 
 class MongoDBPlugin:
@@ -802,4 +805,180 @@ class MongoDBPlugin:
             "count": len(documents),
             "documents": documents,
             "limit": normalized_limit,
+        }
+
+    def bulk_upsert_documents(
+        self,
+        collection,
+        documents=None,
+        key_field=None,
+        set_extra=None,
+        timestamp_field=None,
+        ordered=False,
+        dry_run=False,
+        sample_size=5,
+    ):
+        """Bulk upsert a list of documents keyed on `key_field`.
+
+        Builds one UpdateOne({key_field: doc[key_field]}, {"$set": {**doc, **set_extra,
+        timestamp_field: now_utc}}, upsert=True) per document and runs them in a single
+        bulk_write. Documents missing `key_field` are skipped and counted separately.
+
+        Args:
+            collection:       Mongo collection name.
+            documents:        List of dicts to upsert.
+            key_field:        Field used as the upsert match key.
+            set_extra:        Optional dict merged into every doc's $set payload.
+            timestamp_field:  Optional field name; when set, fills with UTC now() per doc.
+            ordered:          Pass-through to bulk_write(ordered=...).
+            dry_run:          If True, return what would be written without contacting Mongo.
+            sample_size:      How many op previews to include in the response.
+        """
+        if isinstance(collection, dict):
+            payload = collection
+            resolved_collection = payload.get("collection")
+            resolved_documents = payload.get("documents", documents)
+            resolved_key_field = payload.get("key_field", key_field)
+            resolved_set_extra = payload.get("set_extra", set_extra)
+            resolved_timestamp_field = payload.get("timestamp_field", timestamp_field)
+            resolved_ordered = payload.get("ordered", ordered)
+            resolved_dry_run = payload.get("dry_run", dry_run)
+            resolved_sample_size = payload.get("sample_size", sample_size)
+        else:
+            resolved_collection = collection
+            resolved_documents = documents
+            resolved_key_field = key_field
+            resolved_set_extra = set_extra
+            resolved_timestamp_field = timestamp_field
+            resolved_ordered = ordered
+            resolved_dry_run = dry_run
+            resolved_sample_size = sample_size
+
+        if UpdateOne is None and not resolved_dry_run:
+            raise ValueError("pymongo is not installed. Install requirements.txt dependencies.")
+
+        if not isinstance(resolved_documents, list):
+            raise ValueError("documents must be a list of objects")
+        if not isinstance(resolved_key_field, str) or not resolved_key_field.strip():
+            raise ValueError("key_field must be a non-empty string")
+        if resolved_set_extra is not None and not isinstance(resolved_set_extra, dict):
+            raise ValueError("set_extra must be an object when provided")
+        if resolved_timestamp_field is not None and (
+            not isinstance(resolved_timestamp_field, str) or not resolved_timestamp_field.strip()
+        ):
+            raise ValueError("timestamp_field must be a non-empty string when provided")
+        if not isinstance(resolved_ordered, bool):
+            raise ValueError("ordered must be a boolean")
+        if not isinstance(resolved_dry_run, bool):
+            raise ValueError("dry_run must be a boolean")
+        if not isinstance(resolved_sample_size, int) or resolved_sample_size < 0:
+            raise ValueError("sample_size must be a non-negative integer")
+
+        validated_collection = self._validate_collection_name(resolved_collection)
+        extra = resolved_set_extra or {}
+        now_utc = datetime.now(timezone.utc)
+
+        ops = []
+        skipped_no_key = 0
+        for raw in resolved_documents:
+            if not isinstance(raw, dict):
+                skipped_no_key += 1
+                continue
+            key_val = raw.get(resolved_key_field)
+            if key_val is None or (isinstance(key_val, str) and not key_val.strip()):
+                skipped_no_key += 1
+                continue
+            set_doc = self._normalize_document(dict(raw), allow_operators=False)
+            for k, v in extra.items():
+                set_doc[k] = v
+            if resolved_timestamp_field:
+                set_doc[resolved_timestamp_field] = now_utc
+            if resolved_dry_run:
+                ops.append({"filter": {resolved_key_field: key_val}, "set": set_doc})
+            else:
+                ops.append(UpdateOne({resolved_key_field: key_val}, {"$set": set_doc}, upsert=True))
+
+        sample_preview = []
+        for op in ops[:resolved_sample_size]:
+            if resolved_dry_run:
+                filt = op["filter"]
+                set_doc = op["set"]
+            else:
+                filt = op._filter
+                set_doc = op._doc.get("$set", {})
+            sample_preview.append({
+                "filter": {k: self._serialize_value(v) for k, v in filt.items()},
+                "set_keys": sorted(set_doc.keys()),
+                "key_value": self._serialize_value(filt.get(resolved_key_field)),
+            })
+
+        if resolved_dry_run:
+            return {
+                "status": "success",
+                "action": "bulk_upsert_documents",
+                "collection": validated_collection,
+                "key_field": resolved_key_field,
+                "total_ops": len(ops),
+                "skipped_no_key": skipped_no_key,
+                "matched_count": 0,
+                "modified_count": 0,
+                "upserted_count": 0,
+                "dry_run": True,
+                "ordered": resolved_ordered,
+                "timestamp_field": resolved_timestamp_field,
+                "sample": sample_preview,
+            }
+
+        if not ops:
+            return {
+                "status": "success",
+                "action": "bulk_upsert_documents",
+                "collection": validated_collection,
+                "key_field": resolved_key_field,
+                "total_ops": 0,
+                "skipped_no_key": skipped_no_key,
+                "matched_count": 0,
+                "modified_count": 0,
+                "upserted_count": 0,
+                "dry_run": False,
+                "ordered": resolved_ordered,
+                "timestamp_field": resolved_timestamp_field,
+                "sample": [],
+                "note": "No operations to perform.",
+            }
+
+        target = self._get_collection(resolved_collection)
+        write_errors = []
+        try:
+            result = target.bulk_write(ops, ordered=resolved_ordered)
+            matched = result.matched_count
+            modified = result.modified_count
+            upserted = len(result.upserted_ids or {})
+        except BulkWriteError as exc:  # type: ignore[misc]
+            details = getattr(exc, "details", {}) or {}
+            matched = int(details.get("nMatched", 0))
+            modified = int(details.get("nModified", 0))
+            upserted = int(details.get("nUpserted", 0))
+            for werr in (details.get("writeErrors") or [])[:10]:
+                write_errors.append({
+                    "index": werr.get("index"),
+                    "code": werr.get("code"),
+                    "errmsg": werr.get("errmsg"),
+                })
+
+        return {
+            "status": "success" if not write_errors else "partial",
+            "action": "bulk_upsert_documents",
+            "collection": validated_collection,
+            "key_field": resolved_key_field,
+            "total_ops": len(ops),
+            "skipped_no_key": skipped_no_key,
+            "matched_count": matched,
+            "modified_count": modified,
+            "upserted_count": upserted,
+            "dry_run": False,
+            "ordered": resolved_ordered,
+            "timestamp_field": resolved_timestamp_field,
+            "sample": sample_preview,
+            "write_errors": write_errors,
         }

@@ -14,6 +14,10 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
         "class": "SampleModule",
         "methods": ["add", "process"],
     },
+    "plugins.data_mapper_plugin": {
+        "class": "DataMapperPlugin",
+        "methods": ["map"],
+    },
     "plugins.local_http_module": {
         "class": "LocalHTTPModule",
         "methods": ["post_execute"],
@@ -54,6 +58,7 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "drop_index",
             "create_text_index",
             "text_search",
+            "bulk_upsert_documents",
         ],
     },
     "plugins.ssh_module": {
@@ -274,5 +279,4 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "scan_folder",
         ],
     },
-
 }

@@ -1,0 +1,49 @@
+{
+  "stop_on_error": true,
+  "steps": [
+    {
+      "id": "excel",
+      "module": "plugins.system_tools.excel_plugin",
+      "class": "ExcelPlugin",
+      "method": "excel_to_json",
+      "constructor_args": {
+        "base_dir": "generated_data",
+        "allow_outside_base_dir": true
+      },
+      "args": [
+        {
+          "file_path": "C:/Users/Paul/Documents/Projects/paramiko/temp.xlsm",
+          "sheet": "r1",
+          "save_as": "unused.json",
+          "sanitize_keys": true,
+          "include_row_index": false,
+          "write_file": false,
+          "filter_by": [
+            { "column": "activate", "operator": "contains", "value": "x" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "upsert",
+      "module": "plugins.mongodb_plugin",
+      "class": "MongoDBPlugin",
+      "method": "bulk_upsert_documents",
+      "constructor_args": {
+        "database": "dynamic-exec-service-streamlit"
+      },
+      "args": [
+        {
+          "collection": "r1_data",
+          "documents": "${steps.excel.result.save_as_content}",
+          "key_field": "Loc Code",
+          "timestamp_field": "_last_synced",
+          "set_extra": { "_source": "temp.xlsm:r1" },
+          "ordered": false,
+          "dry_run": false,
+          "sample_size": 5
+        }
+      ]
+    }
+  ]
+}

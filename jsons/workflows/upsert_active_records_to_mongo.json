@@ -1,0 +1,42 @@
+{
+  "stop_on_error": true,
+  "steps": [
+    {
+      "id": "active",
+      "module": "plugins.system_tools.file_reader_plugin",
+      "class": "FileReaderPlugin",
+      "method": "filter_json_records",
+      "constructor_args": {
+        "base_dir": "generated_data",
+        "allow_outside_base_dir": true
+      },
+      "args": [
+        {
+          "file_path": "C:/Users/Paul/Documents/Projects/paramiko/temp_r1.json",
+          "where": { "activate": "x" }
+        }
+      ]
+    },
+    {
+      "id": "upsert",
+      "module": "plugins.mongodb_plugin",
+      "class": "MongoDBPlugin",
+      "method": "bulk_upsert_documents",
+      "constructor_args": {
+        "database": "dynamic-exec-service-streamlit"
+      },
+      "args": [
+        {
+          "collection": "r1_data",
+          "documents": "${steps.active.result.records}",
+          "key_field": "Loc Code",
+          "timestamp_field": "_last_synced",
+          "set_extra": { "_source": "temp_r1.json" },
+          "ordered": false,
+          "dry_run": false,
+          "sample_size": 5
+        }
+      ]
+    }
+  ]
+}
