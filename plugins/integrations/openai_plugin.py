@@ -867,7 +867,8 @@ class OpenAIFunctionCallingPlugin:
     def generate_with_function_calls(
         self,
         prompt: str,
-        model: str = "gpt-4.1-mini",
+        # model: str = "gpt-4.1-mini",
+        model: str = "gpt-5-mini",
         max_tool_rounds: int = 5,
         image_data_urls: list[str] | None = None,
     ) -> dict[str, Any]:
@@ -932,7 +933,8 @@ class OpenAIFunctionCallingPlugin:
         self,
         conversation_id: str,
         prompt: str,
-        model: str = "gpt-4.1-mini",
+        # model: str = "gpt-4.1-mini",
+        model: str = "gpt-5-mini",
         max_tool_rounds: int = 5,
         image_data_urls: list[str] | None = None,
     ) -> dict[str, Any]:

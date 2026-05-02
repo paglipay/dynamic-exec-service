@@ -1,0 +1,58 @@
+{
+  "module": "plugins.system_tools.pdf_plugin",
+  "class": "PDFPlugin",
+  "method": "fill_pdf_form",
+  "constructor_args": {
+    "base_dir": "generated_data",
+    "allow_outside_base_dir": true
+  },
+  "args": [
+    {
+      "file_path": "C:/Users/Paul/Documents/Projects/paramiko/RFS_AcroForm.pdf",
+      "output_path": "C:/Users/Paul/Documents/Projects/paramiko/RFS_Filled.pdf",
+      "flatten": false,
+      "ignore_unknown": true,
+      "field_values": {
+        "School Name":  "James Madison Middle School",
+        "Date":         "4/29/2026",
+        "Address1":     "13000 Hart St, North Hollywood, CA 91605",
+        "Address2":     "",
+        "Region":       "North",
+        "Complex":      "Valley Region 1",
+
+        "Bond":         true,
+        "COPs":         false,
+        "General":      false,
+        "Other":        false,
+
+        "Name":         "Kelly Welsh",
+        "Title":        "Principal",
+        "View":         true,
+        "Playback":     true,
+
+        "Name_2":       "Juan Lopez",
+        "Title_2":      "Assistant Principal",
+        "View_2":       true,
+        "Playback_2":   false,
+
+        "Name_3":       "Marcos Pasaye",
+        "Title_3":      "Plant Manager",
+        "View_3":       true,
+        "Playback_3":   false,
+
+        "Name_4":       "",
+        "Title_4":      "",
+        "View_4":       false,
+        "Playback_4":   false,
+
+        "Name_5":       "",
+        "Title_5":      "",
+        "View_5":       false,
+        "Playback_5":   false,
+
+        "Name printed": "Kelly Welsh",
+        "Date_2":       "4/29/2026"
+      }
+    }
+  ]
+}

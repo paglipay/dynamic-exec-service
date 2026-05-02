@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from pathlib import Path
 from typing import Any
 
@@ -596,3 +597,117 @@ class FileReaderPlugin:
         except Exception as exc:
             return {"status": "error", "message": f"Failed to read EXIF: {exc}",
                     "lat": None, "lon": None, "has_gps": False, "file_name": resolved.name, "exif": {}}
+
+    # ---------------------------------------------------------------------------
+    # JSON record filtering
+    # ---------------------------------------------------------------------------
+
+    @staticmethod
+    def _record_matches(record, where):
+        """Loose-equality match: strip + lowercase strings; treat None as ""."""
+        for key, target in where.items():
+            actual = record.get(key)
+            actual_norm = str(actual or "").strip().lower()
+            target_norm = str(target if target is not None else "").strip().lower()
+            if actual_norm != target_norm:
+                return False
+        return True
+
+    def filter_json_records(
+        self,
+        file_path,
+        where=None,
+        name_template=None,
+        sort_by=None,
+        ascending=True,
+    ):
+        """Load a JSON array of records, filter by `where`, format names by template."""
+        if isinstance(file_path, dict):
+            payload = file_path
+            resolved_file_path = payload.get("file_path")
+            resolved_where = payload.get("where", where)
+            resolved_name_template = payload.get("name_template", name_template)
+            resolved_sort_by = payload.get("sort_by", sort_by)
+            resolved_ascending = payload.get("ascending", ascending)
+        else:
+            resolved_file_path = file_path
+            resolved_where = where
+            resolved_name_template = name_template
+            resolved_sort_by = sort_by
+            resolved_ascending = ascending
+
+        if not isinstance(resolved_file_path, str) or not resolved_file_path.strip():
+            raise ValueError("file_path must be a non-empty string")
+        if resolved_where is not None and not isinstance(resolved_where, dict):
+            raise ValueError("where must be an object of {field: value} when provided")
+        if resolved_name_template is not None and (
+            not isinstance(resolved_name_template, str) or not resolved_name_template.strip()
+        ):
+            raise ValueError("name_template must be a non-empty string when provided")
+        if resolved_sort_by is not None and (
+            not isinstance(resolved_sort_by, str) or not resolved_sort_by.strip()
+        ):
+            raise ValueError("sort_by must be a non-empty string when provided")
+        if not isinstance(resolved_ascending, bool):
+            raise ValueError("ascending must be a boolean")
+
+        json_path = self._resolve_path(resolved_file_path)
+        if not json_path.exists() or not json_path.is_file():
+            raise ValueError("file_path does not exist")
+        if json_path.suffix.lower() != ".json":
+            raise ValueError("file_path must be a .json file")
+
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise ValueError("Failed to parse JSON file: " + str(exc)) from exc
+
+        if not isinstance(data, list):
+            raise ValueError("Expected top-level JSON array of objects")
+
+        filtered = []
+        where_map = resolved_where or {}
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            if where_map and not self._record_matches(item, where_map):
+                continue
+            filtered.append(item)
+
+        if resolved_sort_by:
+            try:
+                filtered.sort(
+                    key=lambda r: (r.get(resolved_sort_by) is None, r.get(resolved_sort_by)),
+                    reverse=not resolved_ascending,
+                )
+            except TypeError:
+                filtered.sort(
+                    key=lambda r: str(r.get(resolved_sort_by) or ""),
+                    reverse=not resolved_ascending,
+                )
+
+        names = []
+        name_errors = []
+        if resolved_name_template:
+            for record in filtered:
+                try:
+                    names.append(resolved_name_template.format_map(_SafeRecord(record)))
+                except Exception as exc:
+                    name_errors.append({"record": record, "error": str(exc)})
+
+        return {
+            "status": "success",
+            "action": "filter_json_records",
+            "file_path": str(json_path),
+            "total_records": len(data),
+            "matched_count": len(filtered),
+            "records": filtered,
+            "names": names,
+            "name_errors": name_errors,
+        }
+
+
+class _SafeRecord(dict):
+    """Dict subclass for str.format_map; surfaces missing keys as KeyError."""
+    def __missing__(self, key):
+        raise KeyError(key)

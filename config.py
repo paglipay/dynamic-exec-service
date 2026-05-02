@@ -81,6 +81,8 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "move_path",
             "delete_path",
             "path_info",
+            "copy_tree",
+            "deploy_template_to_projects",
         ],
     },
     "plugins.system_tools.subprocess_plugin": {
@@ -111,6 +113,8 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
         "methods": [
             "pdf_to_text",
             "pdf_to_images",
+            "list_pdf_form_fields",
+            "fill_pdf_form",
         ],
     },
     "plugins.system_tools.word_template_plugin": {
@@ -253,6 +257,7 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "summarize_excel",
             "read_image_for_vision",
             "read_image_gps",
+            "filter_json_records",
         ],
     },
     "plugins.system_tools.image_processing_plugin": {
@@ -269,4 +274,5 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "scan_folder",
         ],
     },
+
 }

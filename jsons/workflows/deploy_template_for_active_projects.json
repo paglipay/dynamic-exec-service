@@ -1,0 +1,43 @@
+{
+  "stop_on_error": true,
+  "steps": [
+    {
+      "id": "active",
+      "module": "plugins.system_tools.file_reader_plugin",
+      "class": "FileReaderPlugin",
+      "method": "filter_json_records",
+      "constructor_args": {
+        "base_dir": "generated_data",
+        "allow_outside_base_dir": true
+      },
+      "args": [
+        {
+          "file_path": "C:/Users/Paul/Documents/Projects/paramiko/temp_r1.json",
+          "where": { "activate": "x" },
+          "name_template": "{Site} ({Loc Code})"
+        }
+      ]
+    },
+    {
+      "id": "deploy",
+      "module": "plugins.system_tools.file_system_plugin",
+      "class": "FileSystemPlugin",
+      "method": "deploy_template_to_projects",
+      "constructor_args": {
+        "base_dir": "generated_data",
+        "allow_outside_base_dir": true
+      },
+      "args": [
+        {
+          "template_dir": "C:/Users/Paul/OneDrive - Los Angeles Unified School District/Paul's Share Folder/Project Sites/_Template",
+          "projects_root": "C:/Users/Paul/OneDrive - Los Angeles Unified School District/Paul's Share Folder/Project Sites",
+          "project_names": "${steps.active.result.names}",
+          "copy_files": true,
+          "ignore_dirs": [".venv", "__pycache__", ".git"],
+          "overwrite": false,
+          "stop_on_error": false
+        }
+      ]
+    }
+  ]
+}
