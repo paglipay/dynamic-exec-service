@@ -40,7 +40,7 @@
       "class": "SlackImageRestorePlugin",
       "method": "restore_and_place",
       "constructor_args": {
-        "projects_root": "C:/Users/Paul/OneDrive - Los Angeles Unified School District/Paul's Share Folder/Project Sites",
+        "projects_root": "generated_data/Project Sites",
         "image_subfolder": "Camera/Design/Pictures",
         "max_distance_km": 2.0,
         "site_field": "Site",
@@ -66,7 +66,7 @@
       "args": [
         {
           "template_dir": "C:/Users/Paul/OneDrive - Los Angeles Unified School District/Paul's Share Folder/Project Sites/_Template",
-          "projects_root": "C:/Users/Paul/OneDrive - Los Angeles Unified School District/Paul's Share Folder/Project Sites",
+          "projects_root": "generated_data/Project Sites",
           "project_names": "${steps.restore.result.project_names}",
           "copy_files": true,
           "ignore_dirs": [".venv", "__pycache__", ".git"],

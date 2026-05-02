@@ -1705,6 +1705,7 @@ def _resolve_references(value: Any, step_results: dict[str, Any]) -> Any:
 @app.post("/execute")
 def execute() -> Any:
     """Validate and execute a JSON-defined plugin method call."""
+    app.logger.info("[execute] Request received")
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         return _error_response("Request body must be valid JSON")
@@ -1713,10 +1714,17 @@ def execute() -> Any:
         module_name, class_name, method_name, constructor_args, args = _validate_execution_fields(
             payload
         )
+        app.logger.info("[execute] Validated fields: %s.%s.%s", module_name, class_name, method_name)
         validate_request(module_name, class_name, method_name)
+        app.logger.info("[execute] Allowlist check passed")
         executor.instantiate(module_name, class_name, constructor_args)
+        app.logger.info("[execute] Instance ready, calling method")
         result = executor.call_method(module_name, method_name, args)
-        return jsonify({"status": "success", "result": result})
+        app.logger.info("[execute] Method returned successfully")
+        summary = str(result)
+        if len(summary) > 300:
+            summary = summary[:300] + "..."
+        return jsonify({"status": "success", "result": summary})
     except ValueError as exc:
         return _error_response(str(exc), status_code=400)
     except (ImportError, AttributeError, TypeError) as exc:
@@ -1730,6 +1738,7 @@ def execute() -> Any:
 @app.post("/workflow")
 def workflow() -> Any:
     """Execute a chain of allowlisted plugin calls in sequence."""
+    print("[workflow] Request received", flush=True)
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         return _error_response("Request body must be valid JSON")
@@ -1741,6 +1750,7 @@ def workflow() -> Any:
     if not isinstance(stop_on_error, bool):
         return _error_response("stop_on_error must be a boolean")
 
+    print(f"[workflow] {len(steps)} step(s) to run", flush=True)
     step_results: dict[str, Any] = {}
     results: list[dict[str, Any]] = []
     has_errors = False
@@ -1766,15 +1776,22 @@ def workflow() -> Any:
             constructor_args = _resolve_references(constructor_args, step_results)
             args = _resolve_references(args, step_results)
 
+            print(f"[workflow] Step {index}/{len(steps)} '{step_id}' — {module_name}.{class_name}.{method_name}", flush=True)
+
             try:
                 validate_request(module_name, class_name, method_name)
                 executor.instantiate(module_name, class_name, constructor_args)
                 result = executor.call_method(module_name, method_name, args)
+                summary = str(result)
+                if len(summary) > 300:
+                    summary = summary[:300] + "..."
+                print(f"[workflow] Step '{step_id}' succeeded: {summary}", flush=True)
                 step_results[step_id] = result
-                results.append({"id": step_id, "status": "success", "result": result})
+                results.append({"id": step_id, "status": "success", "result": summary})
             except (ValueError, ImportError, AttributeError, TypeError) as exc:
                 has_errors = True
                 message = str(exc) if str(exc) else "Invalid execution request"
+                print(f"[workflow] Step '{step_id}' FAILED: {message}", flush=True)
                 results.append({"id": step_id, "status": "error", "message": message})
                 if step_on_error == "stop":
                     return (
@@ -1789,6 +1806,7 @@ def workflow() -> Any:
                         400,
                     )
 
+        print(f"[workflow] Completed — has_errors={has_errors}", flush=True)
         return jsonify({"status": "success", "has_errors": has_errors, "results": results})
     except ValueError as exc:
         return _error_response(str(exc), status_code=400)

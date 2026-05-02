@@ -1,10 +1,14 @@
-"""SlackImageRestorePlugin — downloads Slack images, restores EXIF, and places them into
+"""SlackImageRestorePlugin — downloads Slack images/videos, restores EXIF, and places them into
 project folders. Mirrors restore_exif.py as a callable plugin for the /workflow endpoint.
 
 Constructor args:
     projects_root (str):      Root path containing project subdirectories.
     image_subfolder (str):    Subfolder within each project for images.
                               Default: "Camera/Design/Pictures"
+    video_subfolder (str):    Subfolder within each project for videos.
+                              Default: same as image_subfolder.
+    staging_dir (str):        Directory to cache downloaded files before placing.
+                              Default: "generated_data". Files are moved after placement.
     max_distance_km (float):  Haversine threshold in km. Default 2.0.
     site_field (str):         School record field for site label. Default "Site".
     loc_code_field (str):     School record field for loc code. Default "Loc Code".
@@ -49,6 +53,7 @@ except ImportError:  # pragma: no cover
 _JPEG_MAGIC = b"\xff\xd8\xff"
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp"}
 _JPEG_EXTS = {".jpg", ".jpeg"}
+_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".wmv", ".m4v", ".3gp", ".webm"}
 _TIMESTAMP_RE = re.compile(r"_\d{8,}$")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -257,6 +262,8 @@ class SlackImageRestorePlugin:
         self,
         projects_root: str,
         image_subfolder: str = "Camera/Design/Pictures",
+        video_subfolder: str | None = None,
+        staging_dir: str = "generated_data",
         max_distance_km: float = 2.0,
         site_field: str = "Site",
         loc_code_field: str = "Loc Code",
@@ -270,6 +277,9 @@ class SlackImageRestorePlugin:
             raise ValueError("projects_root must be a non-empty string")
         self._projects_root = Path(projects_root)
         self._image_subfolder = image_subfolder or "Camera/Design/Pictures"
+        self._video_subfolder = video_subfolder or self._image_subfolder
+        self._staging_dir = Path(staging_dir or "generated_data")
+        self._staging_dir.mkdir(parents=True, exist_ok=True)
         try:
             self._max_km = float(max_distance_km)
         except (TypeError, ValueError):
@@ -284,8 +294,9 @@ class SlackImageRestorePlugin:
         self._database = (database or os.getenv("MONGODB_DATABASE", "")).strip()
         self._mongo_collection = mongo_collection or "slack_files"
 
-    def _dest_folder(self, site: str, loc_code: str) -> Path:
-        return self._projects_root / f"{site} ({loc_code})" / self._image_subfolder
+    def _dest_folder(self, site: str, loc_code: str, video: bool = False) -> Path:
+        subfolder = self._video_subfolder if video else self._image_subfolder
+        return self._projects_root / f"{site} ({loc_code})" / subfolder
 
     def _mongo_mark_success(self, doc_id: str, placed_info: dict) -> None:
         if not self._update_mongo or not self._mongodb_uri or not doc_id:
@@ -312,6 +323,53 @@ class SlackImageRestorePlugin:
         except Exception:
             pass  # non-fatal
 
+    def _process_video(
+        self,
+        video_bytes: bytes,
+        filename: str,
+        valid_schools: list[dict],
+        fallback_lat: float | None,
+        fallback_lon: float | None,
+        dry_run: bool,
+    ) -> tuple[str, dict]:
+        """GPS-match a video file and place it into the project folder."""
+        if not video_bytes:
+            return "bad_image", {}
+
+        lat, lon = fallback_lat, fallback_lon
+        if lat is None:
+            return "no_gps", {}
+
+        school, dist_km = _find_nearest(lat, lon, valid_schools, self._max_km)
+        if school is None:
+            return "no_match", {}
+
+        site = str(school.get(self._site_field) or "").strip()
+        loc_code = str(school.get(self._loc_field) or "").strip()
+        if not site or not loc_code:
+            return "no_match", {}
+
+        dest_dir = self._dest_folder(site, loc_code, video=True)
+        dest_path = dest_dir / filename
+        info: dict = {
+            "dest": str(dest_path),
+            "school": school.get("School Name") or school.get("name") or site,
+            "site": site,
+            "loc_code": loc_code,
+            "distance_km": round(dist_km, 4),
+            "project_name": f"{site} ({loc_code})",
+        }
+
+        if dry_run:
+            return "would_write", info
+
+        if dest_path.exists():
+            return "skipped", info
+
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_path.write_bytes(video_bytes)
+        return "written", info
+
     def _process_image(
         self,
         image_bytes: bytes,
@@ -327,6 +385,11 @@ class SlackImageRestorePlugin:
         if not image_bytes:
             return "bad_image", {}
         if image_bytes[:3] != _JPEG_MAGIC:
+            print(
+                f"[restore]   Not JPEG — first bytes: {image_bytes[:40]!r} "
+                f"(len={len(image_bytes)})",
+                flush=True,
+            )
             converted = _to_jpeg(image_bytes)
             if not converted:
                 return "bad_image", {}
@@ -418,15 +481,17 @@ class SlackImageRestorePlugin:
             s for s in schools
             if s.get("latitude") is not None and s.get("longitude") is not None
         ]
+        print(f"[restore] {len(image_docs)} image doc(s) to process, {len(valid_schools)} geocoded school(s)", flush=True)
 
         counts: dict[str, int] = {
             "written": 0, "skipped": 0, "no_gps": 0, "no_match": 0,
             "bad_image": 0, "download_fail": 0, "skipped_downloaded": 0,
+            "unsupported": 0,
         }
         placed: list[dict] = []
         project_name_set: set[str] = set()
 
-        for doc in image_docs:
+        for _doc_index, doc in enumerate(image_docs, start=1):
             if not isinstance(doc, dict):
                 continue
 
@@ -443,28 +508,40 @@ class SlackImageRestorePlugin:
             exif_b64 = doc.get("exif_b64")
             doc_id = doc.get("_id")
 
+            print(f"[restore] [{_doc_index}/{len(image_docs)}] Processing: {filename}", flush=True)
+
             if not url:
                 counts["download_fail"] += 1
                 continue
 
             # ── ZIP ───────────────────────────────────────────────────────────
             if ext == ".zip":
+                print(f"[restore]   Downloading ZIP...", flush=True)
                 zip_bytes = _download_url(url, self._token)
                 if not zip_bytes:
                     counts["download_fail"] += 1
+                    print(f"[restore]   Download FAILED", flush=True)
                     continue
+                staging_path = self._staging_dir / _clean_filename(filename)
+                if not dry_run:
+                    staging_path.write_bytes(zip_bytes)
+                    print(f"[restore]   Staged: {staging_path}", flush=True)
                 try:
                     zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
                 except zipfile.BadZipFile:
                     counts["download_fail"] += 1
+                    print(f"[restore]   Bad ZIP file", flush=True)
                     continue
 
-                entries = [
+                all_entries = [
                     n for n in zf.namelist()
-                    if Path(n).suffix.lower() in _IMAGE_EXTS
-                    and not Path(n).name.startswith("._")
+                    if not Path(n).name.startswith("._")
                 ]
-                for entry in entries:
+                img_entries = [n for n in all_entries if Path(n).suffix.lower() in _IMAGE_EXTS]
+                vid_entries = [n for n in all_entries if Path(n).suffix.lower() in _VIDEO_EXTS]
+                print(f"[restore]   ZIP contains {len(img_entries)} image(s), {len(vid_entries)} video(s)", flush=True)
+
+                for entry in img_entries:
                     img_bytes = zf.read(entry)
                     img_name = _clean_filename(Path(entry).name)
                     if Path(img_name).suffix.lower() not in _JPEG_EXTS:
@@ -478,16 +555,43 @@ class SlackImageRestorePlugin:
                         project_name_set.add(info["project_name"])
                     if status in ("written", "would_write"):
                         placed.append({"filename": img_name, **info})
+                        print(f"[restore]     {status}: {img_name} → {info.get('project_name')}", flush=True)
+                    elif status in ("skipped", "no_gps", "no_match", "bad_image"):
+                        print(f"[restore]     {status}: {img_name}", flush=True)
+                    if status == "written" and doc_id:
+                        self._mongo_mark_success(doc_id, info)
+
+                for entry in vid_entries:
+                    vid_bytes = zf.read(entry)
+                    vid_name = _clean_filename(Path(entry).name)
+                    status, info = self._process_video(
+                        vid_bytes, vid_name, valid_schools,
+                        fallback_lat, fallback_lon, dry_run,
+                    )
+                    counts[status if status in counts else "no_match"] += 1
+                    if info.get("project_name"):
+                        project_name_set.add(info["project_name"])
+                    if status in ("written", "would_write"):
+                        placed.append({"filename": vid_name, **info})
+                        print(f"[restore]     {status}: {vid_name} → {info.get('project_name')}", flush=True)
+                    elif status in ("skipped", "no_gps", "no_match"):
+                        print(f"[restore]     {status}: {vid_name}", flush=True)
                     if status == "written" and doc_id:
                         self._mongo_mark_success(doc_id, info)
 
             # ── Direct image ──────────────────────────────────────────────────
             elif ext in _IMAGE_EXTS:
+                print(f"[restore]   Downloading image...", flush=True)
                 img_bytes = _download_url(url, self._token)
                 if not img_bytes:
                     counts["download_fail"] += 1
+                    print(f"[restore]   Download FAILED", flush=True)
                     continue
                 img_name = _clean_filename(Path(filename).stem + ".jpg")
+                staging_path = self._staging_dir / img_name
+                if not dry_run:
+                    staging_path.write_bytes(img_bytes)
+                    print(f"[restore]   Staged: {staging_path}", flush=True)
                 status, info = self._process_image(
                     img_bytes, img_name, valid_schools,
                     fallback_lat, fallback_lon, exif_b64, dry_run,
@@ -497,12 +601,50 @@ class SlackImageRestorePlugin:
                     project_name_set.add(info["project_name"])
                 if status in ("written", "would_write"):
                     placed.append({"filename": img_name, **info})
+                    print(f"[restore]   {status}: {img_name} → {info.get('project_name')}", flush=True)
+                elif status in ("skipped", "no_gps", "no_match", "bad_image"):
+                    print(f"[restore]   {status}: {img_name}", flush=True)
+                if status == "written" and doc_id:
+                    self._mongo_mark_success(doc_id, info)
+
+            # ── Direct video ──────────────────────────────────────────────────
+            elif ext in _VIDEO_EXTS:
+                print(f"[restore]   Downloading video...", flush=True)
+                vid_bytes = _download_url(url, self._token)
+                if not vid_bytes:
+                    counts["download_fail"] += 1
+                    print(f"[restore]   Download FAILED", flush=True)
+                    continue
+                vid_name = _clean_filename(filename)
+                staging_path = self._staging_dir / vid_name
+                if not dry_run:
+                    staging_path.write_bytes(vid_bytes)
+                    print(f"[restore]   Staged: {staging_path}", flush=True)
+                status, info = self._process_video(
+                    vid_bytes, vid_name, valid_schools,
+                    fallback_lat, fallback_lon, dry_run,
+                )
+                counts[status if status in counts else "no_match"] += 1
+                if info.get("project_name"):
+                    project_name_set.add(info["project_name"])
+                if status in ("written", "would_write"):
+                    placed.append({"filename": vid_name, **info})
+                    print(f"[restore]   {status}: {vid_name} → {info.get('project_name')}", flush=True)
+                elif status in ("skipped", "no_gps", "no_match"):
+                    print(f"[restore]   {status}: {vid_name}", flush=True)
                 if status == "written" and doc_id:
                     self._mongo_mark_success(doc_id, info)
 
             else:
-                counts["download_fail"] += 1
+                counts["unsupported"] += 1
+                print(f"[restore]   unsupported type: {ext or '(no ext)'}", flush=True)
 
+        print(
+            f"[restore] Done — written={counts['written']} skipped={counts['skipped']} "
+            f"no_gps={counts['no_gps']} no_match={counts['no_match']} "
+            f"fail={counts['download_fail']} unsupported={counts['unsupported']}",
+            flush=True,
+        )
         return {
             **counts,
             "dry_run": dry_run,

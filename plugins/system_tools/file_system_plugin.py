@@ -306,8 +306,11 @@ class FileSystemPlugin:
         total_skipped = 0
         had_errors = False
 
-        for name in resolved_project_names:
+        print(f"[deploy] Deploying template to {len(resolved_project_names)} project(s)", flush=True)
+
+        for _proj_index, name in enumerate(resolved_project_names, start=1):
             project_dir = projects_root_path / name.strip()
+            print(f"[deploy] [{_proj_index}/{len(resolved_project_names)}] {name}", flush=True)
             try:
                 # copy_tree expects strings for both sides; pass through resolver
                 # via absolute paths so the same allow_outside_base_dir contract holds.
@@ -321,6 +324,11 @@ class FileSystemPlugin:
                 total_dirs += result["dirs_created_count"]
                 total_files += result["files_copied_count"]
                 total_skipped += result["files_skipped_count"]
+                print(
+                    f"[deploy]   OK — dirs={result['dirs_created_count']} "
+                    f"files={result['files_copied_count']} skipped={result['files_skipped_count']}",
+                    flush=True,
+                )
                 per_project.append({
                     "project_name": name,
                     "destination_dir": result["destination_dir"],
@@ -331,6 +339,7 @@ class FileSystemPlugin:
                 })
             except Exception as exc:
                 had_errors = True
+                print(f"[deploy]   ERROR: {exc}", flush=True)
                 per_project.append({
                     "project_name": name,
                     "destination_dir": self._relative_label(project_dir),
@@ -340,6 +349,11 @@ class FileSystemPlugin:
                 if resolved_stop_on_error:
                     break
 
+        print(
+            f"[deploy] Done — projects={len(resolved_project_names)} "
+            f"dirs={total_dirs} files={total_files} skipped={total_skipped} errors={had_errors}",
+            flush=True,
+        )
         return {
             "status": "success" if not had_errors else "partial",
             "action": "deploy_template_to_projects",
