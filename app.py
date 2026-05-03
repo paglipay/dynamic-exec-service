@@ -1808,7 +1808,8 @@ def execute() -> Any:
         summary = str(result)
         if len(summary) > 300:
             summary = summary[:300] + "..."
-        return jsonify({"status": "success", "result": summary})
+        app.logger.info("[execute] Result preview: %s", summary)
+        return jsonify({"status": "success", "result": result})
     except ValueError as exc:
         return _error_response(str(exc), status_code=400)
     except (ImportError, AttributeError, TypeError) as exc:
@@ -1878,7 +1879,7 @@ def _run_workflow_steps(
                 summary = summary[:300] + "..."
             print(f"[workflow] Step '{step_id}' succeeded: {summary}", flush=True)
             step_results[step_id] = result
-            results.append({"id": step_id, "status": "success", "result": summary})
+            results.append({"id": step_id, "status": "success", "result": result})
         except (ValueError, ImportError, AttributeError, TypeError) as exc:
             has_errors = True
             message = str(exc) if str(exc) else "Invalid execution request"
