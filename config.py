@@ -90,6 +90,13 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "deploy_template_to_projects",
         ],
     },
+    "plugins.system_tools.json_catalog_plugin": {
+        "class": "JsonCatalogPlugin",
+        "methods": [
+            "list_templates",
+            "read_template",
+        ],
+    },
     "plugins.system_tools.subprocess_plugin": {
         "class": "SubprocessPlugin",
         "methods": [
