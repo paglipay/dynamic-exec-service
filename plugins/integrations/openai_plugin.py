@@ -264,6 +264,22 @@ class OpenAIFunctionCallingPlugin:
                 "existed": existed,
             }
 
+    # Modules excluded from the bot's tool list (not useful interactively, or demo-only).
+    # Keep this list up to date if the allowlist grows past OpenAI's 128-tool cap again.
+    _CHAT_EXCLUDED_MODULES: frozenset[str] = frozenset(
+        {
+            "plugins.integrations.openai_plugin",                  # avoid recursion
+            "plugins.integrations.openai_http_plugin",             # low-level HTTP, not for chat
+            "plugins.sample_module",                               # demo only
+            "plugins.generated_math_plugin",                       # demo only
+            "plugins.local_http_module",                           # internal forwarder
+            "plugins.data_mapper_plugin",                          # rarely useful interactively
+            "plugins.plugin_generator",                            # code-gen, not a chat tool
+            "plugins.system_tools.nearest_school_matcher_plugin",  # highly specialized
+            "plugins.system_tools.slack_image_restore_plugin",     # highly specialized
+        }
+    )
+
     def _build_tool_mapping(self) -> dict[str, tuple[str, str, str]]:
         """Build a stable semantic mapping from tool names to allowlisted targets.
 
@@ -276,11 +292,10 @@ class OpenAIFunctionCallingPlugin:
             module_config = ALLOWED_MODULES[module_name]
             class_name = module_config["class"]
             for method_name in module_config["methods"]:
-                # Prevent recursive OpenAI->OpenAI tool loops, but allow image generation bridge.
-                if module_name == "plugins.integrations.openai_plugin":
+                # Modules excluded from interactive chat tools.
+                if module_name in self._CHAT_EXCLUDED_MODULES:
                     continue
-                if module_name == "plugins.integrations.openai_http_plugin":
-                    continue
+                # Only allow image generation from the SDK plugin; skip the rest to avoid recursion.
                 if (
                     module_name == "plugins.integrations.openai_sdk_plugin"
                     and method_name != "generate_image"
@@ -1351,7 +1366,8 @@ class OpenAIFunctionCallingPlugin:
     def generate_with_function_calls(
         self,
         prompt: str,
-        model: str = "gpt-4.1-mini",
+        # model: str = "gpt-4.1-mini",
+        model: str = "gpt-5-mini",
         max_tool_rounds: int = 5,
         image_data_urls: list[str] | None = None,
     ) -> dict[str, Any]:
@@ -1416,7 +1432,8 @@ class OpenAIFunctionCallingPlugin:
         self,
         conversation_id: str,
         prompt: str,
-        model: str = "gpt-4.1-mini",
+        # model: str = "gpt-4.1-mini",
+        model: str = "gpt-5-mini",
         max_tool_rounds: int = 5,
         image_data_urls: list[str] | None = None,
     ) -> dict[str, Any]:

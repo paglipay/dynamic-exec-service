@@ -1,0 +1,15 @@
+{
+  "module": "plugins.system_tools.pdf_plugin",
+  "class": "PDFPlugin",
+  "method": "list_pdf_form_fields",
+  "constructor_args": {
+    "base_dir": "generated_data",
+    "allow_outside_base_dir": true
+  },
+  "args": [
+    {
+      "file_path": "C:/Users/Paul/Documents/Projects/paramiko/RFS_AcroForm.pdf",
+      "include_values": true
+    }
+  ]
+}

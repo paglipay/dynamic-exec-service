@@ -14,6 +14,10 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
         "class": "SampleModule",
         "methods": ["add", "process"],
     },
+    "plugins.data_mapper_plugin": {
+        "class": "DataMapperPlugin",
+        "methods": ["map"],
+    },
     "plugins.local_http_module": {
         "class": "LocalHTTPModule",
         "methods": ["post_execute"],
@@ -54,6 +58,7 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "drop_index",
             "create_text_index",
             "text_search",
+            "bulk_upsert_documents",
         ],
     },
     "plugins.ssh_module": {
@@ -81,6 +86,15 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "move_path",
             "delete_path",
             "path_info",
+            "copy_tree",
+            "deploy_template_to_projects",
+        ],
+    },
+    "plugins.system_tools.json_catalog_plugin": {
+        "class": "JsonCatalogPlugin",
+        "methods": [
+            "list_templates",
+            "read_template",
         ],
     },
     "plugins.system_tools.subprocess_plugin": {
@@ -111,6 +125,8 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
         "methods": [
             "pdf_to_text",
             "pdf_to_images",
+            "list_pdf_form_fields",
+            "fill_pdf_form",
         ],
     },
     "plugins.system_tools.word_template_plugin": {
@@ -153,6 +169,18 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "status",
             "stop_app",
         ],
+    },
+    "plugins.integrations.geocoding_plugin": {
+        "class": "NominatimGeocodingPlugin",
+        "methods": ["bulk_geocode_records"],
+    },
+    "plugins.system_tools.nearest_school_matcher_plugin": {
+        "class": "NearestSchoolMatcherPlugin",
+        "methods": ["match_to_schools"],
+    },
+    "plugins.system_tools.slack_image_restore_plugin": {
+        "class": "SlackImageRestorePlugin",
+        "methods": ["restore_and_place"],
     },
     "plugins.integrations.slack_plugin": {
         "class": "SlackPlugin",
@@ -239,6 +267,12 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "search_image_context",
         ],
     },
+    "plugins.integrations.geocoding_plugin": {
+        "class": "NominatimGeocodingPlugin",
+        "methods": [
+            "bulk_geocode_records",
+        ],
+    },
     "plugins.system_tools.media_storage_plugin": {
         "class": "MediaStoragePlugin",
         "methods": [
@@ -250,6 +284,10 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "zip_files",
             # Staging inspection (read-only) — for checking what's in a session
             "list_staged",
+            "clear_staged",
+            "remove_staged_file",
+            "zip_files",
+            "zip_directory",
         ],
     },
     "plugins.system_tools.file_reader_plugin": {
@@ -263,6 +301,7 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "summarize_excel",
             "read_image_for_vision",
             "read_image_gps",
+            "filter_json_records",
         ],
     },
     "plugins.system_tools.image_processing_plugin": {
