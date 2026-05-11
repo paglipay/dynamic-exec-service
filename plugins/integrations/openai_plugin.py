@@ -277,6 +277,7 @@ class OpenAIFunctionCallingPlugin:
             "plugins.plugin_generator",                            # code-gen, not a chat tool
             "plugins.system_tools.nearest_school_matcher_plugin",  # highly specialized
             "plugins.system_tools.slack_image_restore_plugin",     # highly specialized
+            "plugins.ssh_module",                                  # credential-dependent, not for chat
         }
     )
 
