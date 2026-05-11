@@ -282,6 +282,11 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             # zip_files bundles already-stored files without renaming
             "rename_zip",
             "zip_files",
+            # Staging inspection (read-only) — for checking what's in a session
+            "list_staged",
+            "clear_staged",
+            "remove_staged_file",
+            "zip_files",
             "zip_directory",
         ],
     },
