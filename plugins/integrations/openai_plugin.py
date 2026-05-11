@@ -265,13 +265,15 @@ class OpenAIFunctionCallingPlugin:
     # Keep this list up to date if the allowlist grows past OpenAI's 128-tool cap again.
     _CHAT_EXCLUDED_MODULES: frozenset[str] = frozenset(
         {
-            "plugins.integrations.openai_plugin",       # avoid recursion (already excluded)
-            "plugins.integrations.openai_http_plugin",  # low-level HTTP, not for chat
-            "plugins.sample_module",                    # demo only
-            "plugins.generated_math_plugin",            # demo only
-            "plugins.local_http_module",                # internal forwarder
-            "plugins.data_mapper_plugin",               # rarely useful interactively
-            "plugins.plugin_generator",                 # code-gen, not a chat tool
+            "plugins.integrations.openai_plugin",                  # avoid recursion
+            "plugins.integrations.openai_http_plugin",             # low-level HTTP, not for chat
+            "plugins.sample_module",                               # demo only
+            "plugins.generated_math_plugin",                       # demo only
+            "plugins.local_http_module",                           # internal forwarder
+            "plugins.data_mapper_plugin",                          # rarely useful interactively
+            "plugins.plugin_generator",                            # code-gen, not a chat tool
+            "plugins.system_tools.nearest_school_matcher_plugin",  # highly specialized
+            "plugins.system_tools.slack_image_restore_plugin",     # highly specialized
         }
     )
 
