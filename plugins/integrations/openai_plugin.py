@@ -1114,6 +1114,14 @@ class OpenAIFunctionCallingPlugin:
                     "Run any shell command inside a workspace directory (cwd is locked to the workspace). "
                     "Use this to install dependencies, run tests, start servers, initialise git, etc. "
                     "Use args: [workspace_name, command, timeout_seconds_or_120]. "
+                    "IMPORTANT timeout guidance: "
+                    "always pass timeout_seconds=600 for any pip or npm install command. "
+                    "For large ML/AI packages (torch, tensorflow, transformers) use timeout_seconds=1800. "
+                    "IMPORTANT ML package guidance: "
+                    "when installing PyTorch for CPU-only testing (no GPU needed), use the smaller CPU-only build: "
+                    "'pip install torch --index-url https://download.pytorch.org/whl/cpu transformers accelerate' "
+                    "— this is ~200 MB instead of the ~800 MB CUDA build and installs much faster. "
+                    "Never use plain 'pip install torch' for demo/test workspaces — always use the CPU index URL. "
                     "Examples: "
                     "'pip install flask' to install Python deps, "
                     "'npm install' to install Node deps, "
@@ -1343,12 +1351,18 @@ class OpenAIFunctionCallingPlugin:
         model: str,
         max_tool_rounds: int,
         initial_prompt: str = "",
+        progress_callback: Any | None = None,
     ) -> tuple[str, int, list[str]]:
         """Run function-calling rounds until final assistant text is produced.
 
         *initial_prompt* is the raw user message text used to select the
         relevant tool subset before the first OpenAI call.  When omitted the
         full tool set is used.
+
+        *progress_callback*, when provided, is called as
+        ``progress_callback(tool_name, status)`` where *status* is one of
+        ``'called'`` (before execution), ``'success'``, or ``'error'``.
+        Exceptions raised by the callback are silently swallowed.
         """
         active_modules = self._select_active_modules(initial_prompt)
         tools = self._build_tools(active_modules)
@@ -1388,13 +1402,28 @@ class OpenAIFunctionCallingPlugin:
                 for tool_call in tool_calls:
                     tool_name = tool_call.function.name
                     tool_args = tool_call.function.arguments or "{}"
+                    if progress_callback is not None:
+                        try:
+                            progress_callback(tool_name, "called")
+                        except Exception:
+                            pass
                     try:
                         tool_output = self._execute_tool_call(tool_name, tool_args)
                         executed_tool_calls += 1
                         logger.debug("[OpenAI][Round %d] %s executed successfully", round_num + 1, tool_name)
+                        if progress_callback is not None:
+                            try:
+                                progress_callback(tool_name, "success")
+                            except Exception:
+                                pass
                     except Exception as tool_exc:
                         logger.warning("[OpenAI][Round %d] %s failed: %s", round_num + 1, tool_name, tool_exc)
                         tool_output = json.dumps({"error": str(tool_exc)})
+                        if progress_callback is not None:
+                            try:
+                                progress_callback(tool_name, "error")
+                            except Exception:
+                                pass
                     # Track file paths passed to read_image_for_vision so callers can
                     # build MongoDB metadata for images from any upload source.
                     _tgt = self._tool_name_to_target.get(tool_name, ("", "", ""))
@@ -1636,6 +1665,7 @@ class OpenAIFunctionCallingPlugin:
         model: str = "gpt-5-mini",
         max_tool_rounds: int = 5,
         image_data_urls: list[str] | None = None,
+        progress_callback: Any | None = None,
     ) -> dict[str, Any]:
         """Generate a response with tool calls and preserve conversation history."""
         if not isinstance(conversation_id, str) or not conversation_id.strip():
@@ -1671,6 +1701,7 @@ class OpenAIFunctionCallingPlugin:
             model.strip(),
             max_tool_rounds,
             prompt,
+            progress_callback,
         )
 
         self._save_conversation_history(key, self._strip_image_urls_from_messages(messages))

@@ -281,7 +281,7 @@ class DevWorkspacePlugin:
 
         if not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be a positive integer")
-        timeout_seconds = min(timeout_seconds, 600)
+        timeout_seconds = min(timeout_seconds, 1800)
 
         # On Windows use shell=True so PATH-dependent tools (npm, git, node) resolve.
         # On Unix also use shell=True for the same reason.
