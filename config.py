@@ -331,6 +331,11 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "list_files",
             # Shell command execution (cwd locked to workspace)
             "run_command",
+            # Persistent background server management
+            "start_server",
+            "query_server",
+            "server_status",
+            "stop_server",
         ],
     },
 }

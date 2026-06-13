@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
+from urllib import error as _urlerror, request as _urlrequest
 
 _DANGEROUS_COMMAND_PATTERNS = re.compile(
     r"""
@@ -367,3 +370,255 @@ class DevWorkspacePlugin:
             "workspace": workspace_name,
             "message": f"Workspace '{workspace_name}' deleted.",
         }
+
+    # ------------------------------------------------------------------
+    # Persistent background server management
+    # ------------------------------------------------------------------
+
+    # In-process registry: {workspace_name: {server_name: Popen}}
+    _servers: dict[str, dict[str, Any]] = {}
+
+    def start_server(
+        self,
+        workspace_name: str,
+        script: str,
+        port: int,
+        server_name: str = "default",
+        extra_args: list[str] | None = None,
+        startup_wait_seconds: int = 15,
+    ) -> dict[str, Any]:
+        """Start a Python script as a persistent background HTTP server inside a workspace.
+
+        The script is started with the workspace as its cwd and kept alive
+        across tool calls for the life of the service process.  Use
+        ``query_server`` to send requests and ``stop_server`` to terminate.
+
+        Args:
+            workspace_name:        Target workspace identifier.
+            script:                Python script path relative to the workspace
+                                   (e.g. ``llm_server.py``).
+            port:                  Port the server will listen on.
+            server_name:           Logical name for this server (default ``"default"``).
+                                   Allows multiple servers per workspace.
+            extra_args:            Extra CLI args passed to the script
+                                   (e.g. ``["--host", "127.0.0.1"]``).
+            startup_wait_seconds:  How long to wait for /health to respond
+                                   before returning (default 15 s).
+        Returns:
+            ``{"status": "success"|"error", "url": str, "pid": int}``
+        """
+        workspace_dir = self._resolve_workspace(workspace_name)
+        if not workspace_dir.exists():
+            raise ValueError(f"Workspace '{workspace_name}' does not exist.")
+
+        if not isinstance(port, int) or not (1024 <= port <= 65535):
+            raise ValueError("port must be an integer between 1024 and 65535")
+        if not isinstance(server_name, str) or not server_name.strip():
+            raise ValueError("server_name must be a non-empty string")
+        if not isinstance(startup_wait_seconds, int) or startup_wait_seconds <= 0:
+            raise ValueError("startup_wait_seconds must be a positive integer")
+
+        script_path = self._resolve_file_path(workspace_dir, script)
+        if not script_path.exists():
+            raise ValueError(f"Script '{script}' does not exist in workspace '{workspace_name}'.")
+
+        # Stop any existing server with the same name.
+        self._kill_server(workspace_name, server_name)
+
+        cmd = [sys.executable, str(script_path), "--port", str(port)]
+        if extra_args:
+            cmd.extend([str(a) for a in extra_args])
+
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(workspace_dir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env={**os.environ},
+        )
+
+        ws_servers = self._servers.setdefault(workspace_name, {})
+        ws_servers[server_name] = {"proc": proc, "port": port, "script": script, "url": f"http://127.0.0.1:{port}"}
+
+        # Wait for /health to respond.
+        url = f"http://127.0.0.1:{port}/health"
+        deadline = time.monotonic() + startup_wait_seconds
+        last_error = ""
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                out = b""
+                try:
+                    out = proc.stdout.read(2000) if proc.stdout else b""
+                except Exception:
+                    pass
+                return {
+                    "status": "error",
+                    "workspace": workspace_name,
+                    "server_name": server_name,
+                    "message": f"Server process exited early (rc={proc.returncode}). Output: {out.decode('utf-8', errors='replace')}",
+                }
+            try:
+                with _urlrequest.urlopen(url, timeout=2) as resp:
+                    if resp.status == 200:
+                        return {
+                            "status": "success",
+                            "workspace": workspace_name,
+                            "server_name": server_name,
+                            "pid": proc.pid,
+                            "url": f"http://127.0.0.1:{port}",
+                            "port": port,
+                        }
+            except Exception as exc:
+                last_error = str(exc)
+            time.sleep(1)
+
+        return {
+            "status": "error",
+            "workspace": workspace_name,
+            "server_name": server_name,
+            "message": f"Server did not respond within {startup_wait_seconds}s. Last error: {last_error}",
+        }
+
+    def query_server(
+        self,
+        workspace_name: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        server_name: str = "default",
+        timeout_seconds: int = 120,
+    ) -> dict[str, Any]:
+        """Send an HTTP request to a running workspace server.
+
+        GET requests are used when *body* is ``None``; POST when *body* is provided.
+
+        Args:
+            workspace_name:  Target workspace identifier.
+            path:            URL path (e.g. ``"/generate"`` or ``"/health"``).
+            body:            Optional JSON-serialisable dict for POST body.
+            server_name:     Logical server name (default ``"default"``).
+            timeout_seconds: Request timeout (default 120 s for slow models).
+        Returns:
+            ``{"status": "success", "response": dict}`` or ``{"status": "error", ...}``
+        """
+        ws_servers = self._servers.get(workspace_name, {})
+        info = ws_servers.get(server_name)
+        if not info:
+            raise ValueError(
+                f"No server named '{server_name}' is registered for workspace '{workspace_name}'. "
+                "Call start_server first."
+            )
+        proc: Any = info.get("proc")
+        if proc is not None and proc.poll() is not None:
+            raise ValueError(
+                f"Server '{server_name}' in workspace '{workspace_name}' has stopped "
+                f"(exit code {proc.returncode}). Call start_server to restart it."
+            )
+
+        if not isinstance(path, str) or not path.startswith("/"):
+            raise ValueError("path must be a string starting with '/'")
+        if not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be a positive integer")
+
+        url = f"http://127.0.0.1:{info['port']}{path}"
+        if body is not None:
+            payload = json.dumps(body).encode("utf-8")
+            req = _urlrequest.Request(
+                url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        else:
+            req = _urlrequest.Request(url, method="GET")
+
+        try:
+            with _urlrequest.urlopen(req, timeout=timeout_seconds) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+                try:
+                    parsed = json.loads(raw)
+                except Exception:
+                    parsed = {"raw": raw}
+                return {"status": "success", "workspace": workspace_name, "server_name": server_name, "response": parsed}
+        except _urlerror.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+            return {"status": "error", "workspace": workspace_name, "http_status": exc.code, "message": raw}
+        except Exception as exc:
+            return {"status": "error", "workspace": workspace_name, "message": str(exc)}
+
+    def server_status(
+        self,
+        workspace_name: str,
+        server_name: str = "default",
+    ) -> dict[str, Any]:
+        """Check whether a named workspace server is running.
+
+        Returns:
+            ``{"status": "success", "running": bool, "pid": int|None, "url": str|None}``
+        """
+        ws_servers = self._servers.get(workspace_name, {})
+        info = ws_servers.get(server_name)
+        if not info:
+            return {
+                "status": "success",
+                "workspace": workspace_name,
+                "server_name": server_name,
+                "running": False,
+                "pid": None,
+                "url": None,
+                "message": "No server registered under that name.",
+            }
+        proc: Any = info.get("proc")
+        running = proc is not None and proc.poll() is None
+        return {
+            "status": "success",
+            "workspace": workspace_name,
+            "server_name": server_name,
+            "running": running,
+            "pid": proc.pid if proc else None,
+            "url": info.get("url"),
+            "exit_code": proc.returncode if proc and not running else None,
+        }
+
+    def stop_server(
+        self,
+        workspace_name: str,
+        server_name: str = "default",
+    ) -> dict[str, Any]:
+        """Stop a running workspace server.
+
+        Sends a POST /shutdown request first; falls back to SIGTERM/SIGKILL.
+
+        Returns:
+            ``{"status": "success", "stopped": bool}``
+        """
+        return self._kill_server(workspace_name, server_name)
+
+    def _kill_server(self, workspace_name: str, server_name: str) -> dict[str, Any]:
+        ws_servers = self._servers.get(workspace_name, {})
+        info = ws_servers.pop(server_name, None)
+        if not info:
+            return {"status": "success", "workspace": workspace_name, "server_name": server_name, "stopped": False, "message": "No server was registered."}
+
+        proc: Any = info.get("proc")
+        if proc is None or proc.poll() is not None:
+            return {"status": "success", "workspace": workspace_name, "server_name": server_name, "stopped": True}
+
+        # Graceful: POST /shutdown
+        try:
+            shutdown_url = f"http://127.0.0.1:{info['port']}/shutdown"
+            _urlrequest.urlopen(
+                _urlrequest.Request(shutdown_url, data=b"{}", headers={"Content-Type": "application/json"}, method="POST"),
+                timeout=4,
+            )
+            proc.wait(timeout=6)
+        except Exception:
+            pass
+
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+
+        return {"status": "success", "workspace": workspace_name, "server_name": server_name, "stopped": True, "exit_code": proc.returncode}

@@ -1144,6 +1144,48 @@ class OpenAIFunctionCallingPlugin:
                     "Use args: [workspace_name]. "
                     "Only call this when the user explicitly asks to delete a workspace."
                 )
+            if method_name == "start_server":
+                return (
+                    _ws_base +
+                    "Start a Python script as a PERSISTENT BACKGROUND HTTP server inside a workspace. "
+                    "The model or service loads ONCE and stays alive for fast repeated queries. "
+                    "Use this for local LLM servers, Flask/FastAPI apps, or any long-running service "
+                    "that should not reload on every request. "
+                    "Use args: [workspace_name, script, port, server_name_or_'default', extra_args_or_null, startup_wait_seconds_or_15]. "
+                    "script is a path relative to the workspace (e.g. 'llm_server.py'). "
+                    "port must be an unused port between 1024-65535 (e.g. 5100 for an LLM server). "
+                    "Waits up to startup_wait_seconds for /health to respond before returning. "
+                    "Returns 'pid' and 'url'. After this, use query_server to send requests."
+                )
+            if method_name == "query_server":
+                return (
+                    _ws_base +
+                    "Send an HTTP request to a running workspace server (started with start_server). "
+                    "Use args: [workspace_name, path, body_or_null, server_name_or_'default', timeout_seconds_or_120]. "
+                    "path is the URL path, e.g. '/generate' or '/health'. "
+                    "body is a JSON object for POST requests; pass null for GET. "
+                    "timeout_seconds: use 120 or more for LLM inference which can be slow on CPU. "
+                    "Returns the server's JSON response under 'response'. "
+                    "IMPORTANT: for local LLM workspaces, use this instead of run_command to query the model — "
+                    "it is fast because the model is already loaded. "
+                    "Example to ask the local LLM: args=['local-llm-test', '/generate', {'prompt': 'What is Python?'}, 'default', 120]"
+                )
+            if method_name == "server_status":
+                return (
+                    _ws_base +
+                    "Check whether a named workspace server is currently running. "
+                    "Use args: [workspace_name, server_name_or_'default']. "
+                    "Returns 'running' (bool), 'pid', and 'url'. "
+                    "Call this before query_server if you are unsure the server is still alive."
+                )
+            if method_name == "stop_server":
+                return (
+                    _ws_base +
+                    "Stop a running workspace background server. "
+                    "Sends POST /shutdown first, then SIGTERM, then SIGKILL as fallback. "
+                    "Use args: [workspace_name, server_name_or_'default']. "
+                    "Only call this when the user explicitly wants to stop the server."
+                )
 
         return (
             f"Call plugin method {module_name}::{class_name}.{method_name}. "
