@@ -318,4 +318,19 @@ ALLOWED_MODULES: Dict[str, AllowedModuleConfig] = {
             "scan_folder",
         ],
     },
+    "plugins.system_tools.dev_workspace_plugin": {
+        "class": "DevWorkspacePlugin",
+        "methods": [
+            # Workspace lifecycle
+            "scaffold_project",
+            "list_workspaces",
+            "delete_workspace",
+            # File operations inside a workspace
+            "write_file",
+            "read_file",
+            "list_files",
+            # Shell command execution (cwd locked to workspace)
+            "run_command",
+        ],
+    },
 }

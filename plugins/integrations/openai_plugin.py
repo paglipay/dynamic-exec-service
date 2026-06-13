@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 from typing import Any
 from uuid import uuid4
@@ -268,6 +269,7 @@ class OpenAIFunctionCallingPlugin:
     # Keep this list up to date if the allowlist grows past OpenAI's 128-tool cap again.
     _CHAT_EXCLUDED_MODULES: frozenset[str] = frozenset(
         {
+            # --- always excluded ---
             "plugins.integrations.openai_plugin",                  # avoid recursion
             "plugins.integrations.openai_http_plugin",             # low-level HTTP, not for chat
             "plugins.sample_module",                               # demo only
@@ -278,6 +280,13 @@ class OpenAIFunctionCallingPlugin:
             "plugins.system_tools.nearest_school_matcher_plugin",  # highly specialized
             "plugins.system_tools.slack_image_restore_plugin",     # highly specialized
             "plugins.ssh_module",                                  # credential-dependent, not for chat
+            # --- pruned to stay under OpenAI 128-tool limit ---
+            "plugins.integrations.pika_plugin",                    # RabbitMQ — infra-level, not conversational (9 tools)
+            "plugins.system_tools.image_processing_plugin",        # school-site object detection, very specialized (9 tools)
+            "plugins.system_tools.terminal_introspection_plugin",  # environment introspection, rarely needed in chat (4 tools)
+            "plugins.integrations.github_repo_sync_plugin",        # Streamlit/GitHub sync, too specialized (2 tools)
+            "plugins.system_tools.json_catalog_plugin",            # JSON template catalog browsing (2 tools)
+            "plugins.integrations.geocoding_plugin",               # bulk geocoding only (1 tool)
         }
     )
 
@@ -840,12 +849,14 @@ class OpenAIFunctionCallingPlugin:
             and method_name == "run_python_script"
         ):
             return (
-                "Run a Python .py file and return its stdout, stderr, and exit_code. "
+                "Run a Python .py file from generated_data/ and return stdout, stderr, and exit_code. "
                 "Use constructor_args: {} (defaults to app working directory). "
                 "Use args: [script_path, args_or_null, cwd_or_null, timeout_seconds_or_60]. "
-                "script_path must point to an existing .py file — write it to disk first "
-                "(use TextFileCRUDPlugin.create_text or FileSystemPlugin), then call this. "
+                "script_path must point to an existing .py file in generated_data/ — write it first. "
                 "Example path: 'generated_data/my_script.py'. "
+                "NOTE: if you are building a full application or workspace project, use "
+                "dev_workspace_plugin__write_file + dev_workspace_plugin__run_command instead — "
+                "they support any file type (.py, .js, .html, etc.) and any shell command. "
                 "args is a list of strings passed as command-line arguments (sys.argv[1:]). "
                 "Check exit_code == 0 before reporting success; stdout/stderr contain the output."
             )
@@ -1049,15 +1060,194 @@ class OpenAIFunctionCallingPlugin:
                     "Returns 'stopped' (bool) and 'exit_code'."
                 )
 
+        if (
+            module_name == "plugins.system_tools.dev_workspace_plugin"
+            and class_name == "DevWorkspacePlugin"
+        ):
+            _ws_base = (
+                "Use constructor_args: {} (workspaces root comes from WORKSPACES_ROOT env var). "
+            )
+            if method_name == "scaffold_project":
+                return (
+                    _ws_base +
+                    "CREATE A NEW APPLICATION WORKSPACE. "
+                    "Call this FIRST whenever the user asks to create an app, project, or workspace of any kind — "
+                    "Python, Flask, FastAPI, Node.js, React, HTML, or any other technology. "
+                    "Use args: [project_name, description_or_empty_string]. "
+                    "project_name must start with a letter and contain only letters, digits, hyphens, or underscores (max 64 chars). "
+                    "Creates the workspace directory and a README.md. "
+                    "After this, use write_file to add source files (.py, .js, .html, requirements.txt, etc.) "
+                    "and run_command to install dependencies and start the app. "
+                    "Returns 'path' (the absolute workspace directory path)."
+                )
+            if method_name == "write_file":
+                return (
+                    _ws_base +
+                    "Write ANY file into an existing workspace — supports ALL file types: "
+                    ".py, .js, .ts, .jsx, .tsx, .html, .css, .json, .txt, .md, .yaml, .toml, requirements.txt, Dockerfile, etc. "
+                    "There are NO file type restrictions. "
+                    "Use args: [workspace_name, relative_path, content]. "
+                    "relative_path is the path inside the workspace, e.g. 'app.py', 'src/index.js', 'templates/index.html'. "
+                    "Parent subdirectories are created automatically. "
+                    "content is the full text of the file — write the complete, working source code. "
+                    "Do NOT use TextFileCRUDPlugin for application source files — use this method instead."
+                )
+            if method_name == "read_file":
+                return (
+                    _ws_base +
+                    "Read a file from a workspace directory. "
+                    "Use args: [workspace_name, relative_path, max_chars_or_20000]. "
+                    "relative_path is relative to the workspace root (e.g. 'app.py', 'src/routes.js'). "
+                    "Returns 'content' (file text) and 'truncated' (bool if over max_chars)."
+                )
+            if method_name == "list_files":
+                return (
+                    _ws_base +
+                    "List files and subdirectories inside a workspace. "
+                    "Use args: [workspace_name, sub_path_or_empty_string]. "
+                    "sub_path is optional — omit or pass '' to list the workspace root. "
+                    "Each entry has: name, type ('file' or 'dir'), size (bytes, null for dirs)."
+                )
+            if method_name == "run_command":
+                return (
+                    _ws_base +
+                    "Run any shell command inside a workspace directory (cwd is locked to the workspace). "
+                    "Use this to install dependencies, run tests, start servers, initialise git, etc. "
+                    "Use args: [workspace_name, command, timeout_seconds_or_120]. "
+                    "Examples: "
+                    "'pip install flask' to install Python deps, "
+                    "'npm install' to install Node deps, "
+                    "'python app.py' to test-run the app, "
+                    "'git init && git add . && git commit -m \"initial\"' to initialise a repo. "
+                    "Returns stdout, stderr, and exit_code. "
+                    "Check exit_code == 0 before reporting success to the user."
+                )
+            if method_name == "list_workspaces":
+                return (
+                    _ws_base +
+                    "List all existing workspaces under the workspaces root. "
+                    "Use args: [] (no arguments). "
+                    "Each entry has: name, path."
+                )
+            if method_name == "delete_workspace":
+                return (
+                    _ws_base +
+                    "Permanently delete a workspace and all its contents. "
+                    "Use args: [workspace_name]. "
+                    "Only call this when the user explicitly asks to delete a workspace."
+                )
+
         return (
             f"Call plugin method {module_name}::{class_name}.{method_name}. "
             "Provide constructor_args and args when needed."
         )
 
-    def _build_tools(self) -> list[dict[str, Any]]:
-        """Build OpenAI tool definitions from allowlisted plugin methods."""
+    # ---------------------------------------------------------------------------
+    # Dynamic tool routing — only the relevant subset of tools is sent to OpenAI
+    # per request, keeping the list well under the 128-tool API limit.
+    # ---------------------------------------------------------------------------
+
+    # Modules always included regardless of message content.
+    _ALWAYS_ON_MODULES: frozenset[str] = frozenset({
+        "slack_plugin",           # post results back to user
+        "web_search_plugin",      # general knowledge lookup
+        "text_file_crud_plugin",  # basic note / scratch-file creation
+        "dev_workspace_plugin",   # core coding-workspace feature
+    })
+
+    # Category → set of module short names activated by that category.
+    _TOOL_CATEGORIES: dict[str, frozenset[str]] = {
+        "workspace": frozenset({"subprocess_plugin", "streamlit_plugin"}),
+        "database":  frozenset({"mongodb_plugin"}),
+        "files":     frozenset({"file_reader_plugin", "file_system_plugin", "media_storage_plugin"}),
+        "documents": frozenset({"word_plugin", "word_template_plugin", "pdf_plugin", "excel_plugin", "markdown_pdf_plugin"}),
+        "scheduling":frozenset({"apscheduler_plugin"}),
+        "email":     frozenset({"gmail_plugin"}),
+        "image":     frozenset({"openai_sdk_plugin"}),
+    }
+
+    # Category keyword patterns (case-insensitive).
+    _CATEGORY_PATTERNS: dict[str, re.Pattern[str]] = {
+        "workspace": re.compile(
+            r"app|project|flask|fastapi|node\.?js|react|angular|vue|svelte|"
+            r"scaffold|workspace|develop|program|script|source.?code|"
+            r"requirements\.txt|dockerfile|html|css|javascript|typescript|"
+            r"write.{0,20}code|create.{0,20}file|build.{0,20}api|run.{0,20}server|"
+            r"install.{0,20}dep|npm install|pip install|git init",
+            re.IGNORECASE,
+        ),
+        "database": re.compile(
+            r"mongodb|database|db\b|collection|document|query|insert|find|"
+            r"aggregate|record|data.?store|upsert|mongo",
+            re.IGNORECASE,
+        ),
+        "files": re.compile(
+            r"file|upload|download|photo|image|picture|pdf|csv|excel|"
+            r"spreadsheet|docx|zip|attachment|folder|directory|storage|"
+            r"list.{0,15}file|read.{0,15}file|slack.{0,15}file|media",
+            re.IGNORECASE,
+        ),
+        "documents": re.compile(
+            r"word|docx|pdf|excel|spreadsheet|report|template|generate.{0,20}doc|"
+            r"fill.{0,15}form|convert.{0,15}pdf|create.{0,15}document",
+            re.IGNORECASE,
+        ),
+        "scheduling": re.compile(
+            r"schedule|cron|interval|recurring|timer|automate|every.{0,20}(minute|hour|day|week)|"
+            r"run.{0,20}daily|run.{0,20}weekly|background.?job|scheduled",
+            re.IGNORECASE,
+        ),
+        "email": re.compile(
+            r"email|gmail|send.{0,10}mail|inbox|message.{0,10}to",
+            re.IGNORECASE,
+        ),
+        "image": re.compile(
+            r"generate.{0,20}image|create.{0,20}image|draw|illustrate|"
+            r"dall.?e|gpt.image|make.{0,20}picture",
+            re.IGNORECASE,
+        ),
+    }
+
+    def _select_active_modules(self, prompt: str) -> frozenset[str]:
+        """Return the set of module short names to expose for this prompt.
+
+        Always includes ``_ALWAYS_ON_MODULES``.  Each category whose keyword
+        pattern matches the prompt adds its module set.  Falls back to the
+        full tool mapping when nothing matches (safe default).
+        """
+        if not prompt or not prompt.strip():
+            return frozenset(self._get_all_module_shorts())
+
+        active: set[str] = set(self._ALWAYS_ON_MODULES)
+        matched_any = False
+        for category, pattern in self._CATEGORY_PATTERNS.items():
+            if pattern.search(prompt):
+                active.update(self._TOOL_CATEGORIES[category])
+                matched_any = True
+                logger.debug("[ToolRouter] category matched: %s", category)
+
+        if not matched_any:
+            logger.debug("[ToolRouter] no category matched — using full tool set")
+            return frozenset(self._get_all_module_shorts())
+
+        return frozenset(active)
+
+    def _get_all_module_shorts(self) -> set[str]:
+        """Return all module short names present in the current tool mapping."""
+        return {v[0].split(".")[-1] for v in self._tool_name_to_target.values()}
+
+    def _build_tools(self, allowed_module_shorts: frozenset[str] | None = None) -> list[dict[str, Any]]:
+        """Build OpenAI tool definitions, optionally filtered to a subset of modules.
+
+        When *allowed_module_shorts* is provided only tools whose module short
+        name (the last dotted component) is in that set are included.
+        """
         tools: list[dict[str, Any]] = []
         for tool_name, (module_name, class_name, method_name) in self._tool_name_to_target.items():
+            if allowed_module_shorts is not None:
+                short = module_name.split(".")[-1]
+                if short not in allowed_module_shorts:
+                    continue
             tools.append(
                 {
                     "type": "function",
@@ -1087,6 +1277,7 @@ class OpenAIFunctionCallingPlugin:
                     },
                 }
             )
+        logger.debug("[ToolRouter] tools selected: %d / %d", len(tools), len(self._tool_name_to_target))
         return tools
 
     def _execute_tool_call(self, tool_name: str, arguments_json: str) -> str:
@@ -1151,9 +1342,16 @@ class OpenAIFunctionCallingPlugin:
         messages: list[dict[str, Any]],
         model: str,
         max_tool_rounds: int,
+        initial_prompt: str = "",
     ) -> tuple[str, int, list[str]]:
-        """Run function-calling rounds until final assistant text is produced."""
-        tools = self._build_tools()
+        """Run function-calling rounds until final assistant text is produced.
+
+        *initial_prompt* is the raw user message text used to select the
+        relevant tool subset before the first OpenAI call.  When omitted the
+        full tool set is used.
+        """
+        active_modules = self._select_active_modules(initial_prompt)
+        tools = self._build_tools(active_modules)
         executed_tool_calls = 0
         analyzed_image_paths: list[str] = []
 
@@ -1397,6 +1595,7 @@ class OpenAIFunctionCallingPlugin:
             messages,
             model.strip(),
             max_tool_rounds,
+            prompt,
         )
 
         return {
@@ -1471,6 +1670,7 @@ class OpenAIFunctionCallingPlugin:
             messages,
             model.strip(),
             max_tool_rounds,
+            prompt,
         )
 
         self._save_conversation_history(key, self._strip_image_urls_from_messages(messages))
