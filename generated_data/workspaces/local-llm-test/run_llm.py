@@ -1,26 +1,21 @@
-"""Local LLM inference — accepts prompts via CLI arg or stdin.
-
-Usage:
-    python run_llm.py --prompt "Your question here"
-    echo "Your question here" | python run_llm.py
-
-The prompt is NEVER hardcoded here. Pass it each time via --prompt or stdin.
-This keeps the script stable so the bot never needs to rewrite it.
-"""
-import argparse
-import sys
-
 from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
 
-MODEL_NAME = 'gpt2-medium'
+# GPT-J 6B model by EleutherAI
+MODEL_NAME = "EleutherAI/gpt-j-6B"
 
 def load_model():
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
+    model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, torch_dtype=torch.float16, revision='float16', low_cpu_mem_usage=True)
+    # Move model to GPU if available
+    if torch.cuda.is_available():
+        model = model.to('cuda')
+    else:
+        print("Warning: CUDA GPU not available. Running on CPU will be slow and may require lots of RAM.")
     return tokenizer, model
 
 def generate_text(prompt: str, tokenizer, model, max_new_tokens: int = 80) -> str:
-    inputs = tokenizer(prompt, return_tensors='pt')
+    inputs = tokenizer(prompt, return_tensors='pt').to(model.device)
     outputs = model.generate(
         **inputs,
         max_new_tokens=max_new_tokens,
@@ -33,12 +28,13 @@ def generate_text(prompt: str, tokenizer, model, max_new_tokens: int = 80) -> st
     return tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Run a local LLM inference.')
+    import argparse
+    import sys
+    parser = argparse.ArgumentParser(description='Run GPT-J 6B local inference')
     parser.add_argument('--prompt', type=str, default=None, help='Prompt text')
     parser.add_argument('--max-new-tokens', type=int, default=80)
     args = parser.parse_args()
 
-    # Accept prompt from --prompt arg or stdin pipe
     if args.prompt:
         prompt = args.prompt.strip()
     elif not sys.stdin.isatty():
