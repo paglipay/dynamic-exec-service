@@ -37,7 +37,7 @@ print("[llm_server] Model ready.", flush=True)
 
 
 def _generate(prompt: str, max_new_tokens: int = 80) -> str:
-    inputs = _tokenizer(prompt, return_tensors='pt')
+    inputs = _tokenizer(prompt, return_tensors='pt').to(_model.device)
     outputs = _model.generate(
         **inputs,
         max_new_tokens=max_new_tokens,
@@ -103,7 +103,7 @@ class _Handler(BaseHTTPRequestHandler):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=5100)
-    parser.add_argument('--host', type=str, default='127.0.0.1')
+    parser.add_argument('--host', type=str, default='0.0.0.0')
     args = parser.parse_args()
 
     server = HTTPServer((args.host, args.port), _Handler)
