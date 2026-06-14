@@ -17,12 +17,22 @@ import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
 
-MODEL_NAME = 'gpt2-medium'
+MODEL_NAME = 'EleutherAI/gpt-j-6B'
 
 print(f"[llm_server] Loading model '{MODEL_NAME}'...", flush=True)
 _tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-_model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
+_model = AutoModelForCausalLM.from_pretrained(
+    MODEL_NAME,
+    torch_dtype=torch.float16,
+    revision='float16',
+    low_cpu_mem_usage=True,
+)
+if torch.cuda.is_available():
+    _model = _model.to('cuda')
+else:
+    print("Warning: CUDA GPU not available. Running on CPU will be slow and may require lots of RAM.")
 print("[llm_server] Model ready.", flush=True)
 
 
