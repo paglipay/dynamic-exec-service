@@ -37,7 +37,8 @@ print("[llm_server] Model ready.", flush=True)
 
 
 def _generate(prompt: str, max_new_tokens: int = 80) -> str:
-    inputs = _tokenizer(prompt, return_tensors='pt')
+    device = next(_model.parameters()).device
+    inputs = _tokenizer(prompt, return_tensors='pt').to(device)
     outputs = _model.generate(
         **inputs,
         max_new_tokens=max_new_tokens,
