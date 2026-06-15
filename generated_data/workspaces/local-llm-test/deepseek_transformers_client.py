@@ -10,8 +10,10 @@ Timeout defaults to 600 seconds for slow model inference but can be overridden.
 
 import argparse
 import json
+import logging
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from urllib.parse import urlparse
@@ -19,6 +21,8 @@ from urllib.parse import urlparse
 
 DEFAULT_SERVER_URL = os.environ.get("DEEPSEEK_TRANSFORMERS_SERVER_URL", "http://127.0.0.1:5004")
 DEFAULT_TIMEOUT_SECONDS = 600
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_url(server_url: str, endpoint: str) -> str:
@@ -47,16 +51,33 @@ def query_server(server_url: str, prompt: str, timeout: int) -> dict:
         method="POST",
     )
 
+    logger.debug("POST %s | prompt_len=%d | timeout=%s", chat_url, len(prompt), timeout)
+    start = time.perf_counter()
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        if timeout == 0:
+            with urllib.request.urlopen(req) as resp:
+                raw = resp.read().decode("utf-8")
+        else:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8")
+        elapsed = time.perf_counter() - start
+        logger.debug("POST %s completed in %.2fs | response_bytes=%d", chat_url, elapsed, len(raw))
+        return json.loads(raw)
     except urllib.error.HTTPError as exc:
+        elapsed = time.perf_counter() - start
+        logger.debug("POST %s failed in %.2fs | HTTP %s", chat_url, elapsed, exc.code)
         return {"error": f"HTTP {exc.code}: {exc.reason}"}
     except TimeoutError:
+        elapsed = time.perf_counter() - start
+        logger.debug("POST %s timed out in %.2fs", chat_url, elapsed)
         return {"error": f"Connection timed out after {timeout}s to {chat_url}"}
     except urllib.error.URLError as exc:
+        elapsed = time.perf_counter() - start
+        logger.debug("POST %s failed in %.2fs | URLError: %s", chat_url, elapsed, exc.reason)
         return {"error": f"Connection failed to {chat_url}: {exc.reason}"}
     except Exception as exc:
+        elapsed = time.perf_counter() - start
+        logger.debug("POST %s failed in %.2fs | Exception: %s", chat_url, elapsed, exc)
         return {"error": str(exc)}
 
 
@@ -65,16 +86,33 @@ def check_health(server_url: str, timeout: int) -> dict:
     health_url = _normalize_url(server_url, "/health")
     req = urllib.request.Request(health_url, method="GET")
 
+    logger.debug("GET %s | timeout=%s", health_url, timeout)
+    start = time.perf_counter()
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        if timeout == 0:
+            with urllib.request.urlopen(req) as resp:
+                raw = resp.read().decode("utf-8")
+        else:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8")
+        elapsed = time.perf_counter() - start
+        logger.debug("GET %s completed in %.2fs | response_bytes=%d", health_url, elapsed, len(raw))
+        return json.loads(raw)
     except urllib.error.HTTPError as exc:
+        elapsed = time.perf_counter() - start
+        logger.debug("GET %s failed in %.2fs | HTTP %s", health_url, elapsed, exc.code)
         return {"error": f"HTTP {exc.code}: {exc.reason}"}
     except TimeoutError:
+        elapsed = time.perf_counter() - start
+        logger.debug("GET %s timed out in %.2fs", health_url, elapsed)
         return {"error": f"Connection timed out after {timeout}s to {health_url}"}
     except urllib.error.URLError as exc:
+        elapsed = time.perf_counter() - start
+        logger.debug("GET %s failed in %.2fs | URLError: %s", health_url, elapsed, exc.reason)
         return {"error": f"Connection failed to {health_url}: {exc.reason}"}
     except Exception as exc:
+        elapsed = time.perf_counter() - start
+        logger.debug("GET %s failed in %.2fs | Exception: %s", health_url, elapsed, exc)
         return {"error": str(exc)}
 
 
@@ -90,17 +128,25 @@ def main() -> int:
         "--timeout",
         type=int,
         default=DEFAULT_TIMEOUT_SECONDS,
-        help=f"HTTP timeout in seconds (default: {DEFAULT_TIMEOUT_SECONDS})",
+        help=f"HTTP timeout in seconds (default: {DEFAULT_TIMEOUT_SECONDS}). Use 0 for no client-side timeout.",
     )
     parser.add_argument("--health", action="store_true", help="Check /health and exit")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logs")
     args = parser.parse_args()
 
-    if args.timeout <= 0:
-        print("Error: --timeout must be a positive integer", file=sys.stderr)
+    if args.timeout < 0:
+        print("Error: --timeout must be >= 0", file=sys.stderr)
         return 1
 
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+    )
+    logger.debug("Client started | server=%s | timeout=%s | health=%s", args.server, args.timeout, args.health)
+
     if args.health:
-        result = check_health(args.server, timeout=min(args.timeout, 60))
+        health_timeout = min(args.timeout, 60) if args.timeout != 0 else 0
+        result = check_health(args.server, timeout=health_timeout)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0 if "error" not in result else 1
 

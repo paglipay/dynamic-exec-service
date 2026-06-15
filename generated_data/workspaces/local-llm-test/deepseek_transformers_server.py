@@ -9,8 +9,10 @@ Usage:
     curl http://localhost:5004/health
 """
 import logging
+import os
 import re
 import time
+import uuid
 from datetime import datetime
 
 import torch
@@ -28,7 +30,7 @@ PORT = 5004
 # Logging
 # ---------------------------------------------------------------------------
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG if os.environ.get("DEEPSEEK_TRANSFORMERS_DEBUG") == "1" else logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
@@ -72,7 +74,15 @@ def _generate(prompt: str, max_new_tokens: int = 512) -> tuple[str, str, float]:
     else:
         formatted = prompt
 
+    t_tokenize_start = time.perf_counter()
     inputs = _tokenizer(formatted, return_tensors="pt").to(next(_model.parameters()).device)
+    tokenize_ms = (time.perf_counter() - t_tokenize_start) * 1000
+    logger.debug(
+        "Tokenized input | prompt_chars=%d | input_tokens=%d | tokenize_ms=%.1f",
+        len(prompt),
+        int(inputs["input_ids"].shape[-1]),
+        tokenize_ms,
+    )
 
     start = time.perf_counter()
     with torch.no_grad():
@@ -84,11 +94,20 @@ def _generate(prompt: str, max_new_tokens: int = 512) -> tuple[str, str, float]:
             top_p=0.9,
             pad_token_id=_tokenizer.eos_token_id,
         )
-    elapsed_ms = (time.perf_counter() - start) * 1000
+    generate_ms = (time.perf_counter() - start) * 1000
 
     # Decode only the newly generated tokens
+    t_decode_start = time.perf_counter()
     new_ids = output_ids[0][inputs["input_ids"].shape[-1]:]
     raw = _tokenizer.decode(new_ids, skip_special_tokens=True).strip()
+    decode_ms = (time.perf_counter() - t_decode_start) * 1000
+    elapsed_ms = generate_ms + decode_ms
+    logger.debug(
+        "Generated output | output_tokens=%d | generate_ms=%.1f | decode_ms=%.1f",
+        int(new_ids.shape[-1]),
+        generate_ms,
+        decode_ms,
+    )
 
     # Split out <think> block if present
     match = _THINK_RE.search(raw)
@@ -105,19 +124,33 @@ def _generate(prompt: str, max_new_tokens: int = 512) -> tuple[str, str, float]:
 def chat():
     body = request.get_json(silent=True) or {}
     prompt = (body.get("prompt") or "").strip()
+    max_new_tokens = int(body.get("max_new_tokens", 512))
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())[:8]
 
     if not prompt:
         return jsonify({"error": "prompt is required"}), 400
 
-    logger.info("Request | prompt_len=%d | %s", len(prompt), datetime.utcnow().isoformat())
+    logger.info(
+        "Request %s | prompt_len=%d | max_new_tokens=%d | %s",
+        request_id,
+        len(prompt),
+        max_new_tokens,
+        datetime.utcnow().isoformat(),
+    )
 
     try:
-        response_text, reasoning, duration_ms = _generate(prompt)
+        response_text, reasoning, duration_ms = _generate(prompt, max_new_tokens=max_new_tokens)
     except Exception as exc:
-        logger.error("Generation failed: %s", exc)
+        logger.exception("Request %s failed during generation: %s", request_id, exc)
         return jsonify({"error": str(exc)}), 500
 
-    logger.info("Done    | duration_ms=%.1f | reasoning_len=%d", duration_ms, len(reasoning))
+    logger.info(
+        "Done %s | duration_ms=%.1f | response_len=%d | reasoning_len=%d",
+        request_id,
+        duration_ms,
+        len(response_text),
+        len(reasoning),
+    )
 
     result = {
         "model": MODEL_LABEL,
