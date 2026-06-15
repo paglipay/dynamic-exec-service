@@ -9,6 +9,7 @@ Usage:
     curl http://localhost:5002/health
 """
 import logging
+import os
 import re
 import time
 from datetime import datetime
@@ -20,8 +21,8 @@ from flask import Flask, jsonify, request
 # Config
 # ---------------------------------------------------------------------------
 MODEL_NAME = "deepseek-r1:7b"
-OLLAMA_BASE = "http://192.168.1.84:11434"
-PORT = 5002
+OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+PORT = int(os.environ.get("DEEPSEEK_OLLAMA_SERVER_PORT", "5002"))
 
 # ---------------------------------------------------------------------------
 # Logging
