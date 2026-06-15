@@ -20,7 +20,7 @@ from flask import Flask, jsonify, request
 # Config
 # ---------------------------------------------------------------------------
 MODEL_NAME = "deepseek-r1:7b"
-OLLAMA_BASE = "http://localhost:11434"
+OLLAMA_BASE = "http://192.168.1.84:11434"
 PORT = 5002
 
 # ---------------------------------------------------------------------------
