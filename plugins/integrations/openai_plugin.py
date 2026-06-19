@@ -1,4 +1,15 @@
-"""OpenAI function-calling integration plugin."""
+"""OpenAI function-calling integration plugin.
+
+By default this talks to OpenAI's hosted API. To point it at any other
+OpenAI-compatible server instead (e.g. a local Ollama instance), set:
+    LLM_BASE_URL         e.g. http://192.168.1.84:11434/v1
+    LLM_MODEL             default model when callers don't pass one, e.g. qwen3.5:4b
+    LLM_API_KEY           optional; any non-empty string works for Ollama
+    LLM_TIMEOUT_SECONDS   optional; local inference is often slower than OpenAI
+Leave all four unset to keep using OpenAI exactly as before. Note: app.py's
+Slack call sites already pass an explicit model via SLACK_OPENAI_MODEL, which
+takes priority over LLM_MODEL — set that instead if driving this through Slack.
+"""
 
 from __future__ import annotations
 
@@ -32,11 +43,37 @@ class OpenAIFunctionCallingPlugin:
     _slack_images_root = os.getenv("BASE_DATA_DIR", "generated_data") + "/slack_downloads"
 
     def __init__(self, api_key: str | None = None) -> None:
-        resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
-        if not isinstance(resolved_api_key, str) or not resolved_api_key.strip():
-            raise ValueError("api_key must be provided (or set OPENAI_API_KEY)")
+        # LLM_BASE_URL lets this plugin point at any OpenAI-compatible server
+        # (e.g. Ollama's `http://<host>:11434/v1`) instead of api.openai.com.
+        base_url = os.getenv("LLM_BASE_URL", "").strip() or None
 
-        self.client = OpenAI(api_key=resolved_api_key.strip())
+        resolved_api_key = (
+            api_key
+            or os.getenv("OPENAI_API_KEY")
+            or os.getenv("LLM_API_KEY")
+            or ("ollama" if base_url else None)
+        )
+        if not isinstance(resolved_api_key, str) or not resolved_api_key.strip():
+            raise ValueError(
+                "api_key must be provided (or set OPENAI_API_KEY / LLM_API_KEY). "
+                "To point this plugin at a local OpenAI-compatible server such as "
+                "Ollama, set LLM_BASE_URL — a placeholder key is filled in automatically."
+            )
+
+        client_kwargs: dict[str, Any] = {"api_key": resolved_api_key.strip()}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        timeout_raw = os.getenv("LLM_TIMEOUT_SECONDS", "").strip()
+        if timeout_raw:
+            try:
+                client_kwargs["timeout"] = float(timeout_raw)
+            except ValueError:
+                logger.warning("Ignoring invalid LLM_TIMEOUT_SECONDS=%r", timeout_raw)
+
+        self.client = OpenAI(**client_kwargs)
+        # Default model when a caller doesn't pass one explicitly. Falls back to
+        # "gpt-5-mini" so behavior is unchanged unless LLM_MODEL is set.
+        self.default_model = os.getenv("LLM_MODEL", "").strip() or None
         self.executor = JSONExecutor()
         self._history_ttl_seconds = self._resolve_history_ttl_seconds()
         self._redis_client = self._build_redis_client()
@@ -1636,16 +1673,20 @@ class OpenAIFunctionCallingPlugin:
     def generate_with_function_calls(
         self,
         prompt: str,
-        # model: str = "gpt-4.1-mini",
-        model: str = "gpt-5-mini",
+        model: str | None = None,
         max_tool_rounds: int = 5,
         image_data_urls: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Generate a response with plugin function-calling enabled."""
+        """Generate a response with plugin function-calling enabled.
+
+        model defaults to the LLM_MODEL env var (read at construction time) if
+        set, else "gpt-5-mini". Pass an explicit model to override either default.
+        """
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("prompt must be a non-empty string")
-        if not isinstance(model, str) or not model.strip():
-            raise ValueError("model must be a non-empty string")
+        if model is not None and not isinstance(model, str):
+            raise ValueError("model must be a string when provided")
+        resolved_model = model.strip() if isinstance(model, str) and model.strip() else (self.default_model or "gpt-5-mini")
         if not isinstance(max_tool_rounds, int) or max_tool_rounds <= 0:
             raise ValueError("max_tool_rounds must be an integer > 0")
         if image_data_urls is not None:
@@ -1664,14 +1705,14 @@ class OpenAIFunctionCallingPlugin:
 
         final_text, executed_tool_calls, _ = self._execute_chat_turn(
             messages,
-            model.strip(),
+            resolved_model,
             max_tool_rounds,
             prompt,
         )
 
         return {
             "status": "success",
-            "model": model.strip(),
+            "model": resolved_model,
             "text": final_text,
             "tool_calls_executed": executed_tool_calls,
         }
@@ -1703,19 +1744,23 @@ class OpenAIFunctionCallingPlugin:
         self,
         conversation_id: str,
         prompt: str,
-        # model: str = "gpt-4.1-mini",
-        model: str = "gpt-5-mini",
+        model: str | None = None,
         max_tool_rounds: int = 5,
         image_data_urls: list[str] | None = None,
         progress_callback: Any | None = None,
     ) -> dict[str, Any]:
-        """Generate a response with tool calls and preserve conversation history."""
+        """Generate a response with tool calls and preserve conversation history.
+
+        model defaults to the LLM_MODEL env var (read at construction time) if
+        set, else "gpt-5-mini". Pass an explicit model to override either default.
+        """
         if not isinstance(conversation_id, str) or not conversation_id.strip():
             raise ValueError("conversation_id must be a non-empty string")
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("prompt must be a non-empty string")
-        if not isinstance(model, str) or not model.strip():
-            raise ValueError("model must be a non-empty string")
+        if model is not None and not isinstance(model, str):
+            raise ValueError("model must be a string when provided")
+        resolved_model = model.strip() if isinstance(model, str) and model.strip() else (self.default_model or "gpt-5-mini")
         if not isinstance(max_tool_rounds, int) or max_tool_rounds <= 0:
             raise ValueError("max_tool_rounds must be an integer > 0")
         if image_data_urls is not None:
@@ -1740,7 +1785,7 @@ class OpenAIFunctionCallingPlugin:
 
         final_text, executed_tool_calls, analyzed_image_paths = self._execute_chat_turn(
             messages,
-            model.strip(),
+            resolved_model,
             max_tool_rounds,
             prompt,
             progress_callback,
@@ -1753,7 +1798,7 @@ class OpenAIFunctionCallingPlugin:
         return {
             "status": "success",
             "conversation_id": key,
-            "model": model.strip(),
+            "model": resolved_model,
             "text": final_text,
             "history_messages": len(stored_messages),
             "tool_calls_executed": executed_tool_calls,
