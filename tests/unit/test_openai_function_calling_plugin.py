@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 from plugins.integrations.conversation_history_manager import ConversationHistoryManager
 from plugins.integrations.openai_plugin import OpenAIFunctionCallingPlugin
@@ -272,7 +273,7 @@ def test_redis_health_check_requires_non_empty_conversation_id() -> None:
 def test_execute_chat_turn_appends_final_assistant_message_to_history() -> None:
     plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
     plugin._tool_name_to_target = {}
-    plugin._build_tools = lambda: []
+    plugin._build_tools = lambda *_args, **_kwargs: []
 
     class FakeMessage:
         content = "Hello from assistant"
@@ -298,11 +299,268 @@ def test_execute_chat_turn_appends_final_assistant_message_to_history() -> None:
     plugin.client = FakeClient()
     messages = [{"role": "user", "content": "hi"}]
 
-    final_text, executed_tool_calls = plugin._execute_chat_turn(messages, "gpt-4.1-mini", 1)
+    final_text, executed_tool_calls, analyzed_image_paths = plugin._execute_chat_turn(messages, "gpt-4.1-mini", 1)
 
     assert final_text == "Hello from assistant"
     assert executed_tool_calls == 0
+    assert analyzed_image_paths == []
     assert messages[-1] == {"role": "assistant", "content": "Hello from assistant"}
+
+
+def test_execute_chat_turn_with_enable_tools_false_skips_tool_definitions() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+    plugin._tool_name_to_target = {}
+
+    def _fail_build_tools(*_args, **_kwargs):
+        raise AssertionError("_build_tools should not be called when enable_tools=False")
+
+    plugin._build_tools = _fail_build_tools
+
+    class FakeMessage:
+        content = "Plain answer, no tools needed"
+        tool_calls = None
+
+    class FakeChoice:
+        message = FakeMessage()
+
+    class FakeResponse:
+        choices = [FakeChoice()]
+
+    captured_kwargs: dict = {}
+
+    class FakeCompletions:
+        @staticmethod
+        def create(**kwargs):
+            captured_kwargs.update(kwargs)
+            return FakeResponse()
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    plugin.client = FakeClient()
+    messages = [{"role": "user", "content": "hi"}]
+
+    final_text, executed_tool_calls, analyzed_image_paths = plugin._execute_chat_turn(
+        messages, "gpt-4.1-mini", 1, enable_tools=False
+    )
+
+    assert final_text == "Plain answer, no tools needed"
+    assert executed_tool_calls == 0
+    assert analyzed_image_paths == []
+    assert "tools" not in captured_kwargs
+    assert "tool_choice" not in captured_kwargs
+
+
+class _FakeFunction:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.arguments = "{}"
+
+
+class _FakeToolCall:
+    def __init__(self, name: str, call_id: str) -> None:
+        self.id = call_id
+        self.function = _FakeFunction(name)
+
+    def model_dump(self) -> dict:
+        return {
+            "id": self.id,
+            "type": "function",
+            "function": {"name": self.function.name, "arguments": self.function.arguments},
+        }
+
+
+class _FakeMessage:
+    def __init__(self, content, tool_calls) -> None:
+        self.content = content
+        self.tool_calls = tool_calls
+
+
+class _FakeChoice:
+    def __init__(self, message) -> None:
+        self.message = message
+
+
+class _FakeChatResponse:
+    def __init__(self, message) -> None:
+        self.choices = [_FakeChoice(message)]
+
+
+def test_execute_chat_turn_forces_finalization_call_when_rounds_exhausted() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+    plugin._tool_name_to_target = {}
+    plugin._build_tools = lambda *_args, **_kwargs: [{"type": "function", "function": {"name": "do_thing"}}]
+    plugin._execute_tool_call = lambda _name, _args: json.dumps({"status": "success", "result": "ok"})
+
+    calls: list[dict] = []
+
+    class FakeCompletions:
+        @staticmethod
+        def create(**kwargs):
+            calls.append(kwargs)
+            if len(calls) <= 2:
+                return _FakeChatResponse(_FakeMessage("", [_FakeToolCall("do_thing", f"call_{len(calls)}")]))
+            return _FakeChatResponse(_FakeMessage("Final answer after forced finalization", None))
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    plugin.client = FakeClient()
+    messages = [{"role": "user", "content": "hi"}]
+
+    final_text, executed_tool_calls, analyzed_image_paths = plugin._execute_chat_turn(
+        messages, "gpt-4.1-mini", 2
+    )
+
+    assert final_text == "Final answer after forced finalization"
+    assert executed_tool_calls == 2
+    assert analyzed_image_paths == []
+    assert len(calls) == 3
+    assert "tools" not in calls[-1]
+    assert "tool_choice" not in calls[-1]
+    assert messages[-1] == {"role": "assistant", "content": "Final answer after forced finalization"}
+
+
+def test_execute_chat_turn_raises_with_tool_counts_when_finalization_also_empty() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+    plugin._tool_name_to_target = {}
+    plugin._build_tools = lambda *_args, **_kwargs: [{"type": "function", "function": {"name": "do_thing"}}]
+    plugin._execute_tool_call = lambda _name, _args: json.dumps({"status": "success", "result": "ok"})
+
+    class FakeCompletions:
+        @staticmethod
+        def create(**_kwargs):
+            return _FakeChatResponse(_FakeMessage("", [_FakeToolCall("do_thing", "call_x")]))
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    plugin.client = FakeClient()
+    messages = [{"role": "user", "content": "hi"}]
+
+    try:
+        plugin._execute_chat_turn(messages, "gpt-4.1-mini", 1)
+        assert False, "Expected ValueError"
+    except ValueError as exc:
+        assert "Exceeded max tool-calling rounds" in str(exc)
+        assert "do_thing" in str(exc)
+
+
+def test_generate_with_function_calls_rejects_non_bool_enable_tools() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+    plugin.default_model = None
+
+    try:
+        plugin.generate_with_function_calls("hi", enable_tools="nope")
+        assert False, "Expected ValueError"
+    except ValueError as exc:
+        assert "enable_tools must be a boolean" in str(exc)
+
+
+def test_generate_with_function_calls_and_history_rejects_non_bool_enable_tools() -> None:
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+    plugin.default_model = None
+
+    try:
+        plugin.generate_with_function_calls_and_history("conv-1", "hi", enable_tools=1)
+        assert False, "Expected ValueError"
+    except ValueError as exc:
+        assert "enable_tools must be a boolean" in str(exc)
+
+
+def _with_env(name: str, value: str | None, func):
+    """Run func() with env var `name` temporarily set to `value`, then restore it."""
+    old_value = os.environ.get(name)
+    if value is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = value
+    try:
+        return func()
+    finally:
+        if old_value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = old_value
+
+
+def _stub_plugin_for_generate(build_tools_result):
+    plugin = OpenAIFunctionCallingPlugin.__new__(OpenAIFunctionCallingPlugin)
+    plugin.default_model = None
+    plugin._tool_name_to_target = {}
+    plugin._slack_images_root = "generated_data/slack_downloads/images"
+    plugin._build_tools = lambda *_args, **_kwargs: build_tools_result
+
+    class FakeMessage:
+        content = "Plain answer"
+        tool_calls = None
+
+    class FakeChoice:
+        message = FakeMessage()
+
+    class FakeResponse:
+        choices = [FakeChoice()]
+
+    captured_kwargs: dict = {}
+
+    class FakeCompletions:
+        @staticmethod
+        def create(**kwargs):
+            captured_kwargs.update(kwargs)
+            return FakeResponse()
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    plugin.client = FakeClient()
+    return plugin, captured_kwargs
+
+
+def test_generate_with_function_calls_falls_back_to_env_var_when_disabled() -> None:
+    plugin, captured_kwargs = _stub_plugin_for_generate([{"type": "function", "function": {"name": "dummy"}}])
+
+    result = _with_env(
+        "OPENAI_TOOLS_ENABLED", "false", lambda: plugin.generate_with_function_calls("hi there")
+    )
+
+    assert result["tools_enabled"] is False
+    assert "tools" not in captured_kwargs
+    assert "tool_choice" not in captured_kwargs
+
+
+def test_generate_with_function_calls_explicit_enable_tools_overrides_env_var() -> None:
+    plugin, captured_kwargs = _stub_plugin_for_generate([{"type": "function", "function": {"name": "dummy"}}])
+
+    result = _with_env(
+        "OPENAI_TOOLS_ENABLED",
+        "false",
+        lambda: plugin.generate_with_function_calls("hi there", enable_tools=True),
+    )
+
+    assert result["tools_enabled"] is True
+    assert captured_kwargs.get("tools")
+    assert captured_kwargs.get("tool_choice") == "auto"
+
+
+def test_generate_with_function_calls_defaults_enabled_when_env_var_unset() -> None:
+    plugin, captured_kwargs = _stub_plugin_for_generate([{"type": "function", "function": {"name": "dummy"}}])
+
+    result = _with_env("OPENAI_TOOLS_ENABLED", None, lambda: plugin.generate_with_function_calls("hi there"))
+
+    assert result["tools_enabled"] is True
+    assert captured_kwargs.get("tools")
 
 
 def test_save_history_compacts_and_keeps_recent_messages() -> None:

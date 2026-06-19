@@ -9,6 +9,12 @@ OpenAI-compatible server instead (e.g. a local Ollama instance), set:
 Leave all four unset to keep using OpenAI exactly as before. Note: app.py's
 Slack call sites already pass an explicit model via SLACK_OPENAI_MODEL, which
 takes priority over LLM_MODEL — set that instead if driving this through Slack.
+
+Set OPENAI_TOOLS_ENABLED=false (also accepts "0"/"no"/"off", case-insensitive)
+to disable plugin function-calling by default for calls that don't explicitly
+pass `enable_tools`. Leave unset (or any other value) to keep tool-calling on
+by default, as before. A per-call `enable_tools=True/False` argument always
+overrides this default.
 """
 
 from __future__ import annotations
@@ -1431,6 +1437,7 @@ class OpenAIFunctionCallingPlugin:
         max_tool_rounds: int,
         initial_prompt: str = "",
         progress_callback: Any | None = None,
+        enable_tools: bool = True,
     ) -> tuple[str, int, list[str]]:
         """Run function-calling rounds until final assistant text is produced.
 
@@ -1442,20 +1449,35 @@ class OpenAIFunctionCallingPlugin:
         ``progress_callback(tool_name, status)`` where *status* is one of
         ``'called'`` (before execution), ``'success'``, or ``'error'``.
         Exceptions raised by the callback are silently swallowed.
+
+        *enable_tools*, when False, skips building the plugin tool list
+        entirely and omits ``tools``/``tool_choice`` from the OpenAI request —
+        the model responds with plain text only and cannot issue any function
+        calls. Useful for simple completions where tool-calling overhead
+        (prompt size, latency, accidental tool use) isn't wanted. Defaults to
+        True so behavior is unchanged unless explicitly disabled.
+
+        If *max_tool_rounds* is exhausted without the model ever returning
+        final text, one extra completion call is made with tools disabled to
+        force a plain-text answer from whatever was gathered so far. Only if
+        that call also returns no content does this method raise
+        ``ValueError``.
         """
-        active_modules = self._select_active_modules(initial_prompt)
-        tools = self._build_tools(active_modules)
+        tools: list[dict[str, Any]] = []
+        if enable_tools:
+            active_modules = self._select_active_modules(initial_prompt)
+            tools = self._build_tools(active_modules)
         executed_tool_calls = 0
         analyzed_image_paths: list[str] = []
+        tool_call_counts: dict[str, int] = {}
 
         for round_num in range(max_tool_rounds):
             try:
-                response = self.client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    tools=tools,
-                    tool_choice="auto",
-                )
+                create_kwargs: dict[str, Any] = {"model": model, "messages": messages}
+                if tools:
+                    create_kwargs["tools"] = tools
+                    create_kwargs["tool_choice"] = "auto"
+                response = self.client.chat.completions.create(**create_kwargs)
             except Exception as exc:
                 raise ValueError(f"OpenAI function-calling request failed: {exc}") from exc
 
@@ -1469,6 +1491,8 @@ class OpenAIFunctionCallingPlugin:
             if tool_calls:
                 tool_names = [tc.function.name for tc in tool_calls]
                 logger.debug("[OpenAI][Round %d] tool_calls: %s", round_num + 1, tool_names)
+                for _tool_name in tool_names:
+                    tool_call_counts[_tool_name] = tool_call_counts.get(_tool_name, 0) + 1
 
             if tool_calls:
                 messages.append(
@@ -1565,8 +1589,50 @@ class OpenAIFunctionCallingPlugin:
                 logger.debug("[OpenAI][Round %d] No content and no tool_calls — injecting finalization nudge", round_num + 1)
                 messages.append({"role": "user", "content": "Please provide your final answer now."})
 
-        logger.warning("[OpenAI] Max rounds (%d) exceeded without final response", max_tool_rounds)
-        raise ValueError("Exceeded max tool-calling rounds without a final response")
+        # Round budget exhausted without final text. Rather than leaving the
+        # caller with nothing, force one last completion with tools disabled
+        # so the model must answer in plain text using whatever it already
+        # gathered, instead of continuing to call tools indefinitely.
+        logger.warning(
+            "[OpenAI] Max rounds (%d) exceeded without final response; forcing a "
+            "tools-disabled finalization call. tool_calls_by_name=%s",
+            max_tool_rounds,
+            tool_call_counts,
+        )
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "You have used all available tool-calling turns. Do not call "
+                    "any more tools. Reply now with your best final answer in "
+                    "plain text based on everything gathered so far."
+                ),
+            }
+        )
+        try:
+            response = self.client.chat.completions.create(model=model, messages=messages)
+            final_text = (response.choices[0].message.content or "").strip()
+        except Exception as exc:
+            raise ValueError(
+                f"Exceeded max tool-calling rounds and finalization call failed: {exc}"
+            ) from exc
+
+        if final_text:
+            logger.debug(
+                "[OpenAI] Finalization call succeeded after exhausting rounds: %d chars",
+                len(final_text),
+            )
+            messages.append({"role": "assistant", "content": final_text})
+            return final_text, executed_tool_calls, analyzed_image_paths
+
+        logger.warning(
+            "[OpenAI] Finalization call also returned no content. tool_calls_by_name=%s",
+            tool_call_counts,
+        )
+        raise ValueError(
+            f"Exceeded max tool-calling rounds without a final response "
+            f"(tool_calls_by_name={tool_call_counts})"
+        )
 
     def _build_system_prompt(self) -> str:
         """Build system guidance with plugin-tool and Slack image directory context."""
@@ -1670,17 +1736,36 @@ class OpenAIFunctionCallingPlugin:
             "content": content,
         }
 
+    @staticmethod
+    def _default_enable_tools() -> bool:
+        """Resolve the default for `enable_tools` from OPENAI_TOOLS_ENABLED.
+
+        "0"/"false"/"no"/"off" (case-insensitive) disable tools by default;
+        unset or any other value keeps tools enabled by default, matching the
+        original behavior before this env var existed. Only consulted when a
+        caller omits `enable_tools` — an explicit True/False always wins.
+        """
+        raw = os.getenv("OPENAI_TOOLS_ENABLED", "").strip().lower()
+        return raw not in ("0", "false", "no", "off")
+
     def generate_with_function_calls(
         self,
         prompt: str,
         model: str | None = None,
         max_tool_rounds: int = 5,
         image_data_urls: list[str] | None = None,
+        enable_tools: bool | None = None,
     ) -> dict[str, Any]:
         """Generate a response with plugin function-calling enabled.
 
         model defaults to the LLM_MODEL env var (read at construction time) if
         set, else "gpt-5-mini". Pass an explicit model to override either default.
+
+        enable_tools: set to False to skip loading/sending plugin tool
+        definitions entirely, producing a plain text completion with no
+        function-calling ability. Defaults to None, which falls back to the
+        OPENAI_TOOLS_ENABLED env var (enabled if unset) — pass True/False
+        explicitly to override that default for a single call.
         """
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("prompt must be a non-empty string")
@@ -1694,6 +1779,10 @@ class OpenAIFunctionCallingPlugin:
                 raise ValueError("image_data_urls must be an array when provided")
             if any(not isinstance(url, str) or not url.strip() for url in image_data_urls):
                 raise ValueError("image_data_urls must contain non-empty strings")
+        if enable_tools is None:
+            enable_tools = self._default_enable_tools()
+        elif not isinstance(enable_tools, bool):
+            raise ValueError("enable_tools must be a boolean")
 
         messages: list[dict[str, Any]] = [
             {
@@ -1708,6 +1797,7 @@ class OpenAIFunctionCallingPlugin:
             resolved_model,
             max_tool_rounds,
             prompt,
+            enable_tools=enable_tools,
         )
 
         return {
@@ -1715,6 +1805,7 @@ class OpenAIFunctionCallingPlugin:
             "model": resolved_model,
             "text": final_text,
             "tool_calls_executed": executed_tool_calls,
+            "tools_enabled": enable_tools,
         }
 
     @staticmethod
@@ -1748,11 +1839,18 @@ class OpenAIFunctionCallingPlugin:
         max_tool_rounds: int = 5,
         image_data_urls: list[str] | None = None,
         progress_callback: Any | None = None,
+        enable_tools: bool | None = None,
     ) -> dict[str, Any]:
         """Generate a response with tool calls and preserve conversation history.
 
         model defaults to the LLM_MODEL env var (read at construction time) if
         set, else "gpt-5-mini". Pass an explicit model to override either default.
+
+        enable_tools: set to False to skip loading/sending plugin tool
+        definitions entirely for this turn, producing a plain text completion
+        with no function-calling ability. Defaults to None, which falls back to
+        the OPENAI_TOOLS_ENABLED env var (enabled if unset) — pass True/False
+        explicitly to override that default for a single call.
         """
         if not isinstance(conversation_id, str) or not conversation_id.strip():
             raise ValueError("conversation_id must be a non-empty string")
@@ -1768,6 +1866,10 @@ class OpenAIFunctionCallingPlugin:
                 raise ValueError("image_data_urls must be an array when provided")
             if any(not isinstance(url, str) or not url.strip() for url in image_data_urls):
                 raise ValueError("image_data_urls must contain non-empty strings")
+        if enable_tools is None:
+            enable_tools = self._default_enable_tools()
+        elif not isinstance(enable_tools, bool):
+            raise ValueError("enable_tools must be a boolean")
 
         key = conversation_id.strip()
         messages = self._load_conversation_history(key)
@@ -1789,6 +1891,7 @@ class OpenAIFunctionCallingPlugin:
             max_tool_rounds,
             prompt,
             progress_callback,
+            enable_tools=enable_tools,
         )
 
         self._save_conversation_history(key, self._strip_image_urls_from_messages(messages))
@@ -1808,4 +1911,5 @@ class OpenAIFunctionCallingPlugin:
             ),
             "history_estimated_tokens": compaction_meta_after_turn.get("after_estimated_tokens"),
             "analyzed_image_paths": analyzed_image_paths,
+            "tools_enabled": enable_tools,
         }
