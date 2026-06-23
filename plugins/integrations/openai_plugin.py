@@ -1,12 +1,19 @@
 """OpenAI function-calling integration plugin.
 
 By default this talks to OpenAI's hosted API. To point it at any other
-OpenAI-compatible server instead (e.g. a local Ollama instance), set:
-    LLM_BASE_URL         e.g. http://192.168.1.84:11434/v1
+OpenAI-compatible server instead, set:
+    LLM_BASE_URL          local Ollama: http://192.168.1.84:11434/v1
+                          Ollama Cloud (no local server needed): https://ollama.com/v1
     LLM_MODEL             default model when callers don't pass one, e.g. qwen3.5:4b
-    LLM_API_KEY           optional; any non-empty string works for Ollama
-    LLM_TIMEOUT_SECONDS   optional; local inference is often slower than OpenAI
-Leave all four unset to keep using OpenAI exactly as before. Note: app.py's
+                          (Ollama Cloud models use their plain tag, e.g. gpt-oss:120b
+                          — the "-cloud" suffix is only for running cloud models
+                          through a *local* Ollama server, not the direct Cloud API)
+    LLM_API_KEY           optional; any non-empty string works for local Ollama
+    OLLAMA_API_KEY        required for Ollama Cloud (create one at
+                          ollama.com/settings/keys); also used as a fallback for
+                          LLM_API_KEY if that's unset
+    LLM_TIMEOUT_SECONDS   optional; local/cloud inference is often slower than OpenAI
+Leave all unset to keep using OpenAI exactly as before. Note: app.py's
 Slack call sites already pass an explicit model via SLACK_OPENAI_MODEL, which
 takes priority over LLM_MODEL — set that instead if driving this through Slack.
 
@@ -29,6 +36,7 @@ from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
+import httpx
 from openai import OpenAI
 try:
     import redis  # type: ignore[import-not-found]
@@ -53,30 +61,59 @@ class OpenAIFunctionCallingPlugin:
         # (e.g. Ollama's `http://<host>:11434/v1`) instead of api.openai.com.
         base_url = os.getenv("LLM_BASE_URL", "").strip() or None
 
-        resolved_api_key = (
-            api_key
-            or os.getenv("OPENAI_API_KEY")
-            or os.getenv("LLM_API_KEY")
-            or ("ollama" if base_url else None)
-        )
+        if base_url:
+            # Talking to a non-OpenAI host (local Ollama or Ollama Cloud).
+            # OPENAI_API_KEY must NOT be used here -- it's a real api.openai.com
+            # key and sending it to ollama.com as a Bearer token produces a
+            # confusing 401 Unauthorized from the *other* service instead of a
+            # clear "wrong key" error.
+            resolved_api_key = (
+                api_key
+                or os.getenv("LLM_API_KEY")
+                or os.getenv("OLLAMA_API_KEY")
+                or "ollama"
+            )
+        else:
+            resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
         if not isinstance(resolved_api_key, str) or not resolved_api_key.strip():
             raise ValueError(
-                "api_key must be provided (or set OPENAI_API_KEY / LLM_API_KEY). "
-                "To point this plugin at a local OpenAI-compatible server such as "
-                "Ollama, set LLM_BASE_URL — a placeholder key is filled in automatically."
+                "api_key must be provided (or set OPENAI_API_KEY / LLM_API_KEY / "
+                "OLLAMA_API_KEY). To point this plugin at a local OpenAI-compatible "
+                "server such as Ollama, set LLM_BASE_URL — a placeholder key is "
+                "filled in automatically."
             )
 
         client_kwargs: dict[str, Any] = {"api_key": resolved_api_key.strip()}
         if base_url:
             client_kwargs["base_url"] = base_url
         timeout_raw = os.getenv("LLM_TIMEOUT_SECONDS", "").strip()
+        timeout_seconds: float | None = None
         if timeout_raw:
             try:
-                client_kwargs["timeout"] = float(timeout_raw)
+                timeout_seconds = float(timeout_raw)
+                client_kwargs["timeout"] = timeout_seconds
             except ValueError:
                 logger.warning("Ignoring invalid LLM_TIMEOUT_SECONDS=%r", timeout_raw)
 
         self.client = OpenAI(**client_kwargs)
+        # Ollama's OpenAI-compatibility shim (`/v1/chat/completions`) has been
+        # unreliable for function-calling with several local models — tool
+        # calls intermittently come back as plain text instead of structured
+        # tool_calls, or get dropped entirely. When LLM_BASE_URL points at an
+        # Ollama-style server (local, or https://ollama.com for Ollama Cloud),
+        # talk to its native /api/chat endpoint instead. Set LLM_OLLAMA_NATIVE=
+        # false to opt back out and use the OpenAI shim. The Authorization
+        # header is required for Ollama Cloud (OLLAMA_API_KEY) and is simply
+        # ignored by local Ollama, which doesn't check it.
+        self._ollama_native_url = self._resolve_ollama_native_url(base_url)
+        self._http_client = (
+            httpx.Client(
+                timeout=timeout_seconds,
+                headers={"Authorization": f"Bearer {resolved_api_key.strip()}"},
+            )
+            if self._ollama_native_url
+            else None
+        )
         # Default model when a caller doesn't pass one explicitly. Falls back to
         # "gpt-5-mini" so behavior is unchanged unless LLM_MODEL is set.
         self.default_model = os.getenv("LLM_MODEL", "").strip() or None
@@ -85,6 +122,27 @@ class OpenAIFunctionCallingPlugin:
         self._redis_client = self._build_redis_client()
         self._history_manager = ConversationHistoryManager.from_env()
         self._tool_name_to_target = self._build_tool_mapping()
+
+    def _resolve_ollama_native_url(self, base_url: str | None) -> str | None:
+        """Resolve a native Ollama ``/api/chat`` URL from LLM_BASE_URL, if any.
+
+        LLM_BASE_URL is normally the OpenAI-compatible root, e.g.
+        ``http://192.168.1.84:11434/v1``. Ollama's native API lives one
+        level up, at ``http://192.168.1.84:11434/api/chat``. We derive that
+        by stripping a trailing ``/v1`` and swapping in ``/api/chat``.
+
+        Returns None when no base_url is set (talking to api.openai.com) or
+        when LLM_OLLAMA_NATIVE is explicitly disabled.
+        """
+        if not base_url:
+            return None
+        override = os.getenv("LLM_OLLAMA_NATIVE", "").strip().lower()
+        if override in ("0", "false", "no", "off"):
+            return None
+        root = base_url.strip().rstrip("/")
+        if root.endswith("/v1"):
+            root = root[: -len("/v1")]
+        return root.rstrip("/") + "/api/chat"
 
     def _resolve_history_ttl_seconds(self) -> int:
         """Resolve conversation history TTL from environment with a safe default."""
@@ -1430,6 +1488,189 @@ class OpenAIFunctionCallingPlugin:
         except Exception as exc:
             return json.dumps({"status": "error", "message": str(exc)}, ensure_ascii=False)
 
+    def _to_ollama_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Convert OpenAI-shaped chat messages into Ollama's native schema.
+
+        Three shapes differ between the two wire formats:
+          * Vision input: OpenAI uses a content list with
+            ``{"type": "image_url", "image_url": {"url": "data:image/...;base64,..."}}``
+            parts. Ollama wants a flat ``images`` list of bare base64 strings
+            alongside a plain-string ``content``.
+          * Assistant tool calls: OpenAI nests arguments as a JSON *string*
+            under ``tool_calls[i]["function"]["arguments"]``. Ollama expects
+            arguments as a parsed object.
+          * Tool result messages: ``tool_call_id`` isn't part of Ollama's
+            schema, so it's dropped (content is kept).
+        """
+        converted: list[dict[str, Any]] = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content")
+            new_msg: dict[str, Any] = {"role": role}
+
+            if isinstance(content, list):
+                text_parts: list[str] = []
+                images: list[str] = []
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    part_type = part.get("type")
+                    if part_type == "text":
+                        text_parts.append(part.get("text", ""))
+                    elif part_type == "image_url":
+                        url = (part.get("image_url") or {}).get("url", "")
+                        if url.startswith("data:image/"):
+                            images.append(url.split(",", 1)[-1])
+                        elif url:
+                            images.append(url)
+                new_msg["content"] = "\n".join(text_parts)
+                if images:
+                    new_msg["images"] = images
+            else:
+                new_msg["content"] = content or ""
+
+            tool_calls = msg.get("tool_calls")
+            if tool_calls:
+                native_calls = []
+                for tc in tool_calls:
+                    func = (tc or {}).get("function", {})
+                    args = func.get("arguments", "{}")
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args) if args else {}
+                        except (json.JSONDecodeError, TypeError):
+                            args = {}
+                    native_calls.append(
+                        {"function": {"name": func.get("name", ""), "arguments": args}}
+                    )
+                new_msg["tool_calls"] = native_calls
+
+            converted.append(new_msg)
+        return converted
+
+    def _ollama_native_chat_completion(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Call Ollama's native ``/api/chat`` endpoint for one round.
+
+        Returns a plain dict shaped like ``{"content": str, "tool_calls":
+        [...]}`` where each tool call matches OpenAI's wire shape (``id``,
+        ``type``, ``function.name``, ``function.arguments`` as a JSON
+        string) so ``_chat_round`` callers don't need to special-case which
+        transport answered.
+        """
+        ollama_messages = self._to_ollama_messages(messages)
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": ollama_messages,
+            "stream": False,
+        }
+        if tools:
+            payload["tools"] = tools
+
+        # Ollama defaults gpt-oss:20b (and most models) to a 4096-token context
+        # window regardless of what the model is actually capable of. A large
+        # tool schema (we routinely send 50+ tools) plus conversation history
+        # blows past that silently -- Ollama truncates rather than erroring,
+        # which surfaces as the model returning empty content AND empty
+        # tool_calls every round (no error, just nothing). Override num_ctx
+        # explicitly; tune via OLLAMA_NUM_CTX if 32768 isn't enough/is too slow.
+        num_ctx = int(os.getenv("OLLAMA_NUM_CTX", "32768"))
+        payload["options"] = {"num_ctx": num_ctx}
+
+        logger.info(
+            "[Ollama] -> POST %s model=%s messages=%d tools=%d num_ctx=%d",
+            self._ollama_native_url,
+            model,
+            len(ollama_messages),
+            len(tools or []),
+            num_ctx,
+        )
+        if ollama_messages:
+            logger.debug(
+                "[Ollama] -> last message role=%s content=%r",
+                ollama_messages[-1].get("role"),
+                str(ollama_messages[-1].get("content") or "")[:500],
+            )
+
+        assert self._http_client is not None
+        try:
+            resp = self._http_client.post(self._ollama_native_url, json=payload)
+            resp.raise_for_status()
+        except Exception:
+            logger.exception("[Ollama] <- request to %s failed", self._ollama_native_url)
+            raise
+        data = resp.json()
+
+        native_message = data.get("message") or {}
+        content = native_message.get("content") or ""
+        raw_tool_calls = native_message.get("tool_calls") or []
+
+        logger.info(
+            "[Ollama] <- status=%s done=%s content_len=%d raw_tool_call_count=%d",
+            getattr(resp, "status_code", None),
+            data.get("done"),
+            len(content),
+            len(raw_tool_calls),
+        )
+        logger.info(
+            "[Ollama] <- raw message=%s",
+            json.dumps(native_message, ensure_ascii=False)[:4000],
+        )
+
+        tool_calls: list[dict[str, Any]] = []
+        for tc in raw_tool_calls:
+            func = (tc or {}).get("function", {})
+            arguments = func.get("arguments", {})
+            if not isinstance(arguments, str):
+                arguments = json.dumps(arguments, ensure_ascii=False)
+            tool_calls.append(
+                {
+                    "id": tc.get("id") or f"call_{uuid4().hex}",
+                    "type": "function",
+                    "function": {"name": func.get("name", ""), "arguments": arguments},
+                }
+            )
+
+        return {"content": content, "tool_calls": tool_calls}
+
+    def _chat_round(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Run one chat-completion round on whichever transport is active.
+
+        Dispatches to Ollama's native ``/api/chat`` endpoint when
+        LLM_BASE_URL resolved to one (see ``_resolve_ollama_native_url``),
+        otherwise uses the OpenAI SDK as before. Always returns a plain
+        dict — ``{"content": str, "tool_calls": [...]}`` — so the round
+        loop in ``_execute_chat_turn`` doesn't need to know which transport
+        answered.
+        """
+        if self._ollama_native_url:
+            return self._ollama_native_chat_completion(messages, model, tools)
+
+        create_kwargs: dict[str, Any] = {"model": model, "messages": messages}
+        if tools:
+            create_kwargs["tools"] = tools
+            create_kwargs["tool_choice"] = "auto"
+        response = self.client.chat.completions.create(**create_kwargs)
+        message = response.choices[0].message
+        tool_calls = [
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {"name": tc.function.name, "arguments": tc.function.arguments or "{}"},
+            }
+            for tc in (message.tool_calls or [])
+        ]
+        return {"content": message.content or "", "tool_calls": tool_calls}
+
     def _execute_chat_turn(
         self,
         messages: list[dict[str, Any]],
@@ -1473,24 +1714,26 @@ class OpenAIFunctionCallingPlugin:
 
         for round_num in range(max_tool_rounds):
             try:
-                create_kwargs: dict[str, Any] = {"model": model, "messages": messages}
-                if tools:
-                    create_kwargs["tools"] = tools
-                    create_kwargs["tool_choice"] = "auto"
-                response = self.client.chat.completions.create(**create_kwargs)
+                round_result = self._chat_round(messages, model, tools=tools or None)
             except Exception as exc:
                 raise ValueError(f"OpenAI function-calling request failed: {exc}") from exc
 
-            choice = response.choices[0]
-            message = choice.message
-            tool_calls = message.tool_calls or []
-            content = message.content or ""
+            tool_calls = round_result["tool_calls"]
+            content = round_result["content"]
 
             # Log each round for debugging
-            logger.debug("[OpenAI][Round %d/%d] tools_called=%d, content_len=%d", round_num + 1, max_tool_rounds, len(tool_calls), len(content))
+            logger.info(
+                "[OpenAI][Round %d/%d] tools_called=%d, content_len=%d, content_preview=%r",
+                round_num + 1, max_tool_rounds, len(tool_calls), len(content), content[:200],
+            )
             if tool_calls:
-                tool_names = [tc.function.name for tc in tool_calls]
-                logger.debug("[OpenAI][Round %d] tool_calls: %s", round_num + 1, tool_names)
+                tool_names = [tc["function"]["name"] for tc in tool_calls]
+                logger.info(
+                    "[OpenAI][Round %d] tool_calls: %s args=%s",
+                    round_num + 1,
+                    tool_names,
+                    [tc["function"].get("arguments") for tc in tool_calls],
+                )
                 for _tool_name in tool_names:
                     tool_call_counts[_tool_name] = tool_call_counts.get(_tool_name, 0) + 1
 
@@ -1499,21 +1742,28 @@ class OpenAIFunctionCallingPlugin:
                     {
                         "role": "assistant",
                         "content": content,
-                        "tool_calls": [tc.model_dump() for tc in tool_calls],
+                        "tool_calls": tool_calls,
                     }
                 )
                 for tool_call in tool_calls:
-                    tool_name = tool_call.function.name
-                    tool_args = tool_call.function.arguments or "{}"
+                    tool_name = tool_call["function"]["name"]
+                    tool_args = tool_call["function"]["arguments"] or "{}"
                     if progress_callback is not None:
                         try:
                             progress_callback(tool_name, "called")
                         except Exception:
                             pass
+                    logger.info(
+                        "[OpenAI][Round %d] calling %s with args=%s",
+                        round_num + 1, tool_name, tool_args,
+                    )
                     try:
                         tool_output = self._execute_tool_call(tool_name, tool_args)
                         executed_tool_calls += 1
-                        logger.debug("[OpenAI][Round %d] %s executed successfully", round_num + 1, tool_name)
+                        logger.info(
+                            "[OpenAI][Round %d] %s executed successfully, result_preview=%r",
+                            round_num + 1, tool_name, str(tool_output)[:500],
+                        )
                         if progress_callback is not None:
                             try:
                                 progress_callback(tool_name, "success")
@@ -1540,7 +1790,7 @@ class OpenAIFunctionCallingPlugin:
                     messages.append(
                         {
                             "role": "tool",
-                            "tool_call_id": tool_call.id,
+                            "tool_call_id": tool_call["id"],
                             "content": tool_output,
                         }
                     )
@@ -1573,9 +1823,9 @@ class OpenAIFunctionCallingPlugin:
                         pass
                 continue
 
-            final_text = message.content or ""
+            final_text = content
             if final_text.strip():
-                logger.debug("[OpenAI][Round %d] Got final response: %d chars", round_num + 1, len(final_text))
+                logger.info("[OpenAI][Round %d] Got final response: %d chars", round_num + 1, len(final_text))
                 messages.append(
                     {
                         "role": "assistant",
@@ -1586,7 +1836,10 @@ class OpenAIFunctionCallingPlugin:
             else:
                 # Model returned neither tool calls nor content — nudge it to produce
                 # a final reply so the next round has new context to act on.
-                logger.debug("[OpenAI][Round %d] No content and no tool_calls — injecting finalization nudge", round_num + 1)
+                logger.info(
+                    "[OpenAI][Round %d] No content and no tool_calls — injecting finalization nudge",
+                    round_num + 1,
+                )
                 messages.append({"role": "user", "content": "Please provide your final answer now."})
 
         # Round budget exhausted without final text. Rather than leaving the
@@ -1610,17 +1863,17 @@ class OpenAIFunctionCallingPlugin:
             }
         )
         try:
-            response = self.client.chat.completions.create(model=model, messages=messages)
-            final_text = (response.choices[0].message.content or "").strip()
+            round_result = self._chat_round(messages, model, tools=None)
+            final_text = (round_result["content"] or "").strip()
         except Exception as exc:
             raise ValueError(
                 f"Exceeded max tool-calling rounds and finalization call failed: {exc}"
             ) from exc
 
         if final_text:
-            logger.debug(
-                "[OpenAI] Finalization call succeeded after exhausting rounds: %d chars",
-                len(final_text),
+            logger.info(
+                "[OpenAI] Finalization call succeeded after exhausting rounds: %d chars, preview=%r",
+                len(final_text), final_text[:300],
             )
             messages.append({"role": "assistant", "content": final_text})
             return final_text, executed_tool_calls, analyzed_image_paths

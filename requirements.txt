@@ -5,6 +5,7 @@ paramiko
 slackeventsapi
 python-dotenv
 openai
+httpx
 redis
 pandas
 openpyxl

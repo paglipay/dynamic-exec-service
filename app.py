@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -61,6 +62,20 @@ app = Flask(__name__)
 env_path = Path(".") / ".env"
 load_dotenv(dotenv_path=env_path)
 signing_secret = os.getenv("SIGNING_SECRET")
+
+# Nothing in this codebase previously called logging.basicConfig(), so
+# logger.info()/logger.debug() calls throughout the app and plugins (e.g.
+# openai_plugin.py's per-round tool-calling logs) were silently dropped when
+# running locally via `python app.py` -- only WARNING+ reached stderr via
+# Python's logging "handler of last resort". Set LOG_LEVEL=DEBUG in .env for
+# maximum detail when diagnosing a specific request; defaults to INFO.
+_log_level_name = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+_log_level = getattr(logging, _log_level_name, logging.INFO)
+logging.basicConfig(
+    level=_log_level,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+app.logger.setLevel(_log_level)
 
 # Allow cross-origin requests. Configure CORS_ALLOWED_ORIGINS in .env to
 # restrict to specific origins (comma-separated). Defaults to "*" so the
