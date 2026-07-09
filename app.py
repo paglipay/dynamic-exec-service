@@ -2189,12 +2189,23 @@ def _handle_request_entity_too_large(error: Any) -> Any:
     )
 
 
+def _bearing_to_compass(degrees: float) -> str:
+    """Convert a 0-360 true-north bearing to a 16-point compass label."""
+    _DIRECTIONS = [
+        "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+        "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
+    ]
+    idx = round((degrees % 360) / 22.5) % 16
+    return _DIRECTIONS[idx]
+
+
 def _trigger_upload_notification(
     filename: str,
     relative_path: str,
     size_bytes: int,
     lat: float | None = None,
     lon: float | None = None,
+    heading: float | None = None,
 ) -> None:
     """Fire-and-forget: post a Slack upload notification directly via SlackPlugin."""
     import threading
@@ -2236,6 +2247,11 @@ def _trigger_upload_notification(
                                 if lat is not None and lon is not None
                                 else ""
                             )
+                            + (
+                                f"\nHeading: {heading:.1f}° ({_bearing_to_compass(heading)})"
+                                if heading is not None
+                                else ""
+                            )
                         ),
                     )
                     app.logger.info("[UploadNotify] upload_local_file result: %s", upload_result)
@@ -2273,6 +2289,11 @@ def _trigger_upload_notification(
                                         f"\nGPS location: lat={lat:.6f}, lon={lon:.6f}"
                                         f"\nGoogle Maps: https://maps.google.com/?q={lat:.6f},{lon:.6f}"
                                         if lat is not None and lon is not None
+                                        else ""
+                                    )
+                                    + (
+                                        f"\nHeading: {heading:.1f}° ({_bearing_to_compass(heading)})"
+                                        if heading is not None
                                         else ""
                                     )
                                 ),
@@ -2527,8 +2548,18 @@ def upload_file() -> Any:
         except ValueError:
             pass
 
+    notify_heading: float | None = None
+    if has_heading:
+        try:
+            notify_heading = float(heading_raw) % 360
+        except ValueError:
+            pass
+
     # Write slack_files record with EXIF extracted directly from the saved file.
     gps = {"lat": notify_lat, "lon": notify_lon} if notify_lat is not None and notify_lon is not None else None
+    if notify_heading is not None:
+        gps = gps or {}
+        gps["heading"] = notify_heading
 
     # Step 1: Extract exif_b64 directly from disk — independent of any Slack/plugin calls.
     _exif_b64: str | None = None
@@ -2565,7 +2596,9 @@ def upload_file() -> Any:
     except Exception as exc:
         app.logger.warning("Failed to write slack_files record for %s: %s", safe_name, exc)
 
-    _trigger_upload_notification(safe_name, relative, size_bytes, lat=notify_lat, lon=notify_lon)
+    _trigger_upload_notification(
+        safe_name, relative, size_bytes, lat=notify_lat, lon=notify_lon, heading=notify_heading
+    )
 
     return jsonify({
         "status": "success",
