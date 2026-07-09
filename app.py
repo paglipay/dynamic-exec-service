@@ -2431,6 +2431,9 @@ def upload_file() -> Any:
     lon_raw = request.form.get("lon", "").strip()
     has_gps = bool(lat_raw and lon_raw)
 
+    heading_raw = request.form.get("heading", "").strip()
+    has_heading = bool(heading_raw)
+
     _JPEG_EXTS = {".jpg", ".jpeg"}
     _CONVERTIBLE_EXTS = {".png", ".webp", ".gif", ".bmp", ".tiff"}
     if has_gps and dest.suffix.lower() in _CONVERTIBLE_EXTS and _PILImage is not None:
@@ -2462,7 +2465,7 @@ def upload_file() -> Any:
     else:
         f.save(str(dest))
 
-    if has_gps and dest.suffix.lower() in _JPEG_EXTS:
+    if (has_gps or has_heading) and dest.suffix.lower() in _JPEG_EXTS:
         try:
             import piexif
 
@@ -2472,30 +2475,45 @@ def upload_file() -> Any:
             except Exception:
                 existing_exif = {"GPS": {}}
 
-            already_has_gps = bool(existing_exif.get("GPS"))
-            if already_has_gps:
-                app.logger.info("Skipping GPS EXIF write for %s — existing GPS data found", dest.name)
-            else:
-                def _to_dms_rational(degrees: float) -> tuple:
-                    d = int(abs(degrees))
-                    m_float = (abs(degrees) - d) * 60
-                    m = int(m_float)
-                    s = round((m_float - m) * 60 * 10000)
-                    return ((d, 1), (m, 1), (s, 10000))
+            wrote_any = False
 
-                lat_val = float(lat_raw)
-                lon_val = float(lon_raw)
-                existing_exif["GPS"] = {
-                    piexif.GPSIFD.GPSLatitudeRef: b"N" if lat_val >= 0 else b"S",
-                    piexif.GPSIFD.GPSLatitude: _to_dms_rational(lat_val),
-                    piexif.GPSIFD.GPSLongitudeRef: b"E" if lon_val >= 0 else b"W",
-                    piexif.GPSIFD.GPSLongitude: _to_dms_rational(lon_val),
-                }
+            if has_gps:
+                already_has_gps = bool(existing_exif.get("GPS"))
+                if already_has_gps:
+                    app.logger.info("Skipping GPS EXIF write for %s — existing GPS data found", dest.name)
+                else:
+                    def _to_dms_rational(degrees: float) -> tuple:
+                        d = int(abs(degrees))
+                        m_float = (abs(degrees) - d) * 60
+                        m = int(m_float)
+                        s = round((m_float - m) * 60 * 10000)
+                        return ((d, 1), (m, 1), (s, 10000))
+
+                    lat_val = float(lat_raw)
+                    lon_val = float(lon_raw)
+                    existing_exif["GPS"][piexif.GPSIFD.GPSLatitudeRef] = b"N" if lat_val >= 0 else b"S"
+                    existing_exif["GPS"][piexif.GPSIFD.GPSLatitude] = _to_dms_rational(lat_val)
+                    existing_exif["GPS"][piexif.GPSIFD.GPSLongitudeRef] = b"E" if lon_val >= 0 else b"W"
+                    existing_exif["GPS"][piexif.GPSIFD.GPSLongitude] = _to_dms_rational(lon_val)
+                    wrote_any = True
+                    app.logger.info("GPS EXIF written to %s: lat=%s, lon=%s", dest.name, lat_raw, lon_raw)
+
+            if has_heading:
+                already_has_direction = bool(existing_exif.get("GPS", {}).get(piexif.GPSIFD.GPSImgDirection))
+                if already_has_direction:
+                    app.logger.info("Skipping Direction EXIF write for %s — existing direction data found", dest.name)
+                else:
+                    heading_val = float(heading_raw) % 360
+                    existing_exif["GPS"][piexif.GPSIFD.GPSImgDirectionRef] = b"T"
+                    existing_exif["GPS"][piexif.GPSIFD.GPSImgDirection] = (round(heading_val * 100), 100)
+                    wrote_any = True
+                    app.logger.info("Direction EXIF written to %s: heading=%s", dest.name, heading_raw)
+
+            if wrote_any:
                 exif_bytes = piexif.dump(existing_exif)
                 piexif.insert(exif_bytes, existing_bytes, str(dest))
-                app.logger.info("GPS EXIF written to %s: lat=%s, lon=%s", dest.name, lat_raw, lon_raw)
         except Exception as exc:
-            app.logger.warning("Failed to write GPS EXIF to %s: %s", dest.name, exc)
+            app.logger.warning("Failed to write GPS/Direction EXIF to %s: %s", dest.name, exc)
 
     size_bytes = dest.stat().st_size
     relative = dest.relative_to(_media_storage_plugin._base).as_posix()

@@ -1597,11 +1597,21 @@ class OpenAIFunctionCallingPlugin:
             )
 
         assert self._http_client is not None
+        resp = None
         try:
             resp = self._http_client.post(self._ollama_native_url, json=payload)
             resp.raise_for_status()
         except Exception:
-            logger.exception("[Ollama] <- request to %s failed", self._ollama_native_url)
+            if resp is not None:
+                logger.error(
+                    "[Ollama] <- request to %s failed: status=%s body=%r",
+                    self._ollama_native_url, resp.status_code, resp.text[:1000],
+                )
+            else:
+                logger.exception(
+                    "[Ollama] <- request to %s failed before a response was received",
+                    self._ollama_native_url,
+                )
             raise
         data = resp.json()
 
